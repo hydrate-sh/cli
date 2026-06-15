@@ -1,0 +1,27 @@
+[package]
+name = "hydrate"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.92"
+description = "Command-line client for hydrate.sh — author your system graph from the terminal."
+repository = "https://github.com/hydrate-sh/cli"
+license = "MIT"
+# Distributed as prebuilt binaries via GitHub Releases, not crates.io.
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[lib]
+name = "hydrate"
+path = "src/lib.rs"
+
+# Canonical binary.
+[[bin]]
+name = "hydrate"
+path = "src/main.rs"
+
+# Short alias — same entry point.
+[[bin]]
+name = "hyd"
+path = "src/bin/hyd.rs"
