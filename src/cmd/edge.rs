@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
-use super::unimplemented;
+use super::not_implemented;
 use crate::cli::EdgeAddArgs;
 
 pub fn add(_args: EdgeAddArgs) -> ExitCode {
-    unimplemented("edge add")
+    not_implemented("edge add")
 }

@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
-use super::unimplemented;
+use super::not_implemented;
 
 pub fn run() -> ExitCode {
-    unimplemented("diff")
+    not_implemented("diff")
 }

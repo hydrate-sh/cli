@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
-use super::unimplemented;
+use super::not_implemented;
 use crate::cli::ForkArgs;
 
 pub fn run(_args: ForkArgs) -> ExitCode {
-    unimplemented("fork")
+    not_implemented("fork")
 }

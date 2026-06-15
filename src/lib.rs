@@ -17,12 +17,14 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+// All internal — `run` is the only public surface. Promote a module to `pub`
+// only when something outside the crate actually consumes it.
 mod cli;
-pub mod client;
+mod client;
 mod cmd;
-pub mod exit;
-pub mod state;
-pub mod wire;
+mod exit;
+mod state;
+mod wire;
 
 /// Parse arguments and dispatch to the matching verb handler.
 ///

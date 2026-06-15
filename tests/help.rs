@@ -54,3 +54,51 @@ fn unknown_command_fails_loud() {
         .expect("failed to run binary");
     assert!(!out.status.success(), "unknown command should fail");
 }
+
+#[test]
+fn node_add_help_pins_flag_grammar() {
+    // The command surface IS the contract this scaffold locks in — pin the
+    // authoring flags so dropping/renaming one (e.g. the `--in` rename) fails.
+    let out = Command::new(HYDRATE_EXE)
+        .args(["node", "add", "--help"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    for flag in ["--kind", "--name", "--parent", "--in", "--out"] {
+        assert!(
+            text.contains(flag),
+            "node add --help missing {flag:?}\n{text}"
+        );
+    }
+}
+
+#[test]
+fn edge_add_help_pins_endpoint_flags() {
+    let out = Command::new(HYDRATE_EXE)
+        .args(["edge", "add", "--help"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    for flag in ["--from", "--to"] {
+        assert!(
+            text.contains(flag),
+            "edge add --help missing {flag:?}\n{text}"
+        );
+    }
+}
+
+#[test]
+fn json_and_human_conflict() {
+    // The two output modes are mutually exclusive — supplying both must fail,
+    // not silently pick one.
+    let out = Command::new(HYDRATE_EXE)
+        .args(["--json", "--human", "status"])
+        .output()
+        .expect("failed to run binary");
+    assert!(
+        !out.status.success(),
+        "--json --human together should be rejected"
+    );
+}
