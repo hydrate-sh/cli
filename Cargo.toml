@@ -9,8 +9,16 @@ license = "MIT"
 # Distributed as prebuilt binaries via GitHub Releases, not crates.io.
 publish = false
 
+# `wire` is the committed openapi-generator client (generated, never hand-edited);
+# regenerate it with scripts/regen-wire.sh.
+[workspace]
+members = ["wire"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+# rustls (not the generated crate's default native-tls) — no OpenSSL system dep,
+# friendlier for the cross-compiled release binaries.
+hydrate_wire = { path = "wire", default-features = false, features = ["rustls-tls"] }
 
 [lib]
 name = "hydrate"

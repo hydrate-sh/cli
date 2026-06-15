@@ -1,0 +1,22 @@
+[package]
+name = "hydrate_wire"
+version = "1.0.0-rc.1"
+authors = ["OpenAPI Generator team and contributors"]
+description = "The hydrate.sh public API. All routes are scoped to the `/v1/` prefix and require a Bearer API key (see Authentication).  **Stability:** `v1` is the wire-stable surface. Breaking changes will rebase to `/v2/`."
+# Override this license by providing a License Object in the OpenAPI.
+license = "Unlicense"
+edition = "2021"
+
+[dependencies]
+serde = { version = "^1.0", features = ["derive"] }
+serde_with = { version = "^3.8", default-features = false, features = ["base64", "std", "macros"] }
+serde_json = "^1.0"
+serde_repr = "^0.1"
+url = "^2.5"
+uuid = { version = "^1.8", features = ["serde", "v4"] }
+reqwest = { version = "^0.12", default-features = false, features = ["json", "multipart"] }
+
+[features]
+default = ["native-tls"]
+native-tls = ["reqwest/native-tls"]
+rustls-tls = ["reqwest/rustls-tls"]
