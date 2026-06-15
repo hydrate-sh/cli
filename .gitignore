@@ -1,0 +1,8 @@
+# Rust build output
+/target
+
+# Editor / OS cruft
+*.rs.bk
+.DS_Store
+
+# Cargo.lock IS committed (binary crate — reproducible builds), so it is NOT ignored.
