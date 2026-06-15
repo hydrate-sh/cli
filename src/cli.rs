@@ -26,7 +26,7 @@ pub struct Cli {
     pub json: bool,
 
     /// Force human-readable output (default when stdout is a TTY).
-    #[arg(long, global = true, conflicts_with = "json")]
+    #[arg(long, global = true)]
     pub human: bool,
 
     #[command(subcommand)]
@@ -103,10 +103,6 @@ pub struct NodeAddArgs {
     /// Output port as `name:type` (repeatable). Type is required.
     #[arg(long = "out", value_name = "NAME:TYPE")]
     pub outputs: Vec<String>,
-
-    /// Config port as `name:type` (repeatable). Type is required.
-    #[arg(long = "config", value_name = "NAME:TYPE")]
-    pub config: Vec<String>,
 
     /// Boundary-only: the user-facing kind label.
     #[arg(long)]

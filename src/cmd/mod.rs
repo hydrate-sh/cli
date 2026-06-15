@@ -35,7 +35,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
 }
 
 /// Shared stub: report that a verb is not implemented yet and fail loud.
-fn unimplemented(verb: &str) -> ExitCode {
+fn not_implemented(verb: &str) -> ExitCode {
     eprintln!("hydrate: `{verb}` is not implemented yet");
     ExitCode::from(exit::GENERIC)
 }
