@@ -1,0 +1,55 @@
+# CLAUDE.md
+
+## Project
+
+`hydrate` — the command-line client for hydrate.sh. A thin client over the `/v1`
+API: it stages graph edits locally and commits them as one typed delta batch
+under optimistic concurrency control. The graph is the source of truth; the
+**server is the sole authority for validation** — this client never mirrors the
+server's rules.
+
+Binary `hydrate`, with the short alias `hyd`. Both share one entry point
+(`hydrate::run`).
+
+## This repository is PUBLIC
+
+- **No internal references.** Do not introduce internal planning paths, milestone
+  or feature codenames, ticket ids, or internal review labels into code,
+  comments, commit messages, docs, or tests. This repo is the product's public
+  face; keep it free of internal process vocabulary.
+- Public-facing text (help strings, errors, README) is user documentation — write
+  it for someone who has never seen the internals.
+
+## Rules
+
+- **TDD.** Write the test first, then the implementation. Every behavior is
+  covered before it is written. No exceptions.
+- **No vacuous or hallucinated tests.** Every test must fail if the behavior it
+  covers is broken. After a test passes, ask: would this still pass if I deleted
+  the implementation? If yes, the test is decoration — fix or remove it.
+- **Fail loud, never silent.** No swallowed errors, no empty-on-error returns, no
+  defaults that accept garbage. When in doubt, surface it. A conflict, a network
+  failure, and a collision are each reported distinctly — never a silent skip or
+  a fabricated success.
+- **Generated code is never hand-edited.** The wire client is generated from the
+  vendored OpenAPI spec; regenerate it, don't patch it, so the types cannot drift
+  from the contract. Hand-written ergonomics live in a separate layer on top.
+- **Secrets never reach logs or output.** The API key is read from the
+  environment; it must not be printed, logged, or echoed — not even at debug
+  level.
+- **Stable exit codes.** `0` success, `1` generic failure, `4` conflict, `6`
+  network. Richer machine detail rides in the `--json` output, not in new codes.
+- **Dual output.** Human-readable on a TTY, JSON when piped; `--json` / `--human`
+  override. The two must carry the same information.
+
+## Build & test
+
+```
+cargo build
+cargo test
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+The pinned toolchain is in `rust-toolchain.toml`. `Cargo.lock` is committed
+(binary crate) for reproducible builds.
