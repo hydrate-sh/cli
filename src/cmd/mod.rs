@@ -28,7 +28,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         Command::Fork(args) => finish(fork::run(args, mode), mode),
         Command::Branches => finish(branches::run(mode), mode),
         Command::Node { action } => match action {
-            NodeAction::Add(args) => node::add(args),
+            NodeAction::Add(args) => finish(node::add(args, mode), mode),
         },
         Command::Edge { action } => match action {
             EdgeAction::Add(args) => edge::add(args),

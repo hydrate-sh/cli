@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use hydrate_wire::models::ProjectOut;
 
 use crate::error::CliError;
+use crate::state;
 
 /// The single-project rule.
 ///
@@ -29,6 +30,13 @@ pub fn select_project(projects: Vec<ProjectOut>) -> Result<ProjectOut, CliError>
 pub fn cwd() -> Result<PathBuf, CliError> {
     std::env::current_dir()
         .map_err(|e| CliError::State(format!("could not determine the current directory: {e}")))
+}
+
+/// The root of the `.hydrate/` working copy this directory belongs to, or a
+/// loud [`CliError::NotInWorkdir`] — the staging and inspection verbs have
+/// nowhere to read or write without one.
+pub fn require_workdir() -> Result<PathBuf, CliError> {
+    state::find_root(&cwd()?).ok_or(CliError::NotInWorkdir)
 }
 
 #[cfg(test)]
