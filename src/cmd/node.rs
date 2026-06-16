@@ -58,29 +58,44 @@ pub fn rm(args: NodeRmArgs, mode: OutputMode) -> Result<(), CliError> {
 pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
     let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
-    // Map the flags to key-presence intent: `--clear-constraints` sets an empty
-    // list; `--constraint` (any) replaces with that list; neither → leave
-    // constraints untouched (None). `--description ""` is treated as "no change"
-    // to that field, consistent with `node add` (filter empty).
-    let constraints = if args.clear_constraints {
+    let (description, constraints) = set_fields(
+        args.description.as_deref(),
+        &args.constraints,
+        args.clear_constraints,
+    );
+    let updated = changeset.update_node(&args.path, description.as_deref(), constraints)?;
+    changeset.into_stage().save(&base)?;
+
+    println!("{}", render_updated(&updated, mode));
+    Ok(())
+}
+
+/// Map the `set` flags to key-presence intent (pure, so it's unit-testable):
+/// `--clear-constraints` → `Some([])` (clear); any `--constraint` → `Some(list)`
+/// with blank entries dropped; neither → `None` (untouched). `--description ""`
+/// → `None` for that field, consistent with `node add`'s empty filtering.
+fn set_fields(
+    description: Option<&str>,
+    constraints: &[String],
+    clear_constraints: bool,
+) -> (Option<String>, Option<Vec<String>>) {
+    let description = description
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
+    let constraints = if clear_constraints {
         Some(Vec::new())
-    } else if args.constraints.is_empty() {
+    } else if constraints.is_empty() {
         None
     } else {
         Some(
-            args.constraints
+            constraints
                 .iter()
                 .filter(|c| !c.trim().is_empty())
                 .cloned()
                 .collect(),
         )
     };
-    let description = args.description.as_deref().filter(|s| !s.is_empty());
-    let updated = changeset.update_node(&args.path, description, constraints)?;
-    changeset.into_stage().save(&base)?;
-
-    println!("{}", render_updated(&updated, mode));
-    Ok(())
+    (description, constraints)
 }
 
 fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
@@ -96,18 +111,14 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
         OutputMode::Human => {
             let mut fields = Vec::new();
             if u.description.is_some() {
-                fields.push("description");
+                fields.push("description".to_string());
             }
-            if !u.constraints.is_empty() {
-                fields.push("constraints");
+            match &u.constraints {
+                Some(cs) if cs.is_empty() => fields.push("constraints cleared".to_string()),
+                Some(_) => fields.push("constraints".to_string()),
+                None => {}
             }
-            // clear-constraints case: empty list set, no description.
-            let what = if fields.is_empty() {
-                "constraints".to_string()
-            } else {
-                fields.join(" + ")
-            };
-            format!("Staged edit of '{}' ({what}).", u.path)
+            format!("Staged edit of '{}' ({}).", u.path, fields.join(" + "))
         }
     }
 }
@@ -213,24 +224,53 @@ mod tests {
             &NodeUpdated {
                 path: "Api.Rater".to_string(),
                 description: Some("p".to_string()),
-                constraints: vec!["c".to_string()],
+                constraints: Some(vec!["c".to_string()]),
             },
             OutputMode::Human,
         );
         assert!(human.contains("'Api.Rater'"), "{human}");
         assert!(human.contains("description + constraints"), "{human}");
 
+        // Cleared constraints read distinctly from "set".
+        let cleared = render_updated(
+            &NodeUpdated {
+                path: "Api.Rater".to_string(),
+                description: None,
+                constraints: Some(vec![]),
+            },
+            OutputMode::Human,
+        );
+        assert!(cleared.contains("constraints cleared"), "{cleared}");
+
+        // JSON: untouched constraints render as null (not []), distinct from cleared.
         let out = render_updated(
             &NodeUpdated {
                 path: "Api.Rater".to_string(),
                 description: Some("p".to_string()),
-                constraints: vec![],
+                constraints: None,
             },
             OutputMode::Json,
         );
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["staged"]["set"], "Api.Rater");
         assert_eq!(v["staged"]["description"], "p");
+        assert!(v["staged"]["constraints"].is_null(), "{out}");
+    }
+
+    #[test]
+    fn set_fields_maps_flags_to_key_presence_intent() {
+        // Empty/blank description → None (untouched), like `node add`.
+        assert_eq!(set_fields(Some("  "), &[], false).0, None);
+        assert_eq!(set_fields(Some("p"), &[], false).0, Some("p".to_string()));
+        // No constraint flags → None (untouched).
+        assert_eq!(set_fields(None, &[], false).1, None);
+        // --clear-constraints → Some([]) (cleared).
+        assert_eq!(set_fields(None, &[], true).1, Some(vec![]));
+        // --constraint with a blank dropped → Some(non-empty list).
+        assert_eq!(
+            set_fields(None, &["a".to_string(), "  ".to_string()], false).1,
+            Some(vec!["a".to_string()])
+        );
     }
 
     #[test]

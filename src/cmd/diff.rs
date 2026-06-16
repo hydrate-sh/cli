@@ -74,8 +74,15 @@ fn op_line(op: &OpSummary) -> String {
             if let Some(d) = description {
                 line.push_str(&format!("\n    description: {d}"));
             }
-            for c in constraints {
-                line.push_str(&format!("\n    constraint: {c}"));
+            // Distinguish cleared (Some([])) from untouched (None).
+            match constraints {
+                Some(cs) if cs.is_empty() => line.push_str("\n    constraints: (cleared)"),
+                Some(cs) => {
+                    for c in cs {
+                        line.push_str(&format!("\n    constraint: {c}"));
+                    }
+                }
+                None => {}
             }
             line
         }

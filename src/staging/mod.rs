@@ -322,7 +322,7 @@ impl Changeset {
         Ok(NodeUpdated {
             path: path.to_string(),
             description: description.map(str::to_string),
-            constraints: constraints.unwrap_or_default(),
+            constraints,
         })
     }
 
@@ -467,7 +467,8 @@ pub struct NodeRemoved {
 pub struct NodeUpdated {
     pub path: String,
     pub description: Option<String>,
-    pub constraints: Vec<String>,
+    /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
+    pub constraints: Option<Vec<String>>,
 }
 
 struct MintedPorts {
@@ -707,10 +708,11 @@ pub enum OpSummary {
         to: String,
     },
     /// A staged partial edit of a node's data (only the set fields change).
+    /// `constraints`: `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
     UpdateNode {
         path: String,
         description: Option<String>,
-        constraints: Vec<String>,
+        constraints: Option<Vec<String>>,
     },
     /// A staged node deletion (cascades the subtree server-side).
     DeleteNode {
@@ -812,7 +814,9 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                 summary.ops.push(OpSummary::UpdateNode {
                     path,
                     description: d.after.description.filter(|s| !s.is_empty()),
-                    constraints: d.after.constraints.unwrap_or_default(),
+                    // Keep the Option so the preview distinguishes "cleared"
+                    // (Some([])) from "untouched" (None) — they are different edits.
+                    constraints: d.after.constraints,
                 });
             }
             "delete_node" => {
@@ -2088,10 +2092,31 @@ mod tests {
             Some((
                 "Api.Rater".to_string(),
                 Some("edited".to_string()),
-                vec!["c".to_string()]
+                Some(vec!["c".to_string()])
             ))
         );
         assert!(!format!("{summary:?}").contains(&rater.to_string()));
+    }
+
+    #[test]
+    fn summarize_fails_loud_on_an_update_targeting_an_unknown_node() {
+        let mut stage = Stage::empty();
+        stage.deltas.push(serde_json::json!({
+            "type": "update_node_data",
+            "nodeId": Uuid::new_v4(),
+            "after": { "description": "x" },
+        }));
+        let err = summarize(&stage, None).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn update_node_rejects_a_node_staged_for_deletion() {
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        cs.remove_node("Rater").unwrap();
+        let err = cs.update_node("Rater", Some("x"), None).unwrap_err();
+        assert!(err.to_string().contains("staged for deletion"), "{err}");
     }
 
     #[test]
