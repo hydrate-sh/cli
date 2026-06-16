@@ -4,12 +4,12 @@ use super::context::require_workdir;
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::{summarize, StageSummary};
-use crate::state::{Binding, Stage};
+use crate::state::{Binding, Index, Stage};
 
 pub fn run(mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
     let binding = Binding::load(&base)?;
-    let summary = summarize(&Stage::load(&base)?)?;
+    let summary = summarize(&Stage::load(&base)?, Index::load(&base)?.as_ref())?;
     println!("{}", render(binding.as_ref(), &summary, mode));
     Ok(())
 }
