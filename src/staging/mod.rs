@@ -567,6 +567,17 @@ impl StageSummary {
 /// Summarize a staged changeset for `status`/`diff`, rendering minted UUIDs back
 /// to the dotted paths the author used. A staged delta that cannot be parsed is
 /// a loud error — corruption is surfaced, never silently skipped.
+/// Load the stage and the pulled index from `base`, then summarize. The single
+/// entry point `status`/`diff` use, so the index is always threaded into
+/// rendering — a committed edge handle resolves to its dotted path rather than
+/// reading as "not staged". Keeping this here (not inline in each command) means
+/// the wiring can't silently regress to summarizing the stage alone.
+pub fn summarize_workdir(base: &std::path::Path) -> Result<StageSummary, CliError> {
+    let stage = Stage::load(base)?;
+    let index = Index::load(base)?;
+    summarize(&stage, index.as_ref())
+}
+
 pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, CliError> {
     // Build the UUID → path maps from BOTH the stage aliases and the pulled
     // index: a cross-commit edge's handle is a COMMITTED port UUID that lives
@@ -666,7 +677,10 @@ fn handle_path(
         .flatten()
         .ok_or_else(|| CliError::State("a staged edge is missing an endpoint".to_string()))?;
     map.get(&id).cloned().ok_or_else(|| {
-        CliError::State("a staged edge references a port that is not staged".to_string())
+        CliError::State(
+            "a staged edge references a port that is neither staged nor in the pulled index"
+                .to_string(),
+        )
     })
 }
 
@@ -1178,6 +1192,7 @@ mod tests {
                     "position": { "x": 0.0, "y": 0.0 },
                     "data": { "name": "Rater", "description": "", "status": "idle",
                               "isTestNode": false, "is_external": false,
+                              "inputs": [ { "id": Uuid::from_u128(0x4ABC), "name": "raw", "type": "Patty" } ],
                               "outputs": [ { "id": score, "name": "score", "type": "Rating" } ] }
                 }
             ]
@@ -1406,6 +1421,62 @@ mod tests {
             edge,
             ("Api.Rater.score".to_string(), "Sink.rating".to_string())
         );
+    }
+
+    #[test]
+    fn summarize_renders_a_committed_target_via_the_index() {
+        // The symmetric case: a freshly-staged SOURCE wired into a COMMITTED
+        // input port (`Api.Rater.raw`, in the index only). The target handle
+        // must also resolve through the index, not just the source.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.add_node(&NodeSpec {
+            outputs: vec![port("patty", "Patty")],
+            ..behavior("Grill", None)
+        })
+        .unwrap();
+        cs.add_edge("Grill.patty", "Api.Rater.raw").unwrap();
+        let stage = cs.into_stage();
+
+        let summary = summarize(&stage, Some(&index)).unwrap();
+        let edge = summary
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                OpSummary::Edge { from, to } => Some((from.clone(), to.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            edge,
+            ("Grill.patty".to_string(), "Api.Rater.raw".to_string())
+        );
+    }
+
+    #[test]
+    fn summarize_workdir_loads_and_threads_the_index_from_disk() {
+        // Guards the status/diff wiring: a cross-commit edge persisted to a
+        // workdir must render via summarize_workdir, which has to load AND pass
+        // the index. If the index weren't threaded, handle_path would fail loud.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.add_node(&NodeSpec {
+            inputs: vec![port("rating", "Rating")],
+            ..behavior("Sink", None)
+        })
+        .unwrap();
+        cs.add_edge("Api.Rater.score", "Sink.rating").unwrap();
+        cs.into_stage().save(tmp.path()).unwrap();
+        index.save(tmp.path()).unwrap();
+
+        let summary = summarize_workdir(tmp.path()).unwrap();
+        assert!(summary.ops.iter().any(|op| matches!(
+            op,
+            OpSummary::Edge { from, to } if from == "Api.Rater.score" && to == "Sink.rating"
+        )));
     }
 
     #[test]
