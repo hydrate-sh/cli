@@ -4,7 +4,7 @@
 use hydrate_wire::models::node::Kind;
 
 use super::context::require_workdir;
-use crate::cli::{NodeAddArgs, NodeKind};
+use crate::cli::{NodeAddArgs, NodeKind, NodeRmArgs};
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::{parse_port_spec, Changeset, NodeAdded, NodeSpec, PortSpec};
@@ -38,6 +38,35 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
 
 fn parse_ports(raw: &[String]) -> Result<Vec<PortSpec>, CliError> {
     raw.iter().map(|s| parse_port_spec(s)).collect()
+}
+
+pub fn rm(args: NodeRmArgs, mode: OutputMode) -> Result<(), CliError> {
+    let base = require_workdir()?;
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
+    let mut removed = Vec::with_capacity(args.paths.len());
+    for path in &args.paths {
+        // Stage each, in order; a bad path fails loud and stops before writing
+        // (the changeset isn't persisted until all paths resolve).
+        removed.push(changeset.remove_node(path)?.path);
+    }
+    changeset.into_stage().save(&base)?;
+
+    println!("{}", render_removed(&removed, mode));
+    Ok(())
+}
+
+fn render_removed(paths: &[String], mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({ "staged": { "removed": paths } }).to_string(),
+        OutputMode::Human => match paths {
+            [one] => format!("Staged removal of '{one}'."),
+            many => format!(
+                "Staged removal of {} nodes: {}.",
+                many.len(),
+                many.join(", ")
+            ),
+        },
+    }
 }
 
 fn map_kind(kind: NodeKind) -> Kind {
@@ -108,6 +137,25 @@ mod tests {
         assert!(one.contains("behavior node 'Rater'"), "{one}");
         // Singular "1 input" must not be the prefix of a stray "1 inputs".
         assert!(one.contains("(1 input, 2 outputs)"), "{one}");
+    }
+
+    #[test]
+    fn render_removed_human_singular_and_plural() {
+        assert_eq!(
+            render_removed(&["Api.Rater".to_string()], OutputMode::Human),
+            "Staged removal of 'Api.Rater'."
+        );
+        let many = render_removed(&["Api".to_string(), "Store".to_string()], OutputMode::Human);
+        assert!(many.contains("2 nodes"), "{many}");
+        assert!(many.contains("Api, Store"), "{many}");
+    }
+
+    #[test]
+    fn render_removed_json_carries_the_paths() {
+        let out = render_removed(&["Api".to_string(), "Store".to_string()], OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["staged"]["removed"][0], "Api");
+        assert_eq!(v["staged"]["removed"][1], "Store");
     }
 
     #[test]

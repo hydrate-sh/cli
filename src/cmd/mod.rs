@@ -12,6 +12,7 @@ use crate::error::CliError;
 use crate::output::{self, OutputMode};
 
 mod branches;
+mod clear;
 mod commit;
 mod context;
 mod diff;
@@ -30,7 +31,9 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         Command::Pull => finish(pull::run(mode), mode),
         Command::Node { action } => match action {
             NodeAction::Add(args) => finish(node::add(args, mode), mode),
+            NodeAction::Rm(args) => finish(node::rm(args, mode), mode),
         },
+        Command::Clear => finish(clear::run(mode), mode),
         Command::Edge { action } => match action {
             EdgeAction::Add(args) => finish(edge::add(args, mode), mode),
         },
