@@ -1023,9 +1023,11 @@ mod tests {
         cs.add_edge("Maker.dog", "Rater.raw").unwrap();
         let lowered = lower(&cs.into_stage()).unwrap();
         assert_eq!(lowered.len(), 3);
-        // Serializing the batch produces valid wire JSON (the POST body).
+        // Serializing the batch produces valid wire JSON (the POST body): both
+        // nodes first (in order), the edge last.
         let json = serde_json::to_value(&lowered).unwrap();
         assert_eq!(json[0]["type"], "add_node");
+        assert_eq!(json[1]["type"], "add_node");
         assert_eq!(json[2]["type"], "add_edge");
     }
 }

@@ -43,7 +43,10 @@ impl Client {
         let value = reqwest::header::HeaderValue::from_str(key)
             .map_err(|e| CliError::Other(format!("invalid idempotency key: {e}")))?;
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("idempotency-key", value);
+        headers.insert(
+            reqwest::header::HeaderName::from_static("idempotency-key"),
+            value,
+        );
         client.cfg.client = reqwest::Client::builder()
             .default_headers(headers)
             .build()
