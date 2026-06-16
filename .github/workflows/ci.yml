@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One in-flight run per ref; a new push cancels the previous.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt / clippy / build / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rustup installs the toolchain + components pinned in rust-toolchain.toml.
+      - uses: Swatinem/rust-cache@v2
+      # The generated wire/ crate is excluded from the format bar (it keeps the
+      # generator's formatting); fmt the hand-written crate only.
+      - name: fmt
+        run: cargo fmt -p hydrate -- --check
+      # The generated crate relaxes its own lints at the crate root, so the
+      # whole workspace can run under -D warnings.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: build
+        run: cargo build --workspace --locked
+      - name: test
+        run: cargo test --workspace --locked
+
+  deny:
+    name: cargo-deny (advisories / bans / licenses / sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources

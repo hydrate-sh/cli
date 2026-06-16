@@ -1,0 +1,45 @@
+# cargo-deny configuration — supply-chain gate (CI: `cargo deny check`).
+
+[advisories]
+# All security advisories are denied by default; list specific RUSTSEC ids in
+# `ignore` only with a written justification.
+yanked = "deny"
+ignore = []
+
+[bans]
+# Duplicate versions are common in a generated reqwest dep tree; surface them as
+# a warning rather than failing the build. Registry wildcard version requirements
+# are forbidden (they defeat the lockfile), but our own `wire/` path dependency
+# is a legitimate wildcard path dep.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    # Unmaintained; YAML is deliberately not used (state is TOML + JSON).
+    { crate = "serde_yaml", reason = "unmaintained; YAML is not used by this CLI" },
+]
+
+[licenses]
+# Permissive allowlist — exactly the licenses present in the dependency tree.
+# Anything not listed fails the check, so a new dependency with an unexpected
+# (e.g. copyleft) license is caught.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",            # the generated wire crate's default
+    "CDLA-Permissive-2.0",  # webpki-roots (CA bundle)
+]
+
+# Our own workspace crates (incl. the generated wire crate) aren't published;
+# don't license-gate them.
+[licenses.private]
+ignore = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
