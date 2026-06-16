@@ -96,6 +96,14 @@ pub struct NodeAddArgs {
     #[arg(long)]
     pub name: String,
 
+    /// The node's description — the spec/prompt that drives what it does.
+    #[arg(long)]
+    pub description: Option<String>,
+
+    /// A constraint on the node (repeatable). Plain text; part of its spec.
+    #[arg(long = "constraint", value_name = "TEXT")]
+    pub constraints: Vec<String>,
+
     /// Parent node, addressed by dotted path (e.g. `Api.Rater`).
     #[arg(long)]
     pub parent: Option<String>,
