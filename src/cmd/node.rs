@@ -50,13 +50,15 @@ fn render(added: &NodeAdded, mode: OutputMode) -> String {
         OutputMode::Json => serde_json::json!({
             "staged": {
                 "node": added.path,
+                "kind": added.kind,
                 "inputs": added.inputs,
                 "outputs": added.outputs,
             }
         })
         .to_string(),
         OutputMode::Human => format!(
-            "Staged node '{}' ({}, {}).",
+            "Staged {} node '{}' ({}, {}).",
+            added.kind,
             added.path,
             plural(added.inputs, "input"),
             plural(added.outputs, "output"),
@@ -91,25 +93,27 @@ mod tests {
     }
 
     #[test]
-    fn human_render_pluralizes() {
+    fn human_render_pluralizes_precisely() {
         let one = render(
             &NodeAdded {
                 path: "Rater".to_string(),
+                kind: "behavior",
                 inputs: 1,
                 outputs: 2,
             },
             OutputMode::Human,
         );
-        assert!(one.contains("Rater"), "{one}");
-        assert!(one.contains("1 input"), "{one}");
-        assert!(one.contains("2 outputs"), "{one}");
+        assert!(one.contains("behavior node 'Rater'"), "{one}");
+        // Singular "1 input" must not be the prefix of a stray "1 inputs".
+        assert!(one.contains("(1 input, 2 outputs)"), "{one}");
     }
 
     #[test]
-    fn json_render_carries_path_and_counts() {
+    fn json_render_carries_path_kind_and_counts() {
         let out = render(
             &NodeAdded {
                 path: "Api.Rater".to_string(),
+                kind: "boundary",
                 inputs: 1,
                 outputs: 0,
             },
@@ -117,6 +121,7 @@ mod tests {
         );
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["staged"]["node"], "Api.Rater");
+        assert_eq!(v["staged"]["kind"], "boundary");
         assert_eq!(v["staged"]["inputs"], 1);
         assert_eq!(v["staged"]["outputs"], 0);
     }

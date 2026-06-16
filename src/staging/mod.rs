@@ -60,8 +60,17 @@ pub struct NodeSpec<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAdded {
     pub path: String,
+    pub kind: &'static str,
     pub inputs: usize,
     pub outputs: usize,
+}
+
+/// The wire kind as its stable lowercase token (`behavior` / `boundary`).
+fn kind_str(kind: models::node::Kind) -> &'static str {
+    match kind {
+        models::node::Kind::Behavior => "behavior",
+        models::node::Kind::Boundary => "boundary",
+    }
 }
 
 /// An in-memory view over the on-disk [`Stage`] that can resolve dotted paths
@@ -111,7 +120,7 @@ impl Changeset {
             None => spec.name.to_string(),
         };
         if self.stage.aliases.contains_key(&node_key(&path)) {
-            return Err(CliError::Other(format!(
+            return Err(CliError::InvalidArgument(format!(
                 "a node '{path}' is already staged; choose another name"
             )));
         }
@@ -153,6 +162,7 @@ impl Changeset {
 
         Ok(NodeAdded {
             path,
+            kind: kind_str(spec.kind),
             inputs: spec.inputs.len(),
             outputs: spec.outputs.len(),
         })
@@ -182,14 +192,14 @@ impl Changeset {
         let mut deltas = Vec::with_capacity(specs.len());
         let mut ids = Vec::with_capacity(specs.len());
         let mut seen = std::collections::BTreeSet::new();
-        for spec in specs {
-            validate_slug(&spec.name, "port name")?;
-            validate_type(&spec.r#type)?;
-            if !seen.insert(spec.name.as_str()) {
+        for port in specs {
+            validate_slug(&port.name, "port name")?;
+            validate_type(&port.r#type)?;
+            if !seen.insert(port.name.as_str()) {
                 return Err(CliError::InvalidArgument(format!(
                     "duplicate {} port '{}' on '{node_path}'",
                     side.as_str(),
-                    spec.name
+                    port.name
                 )));
             }
             let id = Uuid::new_v4();
@@ -197,8 +207,8 @@ impl Changeset {
             deltas.push(models::Port {
                 description: None,
                 id,
-                name: Some(spec.name.clone()),
-                r#type: Some(spec.r#type.clone()),
+                name: Some(port.name.clone()),
+                r#type: Some(port.r#type.clone()),
             });
         }
         Ok(MintedPorts { deltas, ids })
@@ -268,7 +278,11 @@ pub fn parse_port_spec(raw: &str) -> Result<PortSpec, CliError> {
     validate_type(r#type)?;
     Ok(PortSpec {
         name: name.to_string(),
-        r#type: r#type.to_string(),
+        // Canonicalize by trimming surrounding whitespace (the type is matched
+        // exactly by the server, so internal characters and case are preserved);
+        // this prevents an invisible-to-the-eye `" HotDog"` from being rejected
+        // at commit with no way to see why.
+        r#type: r#type.trim().to_string(),
     })
 }
 
@@ -331,25 +345,29 @@ mod tests {
     #[test]
     fn add_node_stages_one_delta_and_aliases_the_path() {
         let mut cs = empty();
+        // Same port name on BOTH sides: only the side qualifier keeps these two
+        // handles distinct — drop it from `port_key` and this test fails.
         let added = cs
             .add_node(&NodeSpec {
                 inputs: vec![port("raw", "HotDog")],
-                outputs: vec![port("score", "Score")],
+                outputs: vec![port("raw", "Score")],
                 ..behavior("Rater", None)
             })
             .unwrap();
         assert_eq!(added.path, "Rater");
-        assert_eq!((added.inputs, added.outputs), (1, 1));
+        assert_eq!(
+            (added.kind, added.inputs, added.outputs),
+            ("behavior", 1, 1)
+        );
         assert_eq!(cs.deltas().len(), 1);
         let stage = cs.into_stage();
-        // Node + both ports are addressable; ports are side-qualified.
         assert!(stage.aliases.contains_key("node:Rater"));
         assert!(stage.aliases.contains_key("port:Rater:in:raw"));
-        assert!(stage.aliases.contains_key("port:Rater:out:score"));
-        // Same name on opposite sides is a different handle, no collision.
+        assert!(stage.aliases.contains_key("port:Rater:out:raw"));
+        // The in/out handles for the same name are distinct UUIDs.
         assert_ne!(
             stage.aliases["port:Rater:in:raw"],
-            stage.aliases["port:Rater:out:score"]
+            stage.aliases["port:Rater:out:raw"]
         );
     }
 
@@ -414,6 +432,8 @@ mod tests {
         let mut cs = empty();
         cs.add_node(&behavior("Rater", None)).unwrap();
         let err = cs.add_node(&behavior("Rater", None)).unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert_eq!(err.kind(), "invalid_argument");
         assert!(err.to_string().contains("already staged"), "{err}");
         // Nothing was appended for the rejected node.
         assert_eq!(cs.deltas().len(), 1);
@@ -464,6 +484,8 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        // The rejected node staged nothing.
+        assert!(cs.deltas().is_empty());
     }
 
     #[test]
@@ -477,5 +499,53 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
         assert!(cs.deltas().is_empty());
+    }
+
+    #[test]
+    fn parse_port_spec_trims_surrounding_type_whitespace() {
+        // A stray space would otherwise stage `" HotDog"` and be rejected at
+        // commit by the server's exact match, with no visible difference.
+        assert_eq!(parse_port_spec("raw: HotDog ").unwrap().r#type, "HotDog");
+        // Internal characters are preserved verbatim (case-sensitive exact match).
+        assert_eq!(parse_port_spec("u:Hot Dog").unwrap().r#type, "Hot Dog");
+    }
+
+    #[test]
+    fn boundary_node_delta_carries_user_kind_and_path_prefix() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            kind: Kind::Boundary,
+            user_kind: Some("service"),
+            path_prefix: Some("/api"),
+            ..behavior("Api", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(d.node.kind, Kind::Boundary);
+        assert_eq!(data.user_kind, Some(Some("service".to_string())));
+        assert_eq!(data.path_prefix, Some(Some("/api".to_string())));
+    }
+
+    // The on-disk surface `commit` depends on: a staged node must survive a real
+    // save → Stage::load → reconstruct-the-delta round trip, not just live in
+    // memory.
+    #[test]
+    fn staged_node_survives_disk_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            inputs: vec![port("raw", "HotDog")],
+            ..behavior("Rater", None)
+        })
+        .unwrap();
+        cs.into_stage().save(tmp.path()).unwrap();
+
+        let reloaded = Stage::load(tmp.path()).unwrap();
+        assert_eq!(reloaded.deltas.len(), 1);
+        assert!(reloaded.aliases.contains_key("node:Rater"));
+        let d: models::AddNodeDelta = serde_json::from_value(reloaded.deltas[0].clone()).unwrap();
+        assert_eq!(d.node.data.unwrap().name.as_deref(), Some("Rater"));
     }
 }
