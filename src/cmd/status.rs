@@ -22,6 +22,7 @@ fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -
             "staged": {
                 "nodes": summary.nodes,
                 "edges": summary.edges,
+                "updates": summary.updates,
                 "deletes": summary.deletes,
                 "other": summary.other,
                 "total": summary.total(),
@@ -40,6 +41,9 @@ fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -
                 out.push_str("\nNothing staged.");
             } else {
                 let mut parts = vec![plural(summary.nodes, "node"), plural(summary.edges, "edge")];
+                if summary.updates > 0 {
+                    parts.push(plural(summary.updates, "edit"));
+                }
                 if summary.deletes > 0 {
                     parts.push(plural(summary.deletes, "removal"));
                 }
@@ -84,6 +88,7 @@ mod tests {
         StageSummary {
             nodes,
             edges,
+            updates: 0,
             deletes: 0,
             other: 0,
             ops: vec![
@@ -137,6 +142,7 @@ mod tests {
         let summary = StageSummary {
             nodes: 0,
             edges: 0,
+            updates: 0,
             deletes: 0,
             other: 2,
             ops: vec![

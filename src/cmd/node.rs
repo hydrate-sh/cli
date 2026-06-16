@@ -4,10 +4,10 @@
 use hydrate_wire::models::node::Kind;
 
 use super::context::require_workdir;
-use crate::cli::{NodeAddArgs, NodeKind, NodeRmArgs};
+use crate::cli::{NodeAddArgs, NodeKind, NodeRmArgs, NodeSetArgs};
 use crate::error::CliError;
 use crate::output::OutputMode;
-use crate::staging::{parse_port_spec, Changeset, NodeAdded, NodeSpec, PortSpec};
+use crate::staging::{parse_port_spec, Changeset, NodeAdded, NodeSpec, NodeUpdated, PortSpec};
 use crate::state::{Index, Stage};
 
 pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
@@ -53,6 +53,63 @@ pub fn rm(args: NodeRmArgs, mode: OutputMode) -> Result<(), CliError> {
 
     println!("{}", render_removed(&removed, mode));
     Ok(())
+}
+
+pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
+    let base = require_workdir()?;
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
+    // Map the flags to key-presence intent: `--clear-constraints` sets an empty
+    // list; `--constraint` (any) replaces with that list; neither → leave
+    // constraints untouched (None). `--description ""` is treated as "no change"
+    // to that field, consistent with `node add` (filter empty).
+    let constraints = if args.clear_constraints {
+        Some(Vec::new())
+    } else if args.constraints.is_empty() {
+        None
+    } else {
+        Some(
+            args.constraints
+                .iter()
+                .filter(|c| !c.trim().is_empty())
+                .cloned()
+                .collect(),
+        )
+    };
+    let description = args.description.as_deref().filter(|s| !s.is_empty());
+    let updated = changeset.update_node(&args.path, description, constraints)?;
+    changeset.into_stage().save(&base)?;
+
+    println!("{}", render_updated(&updated, mode));
+    Ok(())
+}
+
+fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({
+            "staged": {
+                "set": u.path,
+                "description": u.description,
+                "constraints": u.constraints,
+            }
+        })
+        .to_string(),
+        OutputMode::Human => {
+            let mut fields = Vec::new();
+            if u.description.is_some() {
+                fields.push("description");
+            }
+            if !u.constraints.is_empty() {
+                fields.push("constraints");
+            }
+            // clear-constraints case: empty list set, no description.
+            let what = if fields.is_empty() {
+                "constraints".to_string()
+            } else {
+                fields.join(" + ")
+            };
+            format!("Staged edit of '{}' ({what}).", u.path)
+        }
+    }
 }
 
 fn render_removed(paths: &[String], mode: OutputMode) -> String {
@@ -148,6 +205,32 @@ mod tests {
         let many = render_removed(&["Api".to_string(), "Store".to_string()], OutputMode::Human);
         assert!(many.contains("2 nodes"), "{many}");
         assert!(many.contains("Api, Store"), "{many}");
+    }
+
+    #[test]
+    fn render_updated_names_the_set_fields() {
+        let human = render_updated(
+            &NodeUpdated {
+                path: "Api.Rater".to_string(),
+                description: Some("p".to_string()),
+                constraints: vec!["c".to_string()],
+            },
+            OutputMode::Human,
+        );
+        assert!(human.contains("'Api.Rater'"), "{human}");
+        assert!(human.contains("description + constraints"), "{human}");
+
+        let out = render_updated(
+            &NodeUpdated {
+                path: "Api.Rater".to_string(),
+                description: Some("p".to_string()),
+                constraints: vec![],
+            },
+            OutputMode::Json,
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["staged"]["set"], "Api.Rater");
+        assert_eq!(v["staged"]["description"], "p");
     }
 
     #[test]
