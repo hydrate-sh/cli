@@ -1,9 +1,12 @@
 # cargo-deny configuration — supply-chain gate (CI: `cargo deny check`).
 
 [advisories]
-# All security advisories are denied by default; list specific RUSTSEC ids in
-# `ignore` only with a written justification.
+# Vulnerability + yanked advisories are denied by default; make the unmaintained
+# policy EXPLICIT (`all`) so a newly-unmaintained *transitive* dep fails the gate
+# regardless of the cargo-deny engine's shifting defaults. List specific RUSTSEC
+# ids in `ignore` only with a written justification.
 yanked = "deny"
+unmaintained = "all"
 ignore = []
 
 [bans]
