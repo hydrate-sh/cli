@@ -41,12 +41,7 @@ pub fn run(mode: OutputMode) -> Result<(), CliError> {
     // without an index means falling back to fetch-current-version, applying
     // against a branch state we never pulled. Require the index so the OCC token
     // is the pulled version — fail loud rather than blindly mutate.
-    if index.is_none() && stage_has_mutation(&stage) {
-        return Err(CliError::Other(
-            "this changeset deletes or edits nodes but nothing is pulled; run `hydrate pull` before committing"
-                .to_string(),
-        ));
-    }
+    require_index_for_mutation(index.is_some(), &stage)?;
     let expected_version = match &index {
         Some(index) => u32::try_from(index.version),
         None => u32::try_from(client.branch_version(binding.project_id, binding.branch_id)?),
@@ -108,6 +103,20 @@ fn idempotency_key(
         let _ = write!(s, "{b:02x}");
         s
     }))
+}
+
+/// Fail loud if the batch deletes/edits but no index has been pulled — those
+/// deltas were resolved against a pulled snapshot, so committing them without
+/// one would fall back to fetch-current-version and mutate a branch state we
+/// never pulled. Pure-add batches are unaffected.
+fn require_index_for_mutation(index_present: bool, stage: &Stage) -> Result<(), CliError> {
+    if !index_present && stage_has_mutation(stage) {
+        return Err(CliError::Other(
+            "this changeset deletes or edits nodes but nothing is pulled; run `hydrate pull` before committing"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Whether the staged batch contains a delete/update delta (vs. pure adds) —
@@ -333,6 +342,21 @@ mod tests {
                 "{kind} should require a pulled index"
             );
         }
+    }
+
+    #[test]
+    fn require_index_for_mutation_gates_deletes_without_a_pull() {
+        let mut del = Stage::empty();
+        del.deltas.push(serde_json::json!({"type": "delete_node"}));
+        // No index + a deletion → loud error (don't mutate an unpulled branch).
+        let err = require_index_for_mutation(false, &del).unwrap_err();
+        assert!(err.to_string().contains("hydrate pull"), "{err}");
+        // With an index present, the same batch is allowed.
+        assert!(require_index_for_mutation(true, &del).is_ok());
+        // A pure-add batch needs no index.
+        let mut add = Stage::empty();
+        add.deltas.push(serde_json::json!({"type": "add_node"}));
+        assert!(require_index_for_mutation(false, &add).is_ok());
     }
 
     #[test]

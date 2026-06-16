@@ -273,6 +273,14 @@ impl Changeset {
     /// The set of node UUIDs already staged for deletion this session. Derived
     /// from the staged `delete_node` deltas — no separate on-disk state, so the
     /// stage format is unchanged and a re-run can't double-stage a deletion.
+    ///
+    /// The `nodeId` is always a well-formed UUID because we serialized it here
+    /// (`remove_node`); the `.ok()` skip is only for a foreign/corrupt staged
+    /// delta, which is independently caught loud at `summarize` and `lower`, so
+    /// this never quietly hides a real deletion. Note: this tombstones NODES,
+    /// not edge endpoints — an `edge add` onto a node staged for deletion isn't
+    /// blocked locally (the index carries no port→node map), but the server
+    /// cascade removes that edge with the node, so it's a no-op, not corruption.
     fn staged_deletions(&self) -> std::collections::HashSet<Uuid> {
         self.stage
             .deltas
@@ -496,10 +504,13 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
     use models::V1DeltasBodyDeltasInner as Inner;
     // Ordered buckets: create nodes, then wire edges, then deletions last. An
     // edge's handles reference ports created by the add_node deltas, so nodes
-    // must precede edges; deletions go last so a "clear old + add new" batch
-    // builds the new graph before tearing anything down. Each `type` tag is
-    // dispatched into its CONCRETE struct (never the internally-tagged enum,
-    // which would eat the tag) — see `staged_node_delta_is_commit_ready`.
+    // must precede edges. Deletions go last for unrelated tear-down within one
+    // batch. NOTE: clearing a name and re-adding the SAME name is NOT a
+    // one-commit operation — `add_node` rejects a path still present in the
+    // pulled index, so you `clear` + `commit`, then `pull` and rebuild in a
+    // second commit. Each `type` tag is dispatched into its CONCRETE struct
+    // (never the internally-tagged enum, which would eat the tag) — see
+    // `staged_node_delta_is_commit_ready`.
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut deletes = Vec::new();
@@ -1857,6 +1868,59 @@ mod tests {
     #[test]
     fn top_level_node_paths_empty_without_a_pull() {
         assert!(empty().top_level_node_paths().is_empty());
+    }
+
+    #[test]
+    fn summarize_fails_loud_on_a_deletion_targeting_an_unknown_node() {
+        // A staged delete whose node id is in neither the stage nor the index is
+        // corruption — never rendered as a bare id, surfaced loudly.
+        let mut stage = Stage::empty();
+        stage.deltas.push(serde_json::json!({
+            "type": "delete_node",
+            "nodeId": Uuid::new_v4(),
+        }));
+        let err = summarize(&stage, None).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn clearing_all_top_level_paths_stages_a_delete_per_root() {
+        // The composition `clear` performs: enumerate top-level paths, remove
+        // each. Two roots (Api, Store) → two delete_node deltas for their ids.
+        let api = Uuid::from_u128(0xA1);
+        let store = Uuid::from_u128(0x57);
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xC),
+            "version": "1",
+            "edges": [],
+            "nodes": [
+                { "id": api, "kind": "boundary", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"Api","description":"","status":"idle","isTestNode":false,"is_external":false} },
+                { "id": store, "kind": "boundary", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"Store","description":"","status":"idle","isTestNode":false,"is_external":false} },
+            ],
+        }))
+        .unwrap();
+        let index = index_from_graph(&graph).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        for path in cs.top_level_node_paths() {
+            cs.remove_node(&path).unwrap();
+        }
+        let stage = cs.into_stage();
+        let deleted: std::collections::HashSet<Uuid> = stage
+            .deltas
+            .iter()
+            .filter(|v| v["type"] == "delete_node")
+            .map(|v| Uuid::parse_str(v["nodeId"].as_str().unwrap()).unwrap())
+            .collect();
+        assert_eq!(
+            deleted,
+            std::collections::HashSet::from([api, store]),
+            "clear must stage a delete for each top-level root"
+        );
     }
 
     #[test]

@@ -1,8 +1,13 @@
 //! `clear` — stage the removal of every top-level node on the bound branch, to
-//! wipe it and rebuild in place. Each top-level `delete_node` cascades its
-//! subtree + incident edges, so the whole graph is cleared. Requires a prior
+//! wipe it and rebuild on the same branch. Each top-level `delete_node` cascades
+//! its subtree + incident edges, so the whole graph is cleared. Requires a prior
 //! `pull` (the top-level set comes from the local index); nothing hits the
 //! server until `commit`.
+//!
+//! Rebuilding is a SEPARATE commit: `clear` + `commit` empties the branch, then
+//! `pull` + `node add …` + `commit` rebuilds it. (Re-adding a just-cleared name
+//! in the same changeset is rejected — the name is still on the branch until the
+//! clear commits.)
 
 use super::context::require_workdir;
 use crate::error::CliError;

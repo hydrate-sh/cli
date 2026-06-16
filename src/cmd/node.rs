@@ -140,6 +140,25 @@ mod tests {
     }
 
     #[test]
+    fn render_removed_human_singular_and_plural() {
+        assert_eq!(
+            render_removed(&["Api.Rater".to_string()], OutputMode::Human),
+            "Staged removal of 'Api.Rater'."
+        );
+        let many = render_removed(&["Api".to_string(), "Store".to_string()], OutputMode::Human);
+        assert!(many.contains("2 nodes"), "{many}");
+        assert!(many.contains("Api, Store"), "{many}");
+    }
+
+    #[test]
+    fn render_removed_json_carries_the_paths() {
+        let out = render_removed(&["Api".to_string(), "Store".to_string()], OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["staged"]["removed"][0], "Api");
+        assert_eq!(v["staged"]["removed"][1], "Store");
+    }
+
+    #[test]
     fn json_render_carries_path_kind_and_counts() {
         let out = render(
             &NodeAdded {
