@@ -9,7 +9,6 @@ use std::process::ExitCode;
 
 use crate::cli::{Cli, Command, EdgeAction, NodeAction};
 use crate::error::CliError;
-use crate::exit;
 use crate::output::{self, OutputMode};
 
 mod branches;
@@ -35,7 +34,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         },
         Command::Status => finish(status::run(mode), mode),
         Command::Diff => finish(diff::run(mode), mode),
-        Command::Commit => commit::run(),
+        Command::Commit => finish(commit::run(mode), mode),
     }
 }
 
@@ -49,10 +48,4 @@ fn finish(result: Result<(), CliError>, mode: OutputMode) -> ExitCode {
             ExitCode::from(e.exit_code())
         }
     }
-}
-
-/// Shared stub: report that a verb is not implemented yet and fail loud.
-fn not_implemented(verb: &str) -> ExitCode {
-    eprintln!("hydrate: `{verb}` is not implemented yet");
-    ExitCode::from(exit::GENERIC)
 }

@@ -89,10 +89,10 @@ impl fmt::Display for CliError {
             ),
             CliError::Network(detail) => write!(f, "could not reach the service: {detail}"),
             CliError::VersionConflict { current_version: Some(v) } => {
-                write!(f, "version conflict: the branch is now at version {v}; re-fetch and retry")
+                write!(f, "version conflict: the branch is now at version {v}; re-run the command to retry against it")
             }
             CliError::VersionConflict { current_version: None } => {
-                write!(f, "version conflict: the branch moved; re-fetch and retry")
+                write!(f, "version conflict: the branch moved; re-run the command to retry against it")
             }
             CliError::Service { status, reason: Some(r), .. } => write!(f, "service error ({status}): {r}"),
             CliError::Service { status, .. } => write!(f, "service error ({status})"),
