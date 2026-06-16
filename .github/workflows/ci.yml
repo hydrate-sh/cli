@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Supersede in-flight runs of the SAME PR; let each push-to-main run complete
+# (keyed by sha so main runs never cancel each other).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+# No step needs write access or the token.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt / clippy / build / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rustup installs the toolchain + components pinned in rust-toolchain.toml.
+      - uses: Swatinem/rust-cache@v2
+      # The generated wire/ crate is excluded from the format bar (it keeps the
+      # generator's formatting); fmt the hand-written crate only.
+      - name: fmt
+        run: cargo fmt -p hydrate -- --check
+      # `--locked` on the FIRST resolving step (clippy) so a stale Cargo.lock
+      # fails CI instead of being silently rewritten. The generated crate relaxes
+      # its own lints at the crate root, so the whole workspace runs under -D warnings.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: build
+        run: cargo build --workspace --locked
+      - name: test
+        run: cargo test --workspace --locked
+
+  deny:
+    name: cargo-deny (advisories / bans / licenses / sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
