@@ -250,6 +250,22 @@ impl Index {
             .map_err(|e| CliError::State(format!("could not serialize index: {e}")))?;
         atomic_write(&path, body.as_bytes())
     }
+
+    /// Delete the index file if present (a missing file is fine). Used when
+    /// re-binding the workdir to a different branch (`fork`): the old branch's
+    /// path→UUID map must not survive, or a later command could resolve a path
+    /// to a UUID from the wrong branch.
+    pub fn remove(base: &Path) -> Result<(), CliError> {
+        let path = state_dir(base).join(INDEX_FILE);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CliError::State(format!(
+                "could not remove {}: {e}",
+                path.display()
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +479,20 @@ mod tests {
         std::fs::write(state_dir(tmp.path()).join(INDEX_FILE), r#"{"entries": {}}"#).unwrap();
         let err = Index::load(tmp.path()).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        // Specifically the parse path (missing `version`), not some other state
+        // error — pins that `version` has no silent `#[serde(default)]` to 0.
+        assert!(err.to_string().contains("corrupt"), "{err}");
+    }
+
+    #[test]
+    fn index_remove_deletes_an_existing_file_and_is_ok_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        // Absent: a no-op, not an error.
+        Index::remove(tmp.path()).unwrap();
+        index().save(tmp.path()).unwrap();
+        assert!(Index::load(tmp.path()).unwrap().is_some());
+        Index::remove(tmp.path()).unwrap();
+        assert_eq!(Index::load(tmp.path()).unwrap(), None);
     }
 
     #[test]

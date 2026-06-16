@@ -291,10 +291,12 @@ mod tests {
     #[test]
     fn finalize_advances_the_pulled_index_version_on_success() {
         let tmp = staged_dir();
-        // Pulled at v3; the commit lands the branch at v8.
+        // Pulled at v3 with a real entry; the commit lands the branch at v8.
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("node:Api".to_string(), Uuid::from_u128(0xA));
         Index {
             version: 3,
-            entries: Default::default(),
+            entries,
         }
         .save(tmp.path())
         .unwrap();
@@ -308,9 +310,12 @@ mod tests {
         .unwrap();
 
         // Index version moved forward so the NEXT commit targets v8, not v3
-        // (which would false-conflict). Entries are untouched.
+        // (which would false-conflict)...
         let index = Index::load(tmp.path()).unwrap().unwrap();
         assert_eq!(index.version, 8);
+        // ...and the pulled path→UUID entries are preserved (only the OCC token
+        // moves; the committed graph the entries describe didn't change).
+        assert_eq!(index.get("node:Api"), Some(Uuid::from_u128(0xA)));
     }
 
     #[test]

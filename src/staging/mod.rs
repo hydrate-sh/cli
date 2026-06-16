@@ -469,7 +469,18 @@ fn node_path(
                 "the branch graph has a parent_id cycle".to_string(),
             ));
         }
-        parts.push(current.data.name.clone());
+        // `.` is the path separator and names must be non-empty: a server name
+        // that breaks either rule would build a path that silently shadows or
+        // collides with a real nesting, mis-resolving to the wrong UUID. The
+        // local authoring slug rules forbid both, so this only fires on a graph
+        // authored elsewhere — surface it loudly rather than index a bad path.
+        let name = &current.data.name;
+        if name.is_empty() || name.contains('.') {
+            return Err(CliError::State(format!(
+                "the branch graph has a node name that can't be path-addressed: {name:?}"
+            )));
+        }
+        parts.push(name.clone());
         match current.parent_id {
             None => break,
             Some(parent_id) => {
@@ -1176,6 +1187,125 @@ mod tests {
         assert_eq!(index.get("node:Api"), Some(api));
         assert_eq!(index.get("node:Api.Rater"), Some(rater));
         assert_eq!(index.get("port:Api.Rater:out:score"), Some(score));
+    }
+
+    /// A single node with arbitrary parent_id/name/ports, for the corruption
+    /// tests — built as JSON so each variant only sets what it cares about.
+    fn graph_with_nodes(nodes: serde_json::Value) -> models::GraphResponse {
+        serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA),
+            "version": "1",
+            "edges": [],
+            "nodes": nodes,
+        }))
+        .unwrap()
+    }
+
+    fn node_json(
+        id: Uuid,
+        name: &str,
+        parent: Option<Uuid>,
+        ports: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "kind": "behavior", "parent_id": parent,
+            "position": { "x": 0.0, "y": 0.0 },
+            "data": serde_json::json!({
+                "name": name, "description": "", "status": "idle",
+                "isTestNode": false, "is_external": false,
+            }).as_object().map(|o| {
+                let mut o = o.clone();
+                if !ports.is_null() { o.insert("outputs".to_string(), ports); }
+                serde_json::Value::Object(o)
+            }).unwrap()
+        })
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_a_parent_id_cycle() {
+        // Two nodes whose parent_id point at each other — the path walk never
+        // reaches a root. Must fail loud, not loop or drop the nodes silently.
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let graph = graph_with_nodes(serde_json::json!([
+            node_json(a, "A", Some(b), serde_json::Value::Null),
+            node_json(b, "B", Some(a), serde_json::Value::Null),
+        ]));
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("cycle"), "{err}");
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_a_duplicate_path() {
+        // Two top-level nodes with the same name resolve to the same dotted
+        // path — ambiguous, so the index build must refuse rather than let one
+        // silently shadow the other.
+        let graph = graph_with_nodes(serde_json::json!([
+            node_json(Uuid::from_u128(1), "Dup", None, serde_json::Value::Null),
+            node_json(Uuid::from_u128(2), "Dup", None, serde_json::Value::Null),
+        ]));
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("two nodes at path"), "{err}");
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_a_duplicate_port_name() {
+        let graph = graph_with_nodes(serde_json::json!([node_json(
+            Uuid::from_u128(1),
+            "N",
+            None,
+            serde_json::json!([
+                { "id": Uuid::from_u128(7), "name": "p", "type": "T" },
+                { "id": Uuid::from_u128(8), "name": "p", "type": "T" },
+            ]),
+        )]));
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("two out ports named 'p'"), "{err}");
+    }
+
+    #[test]
+    fn index_from_graph_rejects_a_dotted_or_empty_node_name() {
+        // A committed name carrying the path separator can't be addressed; loud.
+        for bad in ["Api.Rater", ""] {
+            let graph = graph_with_nodes(serde_json::json!([node_json(
+                Uuid::from_u128(1),
+                bad,
+                None,
+                serde_json::Value::Null
+            )]));
+            let err = index_from_graph(&graph).unwrap_err();
+            assert!(
+                matches!(err, CliError::State(_)),
+                "for {bad:?}: got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("path-addressed"),
+                "for {bad:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn index_from_graph_skips_an_unnamed_port_without_erroring() {
+        // An unnamed committed port has no addressable key, so it's skipped —
+        // the build still succeeds and indexes the node.
+        let graph = graph_with_nodes(serde_json::json!([node_json(
+            Uuid::from_u128(1),
+            "N",
+            None,
+            serde_json::json!([{ "id": Uuid::from_u128(7), "type": "T" }]),
+        )]));
+        let index = index_from_graph(&graph).unwrap();
+        assert_eq!(index.get("node:N"), Some(Uuid::from_u128(1)));
+        // No port entry was fabricated for the nameless port.
+        assert!(
+            index.entries.keys().all(|k| !k.starts_with("port:")),
+            "{:?}",
+            index.entries
+        );
     }
 
     #[test]

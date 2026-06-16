@@ -12,7 +12,7 @@ use crate::client::Client;
 use crate::config::Config;
 use crate::error::CliError;
 use crate::output::OutputMode;
-use crate::state::{self, Binding, Stage};
+use crate::state::{self, Binding, Index, Stage};
 
 pub fn run(args: ForkArgs, mode: OutputMode) -> Result<(), CliError> {
     // A cheap client-side shape check for fast, clear feedback. The server stays
@@ -52,6 +52,12 @@ pub fn run(args: ForkArgs, mode: OutputMode) -> Result<(), CliError> {
             branch.name
         ))
     })?;
+
+    // Re-binding to a new branch: drop any index from the previously-bound
+    // branch first, so that if the pull below fails we fall back to stage-only
+    // resolution rather than resolving paths against the OLD branch's stale
+    // path→UUID map.
+    Index::remove(&base)?;
 
     // Pull the fresh branch's seed into the local index so the working copy is
     // immediately usable — `edge add` / `node add --parent` can reference the
