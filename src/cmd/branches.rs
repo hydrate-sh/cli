@@ -28,7 +28,15 @@ pub fn run(mode: OutputMode) -> Result<(), CliError> {
     };
 
     let listed = client.list_branches(project_id)?;
-    render(&project_name, &rows(&listed.branches, bound), mode);
+    println!(
+        "{}",
+        render(
+            project_id,
+            &project_name,
+            &rows(&listed.branches, bound),
+            mode
+        )
+    );
     Ok(())
 }
 
@@ -62,23 +70,26 @@ fn rows(branches: &[BranchMeta], bound: Option<Uuid>) -> Vec<BranchRow> {
         .collect()
 }
 
-fn render(project_name: &str, rows: &[BranchRow], mode: OutputMode) {
+/// Build the listing output. Returns the string to print so it can be tested.
+/// The JSON `project` shape (`{id, name}`) matches `fork`'s output.
+fn render(project_id: Uuid, project_name: &str, rows: &[BranchRow], mode: OutputMode) -> String {
     match mode {
-        OutputMode::Json => {
-            let v = serde_json::json!({ "project": project_name, "branches": rows });
-            println!("{v}");
-        }
+        OutputMode::Json => serde_json::json!({
+            "project": { "id": project_id, "name": project_name },
+            "branches": rows,
+        })
+        .to_string(),
         OutputMode::Human => {
             if rows.is_empty() {
-                println!("No branches in project '{project_name}'.");
-                return;
+                return format!("No branches in project '{project_name}'.");
             }
-            println!("Branches in project '{project_name}':");
+            let mut out = format!("Branches in project '{project_name}':");
             for r in rows {
                 let marker = if r.bound { '*' } else { ' ' };
                 let tag = if r.is_main { " (main)" } else { "" };
-                println!("  {marker} {}{}", r.name, tag);
+                out.push_str(&format!("\n  {marker} {}{}", r.name, tag));
             }
+            out
         }
     }
 }
@@ -130,5 +141,48 @@ mod tests {
             ["main", "feature"]
         );
         assert!(rows[0].is_main && !rows[1].is_main);
+    }
+
+    #[test]
+    fn human_render_stars_the_bound_branch_and_tags_main() {
+        let branches = [meta("main", 1, true), meta("feature", 2, false)];
+        let pid = Uuid::from_u128(0xFEED);
+        let out = render(
+            pid,
+            "proj",
+            &rows(&branches, Some(Uuid::from_u128(2))),
+            OutputMode::Human,
+        );
+        // The bound branch (feature) is starred; main is tagged but not starred.
+        assert!(out.contains("* feature"), "{out}");
+        assert!(out.contains("main (main)"), "{out}");
+        assert!(!out.contains("* main"), "{out}");
+    }
+
+    #[test]
+    fn json_render_marks_bound_and_carries_project_id() {
+        let branches = [meta("main", 1, true), meta("feature", 2, false)];
+        let pid = Uuid::from_u128(0xFEED);
+        let out = render(
+            pid,
+            "proj",
+            &rows(&branches, Some(Uuid::from_u128(2))),
+            OutputMode::Json,
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["project"]["id"], pid.to_string());
+        assert_eq!(v["project"]["name"], "proj");
+        let arr = v["branches"].as_array().unwrap();
+        let feature = arr.iter().find(|b| b["name"] == "feature").unwrap();
+        let main = arr.iter().find(|b| b["name"] == "main").unwrap();
+        assert_eq!(feature["bound"], true);
+        assert_eq!(main["bound"], false);
+        assert_eq!(main["is_main"], true);
+    }
+
+    #[test]
+    fn human_render_handles_empty_list() {
+        let out = render(Uuid::from_u128(1), "proj", &[], OutputMode::Human);
+        assert!(out.contains("No branches"), "{out}");
     }
 }

@@ -46,11 +46,10 @@ impl CliError {
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::Network(_) => exit::NETWORK,
+            // Only the retryable optimistic-concurrency conflict gets the CONFLICT
+            // code. Other 409s (e.g. a branch cap or an inactive branch) are not
+            // retryable and surface as `Service`, so they take the generic code.
             CliError::VersionConflict { .. } => exit::CONFLICT,
-            // Defensive: the `From<WireError>` impl routes all 409s to
-            // `VersionConflict`, so a `Service` carrying 409 only arises if one
-            // is constructed directly — keep it mapping to CONFLICT regardless.
-            CliError::Service { status: 409, .. } => exit::CONFLICT,
             _ => exit::GENERIC,
         }
     }
@@ -102,8 +101,8 @@ impl fmt::Display for CliError {
             ),
             CliError::AmbiguousProject { count } => write!(
                 f,
-                "found {count} projects; this command works on a single project — \
-                 run it from a directory already bound to one"
+                "found {count} active projects; this command needs exactly one — \
+                 archive the projects you are not working on at https://hydrate.sh"
             ),
             CliError::Other(detail) => write!(f, "{detail}"),
         }
@@ -129,7 +128,11 @@ impl<T> From<WireError<T>> for CliError {
             WireError::ResponseError(rc) => {
                 let status = rc.status.as_u16();
                 let (kind, reason, current_version) = parse_detail(&rc.content);
-                if status == 409 {
+                // A 409 is the retryable version conflict ONLY when the body says
+                // so. Other 409s (a branch cap, an inactive branch) are distinct,
+                // non-retryable failures and must not be dressed up as "re-fetch
+                // and retry" — they pass through as `Service` with their own kind.
+                if status == 409 && kind.as_deref() == Some("version_conflict") {
                     CliError::VersionConflict { current_version }
                 } else {
                     CliError::Service {
@@ -157,8 +160,12 @@ fn parse_detail(body: &str) -> (Option<String>, Option<String>, Option<i64>) {
         .get("error")
         .and_then(|x| x.as_str())
         .map(str::to_string);
+    // The human-readable text rides in `reason` (the delta-error envelope) or
+    // `message` (the plain HTTP-error envelope); accept either so the server's
+    // actionable text is never dropped.
     let reason = detail
         .get("reason")
+        .or_else(|| detail.get("message"))
         .and_then(|x| x.as_str())
         .map(str::to_string);
     let current_version = detail
@@ -210,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn response_409_maps_to_version_conflict() {
+    fn version_conflict_409_maps_to_version_conflict() {
         let e = response_error(
             409,
             r#"{"detail":{"error":"version_conflict","current_version":7}}"#,
@@ -219,7 +226,42 @@ mod tests {
             CliError::VersionConflict { current_version } => assert_eq!(current_version, Some(7)),
             other => panic!("expected VersionConflict, got {other:?}"),
         }
-        assert_eq!(response_error(409, "{}").exit_code(), exit::CONFLICT);
+        assert_eq!(e.exit_code(), exit::CONFLICT);
+    }
+
+    #[test]
+    fn non_version_conflict_409_is_service_not_retryable() {
+        // A branch-cap 409 must NOT masquerade as a retryable version conflict:
+        // it surfaces as a Service error with its own kind/message, exit code 1.
+        let e = response_error(
+            409,
+            r#"{"detail":{"error":"branch_limit_reached","message":"too many branches"}}"#,
+        );
+        match &e {
+            CliError::Service {
+                status,
+                kind,
+                reason,
+            } => {
+                assert_eq!(*status, 409);
+                assert_eq!(kind, "branch_limit_reached");
+                // `message` (plain envelope) is surfaced as the reason.
+                assert_eq!(reason.as_deref(), Some("too many branches"));
+            }
+            other => panic!("expected Service, got {other:?}"),
+        }
+        assert_eq!(e.kind(), "branch_limit_reached");
+        assert_eq!(e.exit_code(), exit::GENERIC);
+    }
+
+    #[test]
+    fn inactive_branch_409_is_service_not_conflict() {
+        let e = response_error(409, r#"{"detail":{"error":"branch_not_active"}}"#);
+        assert!(
+            matches!(e, CliError::Service { status: 409, .. }),
+            "got {e:?}"
+        );
+        assert_eq!(e.exit_code(), exit::GENERIC);
     }
 
     #[test]

@@ -8,14 +8,13 @@ use crate::error::CliError;
 
 /// The single-project rule.
 ///
-/// M1 has no project-selection flag and no project-init verb, so the common
-/// path acts on the account's one project. Pick the sole **active** project, or
-/// fail loud: zero projects is [`CliError::NoProject`], more than one is
-/// [`CliError::AmbiguousProject`]. We never silently pick the first of several —
-/// that would act on the wrong project without a word.
+/// There is no project-selection flag and no project-init verb yet, so the
+/// common path acts on the account's one project. Pick the sole **active**
+/// project, or fail loud: zero projects is [`CliError::NoProject`], more than
+/// one is [`CliError::AmbiguousProject`]. We never silently pick the first of
+/// several — that would act on the wrong project without a word.
 pub fn select_project(projects: Vec<ProjectOut>) -> Result<ProjectOut, CliError> {
-    let active = projects.into_iter().filter(|p| !p.archived);
-    let mut iter = active;
+    let mut iter = projects.into_iter().filter(|p| !p.archived);
     match (iter.next(), iter.next()) {
         (None, _) => Err(CliError::NoProject),
         (Some(only), None) => Ok(only),

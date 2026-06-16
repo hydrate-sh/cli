@@ -53,8 +53,10 @@ impl Client {
     }
 
     /// Create a new working branch off main in `project_id`, named `name`.
-    /// The server is the authority on naming and collisions — a duplicate or
-    /// otherwise-invalid name comes back as a loud error, never a silent reuse.
+    ///
+    /// The server does not reject a duplicate branch name, so callers that want
+    /// a name to be unique must check first (see `fork`); this method just
+    /// issues the create. Invalid input and server-side failures surface loudly.
     pub fn create_branch(
         &self,
         project_id: Uuid,
