@@ -17,6 +17,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Node 20 is removed from the runners; run JS actions on Node 24 (the default
+  # from 2026-06-16). Forcing it here keeps CI working across the cutover.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   check:
@@ -63,8 +66,11 @@ jobs:
         run: ./scripts/regen-wire.sh
       - name: assert the committed wire/ client is in sync
         run: |
-          if ! git diff --quiet -- wire; then
+          # `git status --porcelain` (not `git diff`) so a NEW untracked generated
+          # file also trips the check — not just changes to already-tracked files.
+          drift="$(git status --porcelain -- wire)"
+          if [ -n "$drift" ]; then
             echo "::error::wire/ is out of sync with openapi.json — run scripts/regen-wire.sh and commit the result"
-            git diff --stat -- wire
+            echo "$drift"
             exit 1
           fi
