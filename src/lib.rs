@@ -30,6 +30,7 @@ pub mod config;
 pub mod error;
 pub(crate) mod exit;
 pub(crate) mod output;
+pub(crate) mod staging;
 pub(crate) mod state;
 
 /// Parse arguments and dispatch to the matching verb handler.

@@ -32,6 +32,8 @@ pub enum CliError {
     State(String),
     /// A command argument failed a client-side shape check (e.g. branch name).
     InvalidArgument(String),
+    /// A staging/inspection verb was run outside a bound `.hydrate/` workdir.
+    NotInWorkdir,
     /// The single-project rule found no project to act on.
     NoProject,
     /// The single-project rule found more than one project, so the target is
@@ -65,6 +67,7 @@ impl CliError {
             CliError::Service { kind, .. } => kind,
             CliError::State(_) => "state_error",
             CliError::InvalidArgument(_) => "invalid_argument",
+            CliError::NotInWorkdir => "not_in_workdir",
             CliError::NoProject => "no_project",
             CliError::AmbiguousProject { .. } => "ambiguous_project",
             CliError::Other(_) => "error",
@@ -95,6 +98,10 @@ impl fmt::Display for CliError {
             CliError::Service { status, .. } => write!(f, "service error ({status})"),
             CliError::State(detail) => write!(f, "{detail}"),
             CliError::InvalidArgument(detail) => write!(f, "{detail}"),
+            CliError::NotInWorkdir => write!(
+                f,
+                "not inside a hydrate working copy; run `hydrate fork <name>` first"
+            ),
             CliError::NoProject => write!(
                 f,
                 "no project found for this account; create one at https://hydrate.sh first"
