@@ -36,6 +36,10 @@ pub struct Cli {
 /// The verb set: branch context, authoring, inspection, commit.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Print an orientation to authoring graphs: the loop, the concepts, a
+    /// worked example, and a pointer to the full docs. Start here.
+    Guide,
+
     /// Fork a working branch from main and bind this directory to it.
     Fork(ForkArgs),
 

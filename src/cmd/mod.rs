@@ -18,6 +18,7 @@ mod context;
 mod diff;
 mod edge;
 mod fork;
+mod guide;
 mod node;
 mod pull;
 mod status;
@@ -26,6 +27,7 @@ mod status;
 pub fn dispatch(cli: Cli) -> ExitCode {
     let mode = OutputMode::from_flags(cli.json, cli.human);
     match cli.command {
+        Command::Guide => finish(guide::run(mode), mode),
         Command::Fork(args) => finish(fork::run(args, mode), mode),
         Command::Branches => finish(branches::run(mode), mode),
         Command::Pull => finish(pull::run(mode), mode),
