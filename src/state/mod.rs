@@ -212,12 +212,59 @@ pub struct Index {
     /// scheme is identical to the stage's alias table, so resolution can consult
     /// one then the other with the same key.
     pub entries: BTreeMap<String, Uuid>,
+    /// Per-node kind + current ports, keyed by node UUID. Needed by `node set`
+    /// (to resend the full port list while preserving surviving port UUIDs) and
+    /// `boundary flatten` (the boundary-only check). `default` so an index pulled
+    /// by an older CLI still loads — the verbs that need it fail loud (with a
+    /// `pull` hint) when it's absent rather than mis-resolve.
+    #[serde(default)]
+    pub node_info: BTreeMap<Uuid, NodeInfo>,
+    /// `<source_handle_uuid>:<target_handle_uuid>` → edge UUID. Needed by
+    /// `edge rm --from --to`. `default` for the same back-compat reason.
+    #[serde(default)]
+    pub edges: BTreeMap<String, Uuid>,
+}
+
+/// A node's kind and current ports, as pulled — the snapshot `node set` patches.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInfo {
+    /// `behavior` or `boundary`.
+    pub kind: String,
+    pub inputs: Vec<PortInfo>,
+    pub outputs: Vec<PortInfo>,
+}
+
+/// A single port's identity as pulled: its server UUID, name, and type. Editing
+/// a node's ports resends these, changing only what the flags touch, so a
+/// surviving port keeps its UUID and its edges stay intact.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortInfo {
+    pub id: Uuid,
+    pub name: String,
+    pub r#type: String,
+}
+
+/// The edge-map key for an edge between two resolved port UUIDs.
+pub fn edge_lookup_key(source: Uuid, target: Uuid) -> String {
+    format!("{source}:{target}")
 }
 
 impl Index {
     /// Look up a pre-built alias key (`node:…` / `port:…`) in the snapshot.
     pub fn get(&self, key: &str) -> Option<Uuid> {
         self.entries.get(key).copied()
+    }
+
+    /// The pulled kind + ports for a committed node id, if present.
+    pub fn node_info(&self, id: &Uuid) -> Option<&NodeInfo> {
+        self.node_info.get(id)
+    }
+
+    /// The committed edge UUID joining two resolved port UUIDs, if present.
+    pub fn edge_id(&self, source: Uuid, target: Uuid) -> Option<Uuid> {
+        self.edges.get(&edge_lookup_key(source, target)).copied()
     }
 
     /// Read the index from `base/.hydrate/index.json`.
@@ -442,6 +489,7 @@ mod tests {
         Index {
             version: 7,
             entries,
+            ..Default::default()
         }
     }
 
@@ -503,5 +551,89 @@ mod tests {
             Some(Uuid::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555))
         );
         assert_eq!(i.get("node:Ghost"), None);
+    }
+
+    #[test]
+    fn index_loads_without_node_info_or_edges_for_back_compat() {
+        // An index.json written by an older CLI (version + entries only) must
+        // still load — the new fields default to empty rather than failing the
+        // whole load — so an upgrade doesn't strand a bound workdir.
+        let tmp = TempDir::new().unwrap();
+        ensure_dir(tmp.path()).unwrap();
+        std::fs::write(
+            state_dir(tmp.path()).join(INDEX_FILE),
+            r#"{"version": 3, "entries": {"node:Api": "00000000-0000-0000-0000-000000000001"}}"#,
+        )
+        .unwrap();
+        let i = Index::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(i.version, 3);
+        assert!(i.node_info.is_empty());
+        assert!(i.edges.is_empty());
+    }
+
+    #[test]
+    fn index_node_info_and_edge_accessors() {
+        let node = Uuid::from_u128(0x11);
+        let (src, tgt, edge) = (
+            Uuid::from_u128(0x50),
+            Uuid::from_u128(0x70),
+            Uuid::from_u128(0xED),
+        );
+        let mut node_info = BTreeMap::new();
+        node_info.insert(
+            node,
+            NodeInfo {
+                kind: "behavior".to_string(),
+                inputs: vec![PortInfo {
+                    id: Uuid::from_u128(0x1),
+                    name: "i".into(),
+                    r#type: "T".into(),
+                }],
+                outputs: vec![],
+            },
+        );
+        let mut edges = BTreeMap::new();
+        edges.insert(edge_lookup_key(src, tgt), edge);
+        let i = Index {
+            version: 1,
+            entries: BTreeMap::new(),
+            node_info,
+            edges,
+        };
+
+        assert_eq!(i.node_info(&node).unwrap().kind, "behavior");
+        assert!(i.node_info(&Uuid::from_u128(0x99)).is_none());
+        assert_eq!(i.edge_id(src, tgt), Some(edge));
+        assert_eq!(i.edge_id(src, Uuid::from_u128(0x99)), None);
+    }
+
+    // The richer index must survive a real save → load round trip with the new
+    // fields populated.
+    #[test]
+    fn index_round_trips_with_node_info_and_edges() {
+        let tmp = TempDir::new().unwrap();
+        let node = Uuid::from_u128(0x11);
+        let mut node_info = BTreeMap::new();
+        node_info.insert(
+            node,
+            NodeInfo {
+                kind: "boundary".into(),
+                inputs: vec![],
+                outputs: vec![],
+            },
+        );
+        let mut edges = BTreeMap::new();
+        edges.insert(
+            edge_lookup_key(Uuid::from_u128(0x50), Uuid::from_u128(0x70)),
+            Uuid::from_u128(0xED),
+        );
+        let i = Index {
+            version: 9,
+            entries: BTreeMap::new(),
+            node_info,
+            edges,
+        };
+        i.save(tmp.path()).unwrap();
+        assert_eq!(Index::load(tmp.path()).unwrap(), Some(i));
     }
 }

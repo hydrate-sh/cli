@@ -602,6 +602,7 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
         graph.nodes.iter().map(|n| (n.id, n)).collect();
 
     let mut entries = std::collections::BTreeMap::new();
+    let mut node_info = std::collections::BTreeMap::new();
     for node in &graph.nodes {
         let path = node_path(node, &by_id)?;
         if entries.insert(node_key(&path), node.id).is_some() {
@@ -611,12 +612,70 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
         }
         insert_ports(&mut entries, &path, Side::In, node.data.inputs.as_deref())?;
         insert_ports(&mut entries, &path, Side::Out, node.data.outputs.as_deref())?;
+        // Per-node kind + ports — what `node set` patches and `boundary flatten`
+        // checks. Keyed by the server's node id.
+        node_info.insert(
+            node.id,
+            crate::state::NodeInfo {
+                kind: node_kind_str(node.kind).to_string(),
+                inputs: port_infos(node.data.inputs.as_deref()),
+                outputs: port_infos(node.data.outputs.as_deref()),
+            },
+        );
+    }
+
+    // Edge map: (source_handle, target_handle) → edge id, for `edge rm`. An edge
+    // missing a handle, or two edges between the same ports, is corruption —
+    // surfaced loudly, never silently dropped (which would make `edge rm` claim
+    // "no such edge" for an edge that exists).
+    let mut edges = std::collections::BTreeMap::new();
+    for edge in &graph.edges {
+        let (Some(src), Some(tgt)) = (edge.source_handle, edge.target_handle) else {
+            return Err(CliError::State(
+                "the branch graph has an edge missing a port handle".to_string(),
+            ));
+        };
+        if edges
+            .insert(crate::state::edge_lookup_key(src, tgt), edge.id)
+            .is_some()
+        {
+            return Err(CliError::State(
+                "the branch graph reports two edges between the same ports".to_string(),
+            ));
+        }
     }
 
     Ok(Index {
         version: graph.branch.version,
         entries,
+        node_info,
+        edges,
     })
+}
+
+/// A wire node kind as its stable token (`behavior` / `boundary`).
+fn node_kind_str(kind: models::wire_node::Kind) -> &'static str {
+    match kind {
+        models::wire_node::Kind::Behavior => "behavior",
+        models::wire_node::Kind::Boundary => "boundary",
+    }
+}
+
+/// Project a wire port list into the index's [`PortInfo`]. Unnamed ports are
+/// skipped (not path-addressable, so `node set` can't target them; the server
+/// keeps them as-is when the surrounding node is updated).
+fn port_infos(ports: Option<&[models::WirePort]>) -> Vec<crate::state::PortInfo> {
+    ports
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| {
+            Some(crate::state::PortInfo {
+                id: p.id,
+                name: p.name.clone()?,
+                r#type: p.r#type.clone().unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 /// Reconstruct a node's dotted path by walking the `parent_id` chain to the root.
@@ -1546,6 +1605,68 @@ mod tests {
                 serde_json::Value::Object(o)
             }).unwrap()
         })
+    }
+
+    #[test]
+    fn index_from_graph_records_node_kind_and_ports() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        // Kind is captured (for boundary-only checks like `flatten`).
+        assert_eq!(index.node_info(&api).unwrap().kind, "boundary");
+        let rater_info = index.node_info(&rater).unwrap();
+        assert_eq!(rater_info.kind, "behavior");
+        // The output port is recorded with its id, name, and type — what
+        // `node set` resends to preserve the UUID.
+        let out = &rater_info.outputs[0];
+        assert_eq!(
+            (out.id, out.name.as_str(), out.r#type.as_str()),
+            (score, "score", "Rating")
+        );
+        assert_eq!(rater_info.inputs[0].name, "raw");
+    }
+
+    #[test]
+    fn index_from_graph_builds_the_edge_map() {
+        let (src, tgt, eid) = (
+            Uuid::from_u128(0x50),
+            Uuid::from_u128(0x70),
+            Uuid::from_u128(0xED),
+        );
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 2 },
+            "project_id": Uuid::from_u128(0xA), "version": "2",
+            "nodes": [
+                { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "outputs":[{"id":src,"name":"o","type":"T"}]} },
+                { "id": Uuid::from_u128(2), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"B","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "inputs":[{"id":tgt,"name":"i","type":"T"}]} },
+            ],
+            "edges": [ { "id": eid, "source": Uuid::from_u128(1), "target": Uuid::from_u128(2),
+                         "sourceHandle": src, "targetHandle": tgt } ],
+        })).unwrap();
+        let index = index_from_graph(&graph).unwrap();
+        assert_eq!(index.edge_id(src, tgt), Some(eid));
+        assert_eq!(index.edge_id(tgt, src), None); // direction matters
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_an_edge_missing_a_handle() {
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA), "version": "1",
+            "nodes": [ { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
+                "position": {"x":0.0,"y":0.0},
+                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false} } ],
+            "edges": [ { "id": Uuid::from_u128(0xED), "source": Uuid::from_u128(1), "target": Uuid::from_u128(1),
+                         "sourceHandle": null, "targetHandle": null } ],
+        })).unwrap();
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("missing a port handle"), "{err}");
     }
 
     #[test]

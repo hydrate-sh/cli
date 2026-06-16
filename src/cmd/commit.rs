@@ -368,6 +368,7 @@ mod tests {
         Index {
             version: 3,
             entries,
+            ..Default::default()
         }
         .save(tmp.path())
         .unwrap();
@@ -409,6 +410,7 @@ mod tests {
         Index {
             version: 3,
             entries: Default::default(),
+            ..Default::default()
         }
         .save(tmp.path())
         .unwrap();
