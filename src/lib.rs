@@ -17,14 +17,20 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-// All internal — `run` is the only public surface. Promote a module to `pub`
-// only when something outside the crate actually consumes it.
 mod cli;
-mod client;
 mod cmd;
-mod exit;
-mod state;
 mod wire;
+
+// The runtime building blocks the command handlers compose. `client` + `config`
+// are `pub` because the integration test (tests/runtime.rs) drives them, and
+// `error` (`CliError`) appears in their public signatures, so it is pub too. The
+// rest are consumed only in-crate.
+pub mod client;
+pub mod config;
+pub mod error;
+pub(crate) mod exit;
+pub(crate) mod output;
+pub(crate) mod state;
 
 /// Parse arguments and dispatch to the matching verb handler.
 ///
