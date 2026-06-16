@@ -34,6 +34,13 @@ impl Side {
             Side::Out => "out",
         }
     }
+
+    fn opposite(self) -> Side {
+        match self {
+            Side::In => Side::Out,
+            Side::Out => Side::In,
+        }
+    }
 }
 
 /// A typed port to declare on a node (`name:type`, type required).
@@ -251,16 +258,25 @@ impl Changeset {
                 "'{path}' is not a port path; write it as node.port (e.g. Rater.raw)"
             ))
         })?;
-        self.stage
+        if let Some(id) = self.stage.aliases.get(&port_key(node_path, side, port)) {
+            return Ok(*id);
+        }
+        // Give a precise diagnostic when the port exists, just on the other side
+        // (e.g. an input used as `--from`) rather than the misleading "unknown".
+        if self
+            .stage
             .aliases
-            .get(&port_key(node_path, side, port))
-            .copied()
-            .ok_or_else(|| {
-                CliError::InvalidArgument(format!(
-                    "unknown {} port '{path}'; stage the node that owns it first",
-                    side.as_str()
-                ))
-            })
+            .contains_key(&port_key(node_path, side.opposite(), port))
+        {
+            return Err(CliError::InvalidArgument(format!(
+                "'{path}' is an {} port; an edge runs from an output (--from) to an input (--to)",
+                side.opposite().as_str()
+            )));
+        }
+        Err(CliError::InvalidArgument(format!(
+            "unknown {} port '{path}'; stage the node that owns it first",
+            side.as_str()
+        )))
     }
 
     /// Serialize a delta to JSON and append it to the staged batch.
@@ -405,14 +421,17 @@ pub fn summarize(stage: &Stage) -> Result<StageSummary, CliError> {
             "add_node" => {
                 let d: models::AddNodeDelta = parse_delta(value)?;
                 let data = d.node.data.unwrap_or_default();
+                let path = node_paths
+                    .get(&d.node.id)
+                    .cloned()
+                    .or_else(|| data.name.clone())
+                    .ok_or_else(|| {
+                        CliError::State("a staged node has no resolvable path".to_string())
+                    })?;
                 summary.nodes += 1;
                 summary.ops.push(OpSummary::Node {
                     kind: kind_str(d.node.kind),
-                    path: node_paths
-                        .get(&d.node.id)
-                        .cloned()
-                        .or(data.name.clone())
-                        .unwrap_or_else(|| "?".to_string()),
+                    path,
                     inputs: named_types(data.inputs.as_deref()),
                     outputs: named_types(data.outputs.as_deref()),
                 });
@@ -421,8 +440,8 @@ pub fn summarize(stage: &Stage) -> Result<StageSummary, CliError> {
                 let d: models::AddEdgeDelta = parse_delta(value)?;
                 summary.edges += 1;
                 summary.ops.push(OpSummary::Edge {
-                    from: handle_path(&port_paths, d.edge.source_handle),
-                    to: handle_path(&port_paths, d.edge.target_handle),
+                    from: handle_path(&port_paths, d.edge.source_handle)?,
+                    to: handle_path(&port_paths, d.edge.target_handle)?,
                 });
             }
             other => {
@@ -437,7 +456,7 @@ pub fn summarize(stage: &Stage) -> Result<StageSummary, CliError> {
 }
 
 fn parse_delta<D: serde::de::DeserializeOwned>(value: &serde_json::Value) -> Result<D, CliError> {
-    serde_json::from_value(value.clone())
+    D::deserialize(value)
         .map_err(|e| CliError::State(format!("a staged delta could not be read: {e}")))
 }
 
@@ -469,14 +488,19 @@ fn render_port_path(rest: &str) -> String {
     format!("{node_path}.{name}")
 }
 
+/// Resolve an edge handle UUID back to its port path. An absent handle or one
+/// that points at a port the stage doesn't contain is corruption — surfaced
+/// loudly, never rendered as a benign placeholder.
 fn handle_path(
     map: &std::collections::HashMap<Uuid, String>,
     handle: Option<Option<Uuid>>,
-) -> String {
-    match handle.flatten() {
-        Some(id) => map.get(&id).cloned().unwrap_or_else(|| "?".to_string()),
-        None => "?".to_string(),
-    }
+) -> Result<String, CliError> {
+    let id = handle
+        .flatten()
+        .ok_or_else(|| CliError::State("a staged edge is missing an endpoint".to_string()))?;
+    map.get(&id).cloned().ok_or_else(|| {
+        CliError::State("a staged edge references a port that is not staged".to_string())
+    })
 }
 
 fn named_types(ports: Option<&[models::Port]>) -> Vec<NamedType> {
@@ -804,10 +828,22 @@ mod tests {
     #[test]
     fn edge_to_unknown_port_fails_loud() {
         let mut cs = graph_with_two_ports();
-        // Wrong side: `dog` is an output, so it is not a valid `--to` (input).
+        // `nope` is not a port on Rater at all.
         let err = cs.add_edge("Maker.dog", "Rater.nope").unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
         assert!(err.to_string().contains("Rater.nope"), "{err}");
+    }
+
+    #[test]
+    fn edge_with_a_wrong_side_port_gets_a_precise_error() {
+        let mut cs = graph_with_two_ports();
+        // `Rater.raw` is an INPUT used as the source (`--from`, an output): the
+        // port exists, so the error must say which side it is, not "unknown".
+        let err = cs.add_edge("Rater.raw", "Maker.dog").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("is an in port"), "{msg}");
+        assert!(!msg.contains("unknown"), "{msg}");
     }
 
     #[test]
@@ -832,7 +868,11 @@ mod tests {
     fn summarize_renders_paths_not_uuids() {
         let mut cs = graph_with_two_ports();
         cs.add_edge("Maker.dog", "Rater.raw").unwrap();
-        let summary = summarize(&cs.into_stage()).unwrap();
+        let stage = cs.into_stage();
+        // Every minted UUID, as it appears stringified — none may surface.
+        let minted: Vec<String> = stage.aliases.values().map(Uuid::to_string).collect();
+
+        let summary = summarize(&stage).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.total()), (2, 1, 3));
 
         // The edge op renders both endpoints by their dotted port paths.
@@ -846,7 +886,7 @@ mod tests {
             .unwrap();
         assert_eq!(edge, ("Maker.dog".to_string(), "Rater.raw".to_string()));
 
-        // A node op carries its path + typed ports (no UUID anywhere).
+        // A node op carries its path + typed ports.
         let maker = summary
             .ops
             .iter()
@@ -856,9 +896,12 @@ mod tests {
             })
             .unwrap();
         assert_eq!(maker, vec![("dog".to_string(), "HotDog".to_string())]);
-        // No rendered string is a UUID-looking value.
+
+        // Not one of the minted UUIDs appears anywhere in the rendered summary.
         let blob = format!("{summary:?}");
-        assert!(!blob.contains('-') || !blob.contains("port:"), "{blob}");
+        for id in &minted {
+            assert!(!blob.contains(id), "leaked UUID {id} in {blob}");
+        }
     }
 
     #[test]
@@ -867,5 +910,33 @@ mod tests {
         stage.deltas.push(serde_json::json!({"node": {}}));
         let err = summarize(&stage).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn summarize_flags_an_edge_handle_with_no_staged_port() {
+        // An edge whose handle points at a port the stage doesn't contain is
+        // corruption — surfaced loudly, never rendered as a benign "?".
+        let mut stage = Stage::empty();
+        stage.deltas.push(serde_json::json!({
+            "type": "add_edge",
+            "edge": {
+                "id": Uuid::new_v4(),
+                "sourceHandle": Uuid::new_v4(),
+                "targetHandle": Uuid::new_v4(),
+            }
+        }));
+        let err = summarize(&stage).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn summarize_counts_unknown_delta_types_as_other() {
+        let mut stage = Stage::empty();
+        stage
+            .deltas
+            .push(serde_json::json!({"type": "delete_node", "id": Uuid::new_v4()}));
+        let summary = summarize(&stage).unwrap();
+        assert_eq!((summary.nodes, summary.edges, summary.other), (0, 0, 1));
+        assert_eq!(summary.total(), 1);
     }
 }

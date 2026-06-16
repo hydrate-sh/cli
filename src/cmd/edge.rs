@@ -41,8 +41,8 @@ mod tests {
             },
             OutputMode::Human,
         );
-        assert!(out.contains("Maker.dog"), "{out}");
-        assert!(out.contains("Rater.raw"), "{out}");
+        // Exact match so a from/to swap or format change is caught.
+        assert_eq!(out, "Staged edge 'Maker.dog' -> 'Rater.raw'.");
     }
 
     #[test]

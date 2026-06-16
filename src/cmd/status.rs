@@ -22,6 +22,7 @@ fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -
             "staged": {
                 "nodes": summary.nodes,
                 "edges": summary.edges,
+                "other": summary.other,
                 "total": summary.total(),
             }
         })
@@ -37,11 +38,13 @@ fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -
             if summary.is_empty() {
                 out.push_str("\nNothing staged.");
             } else {
-                out.push_str(&format!(
-                    "\nStaged: {}, {}.",
-                    plural(summary.nodes, "node"),
-                    plural(summary.edges, "edge")
-                ));
+                let mut parts = vec![plural(summary.nodes, "node"), plural(summary.edges, "edge")];
+                // Only surfaces for a delta kind this version doesn't itemize;
+                // shown so the displayed counts never silently undershoot total.
+                if summary.other > 0 {
+                    parts.push(plural(summary.other, "other op"));
+                }
+                out.push_str(&format!("\nStaged: {}.", parts.join(", ")));
             }
             out
         }
@@ -118,6 +121,30 @@ mod tests {
         let out = render(None, &summary(0, 0), OutputMode::Json);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert!(v["branch"].is_null());
+        assert!(v["project"].is_null());
         assert_eq!(v["staged"]["total"], 0);
+    }
+
+    // A stage of only not-itemized ops must not read as "0 nodes, 0 edges" while
+    // claiming something is staged — the `other` count is surfaced in both modes.
+    #[test]
+    fn other_ops_are_surfaced_not_hidden() {
+        let summary = StageSummary {
+            nodes: 0,
+            edges: 0,
+            other: 2,
+            ops: vec![
+                OpSummary::Other {
+                    kind: "delete_node".to_string()
+                };
+                2
+            ],
+        };
+        let human = render(Some(&binding()), &summary, OutputMode::Human);
+        assert!(human.contains("2 other ops"), "{human}");
+        let v: serde_json::Value =
+            serde_json::from_str(&render(Some(&binding()), &summary, OutputMode::Json)).unwrap();
+        assert_eq!(v["staged"]["other"], 2);
+        assert_eq!(v["staged"]["total"], 2);
     }
 }
