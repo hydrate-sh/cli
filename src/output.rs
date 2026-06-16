@@ -1,5 +1,9 @@
 //! Dual output: human-readable on a TTY, JSON when piped. `--json` / `--human`
 //! override. Both modes carry the same information.
+//!
+//! Consumed by the command handlers as the verbs are implemented; until then the
+//! renderers are exercised by this module's tests only.
+#![allow(dead_code)]
 
 use std::io::IsTerminal;
 
@@ -31,20 +35,23 @@ impl OutputMode {
     }
 }
 
+/// The JSON error envelope: `{"error": {"kind": ..., "message": ...}}`. Clients
+/// switch over `error.kind`; both fields are always present.
+pub fn error_json(err: &CliError) -> serde_json::Value {
+    serde_json::json!({ "error": { "kind": err.kind(), "message": err.to_string() } })
+}
+
 /// Render an error to stderr in the selected mode, with a stable `error.kind`.
 pub fn print_error(err: &CliError, mode: OutputMode) {
     match mode {
         OutputMode::Json => {
-            let body = serde_json::json!({
-                "error": { "kind": err.kind(), "message": err.message() }
-            });
             // serde_json::to_string on this fixed shape cannot fail; if it ever
             // did, fall back to a minimal valid envelope rather than panicking.
-            let line = serde_json::to_string(&body)
+            let line = serde_json::to_string(&error_json(err))
                 .unwrap_or_else(|_| r#"{"error":{"kind":"error"}}"#.to_string());
             eprintln!("{line}");
         }
-        OutputMode::Human => eprintln!("hydrate: {}", err.message()),
+        OutputMode::Human => eprintln!("hydrate: {err}"),
     }
 }
 
@@ -62,5 +69,19 @@ mod tests {
     fn tty_defaults_to_human_pipe_to_json() {
         assert_eq!(OutputMode::resolve(false, false, true), OutputMode::Human);
         assert_eq!(OutputMode::resolve(false, false, false), OutputMode::Json);
+    }
+
+    #[test]
+    fn json_envelope_carries_kind_and_message() {
+        let v = error_json(&CliError::MissingApiKey);
+        assert_eq!(v["error"]["kind"], "missing_api_key");
+        assert_eq!(v["error"]["message"], CliError::MissingApiKey.to_string());
+        // a service error passes its kind through
+        let svc = CliError::Service {
+            status: 422,
+            kind: "malformed_delta_field".into(),
+            reason: None,
+        };
+        assert_eq!(error_json(&svc)["error"]["kind"], "malformed_delta_field");
     }
 }

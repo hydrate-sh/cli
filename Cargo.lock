@@ -484,8 +484,10 @@ dependencies = [
  "clap",
  "dotenvy",
  "hydrate_wire",
+ "reqwest",
  "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]

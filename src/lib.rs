@@ -21,16 +21,16 @@ mod cli;
 mod cmd;
 mod wire;
 
-// The runtime building blocks the command handlers compose: configuration + the
-// HTTP transport over the generated wire client, the error model that maps to
-// exit codes, and the dual human/JSON output. Public so the integration tests
-// can drive them and so the surface is explicit as the verbs are implemented.
+// The runtime building blocks the command handlers compose. `client` + `config`
+// are `pub` because the integration test (tests/runtime.rs) drives them, and
+// `error` (`CliError`) appears in their public signatures, so it is pub too. The
+// rest are consumed only in-crate.
 pub mod client;
 pub mod config;
 pub mod error;
-pub mod exit;
-pub mod output;
-pub mod state;
+pub(crate) mod exit;
+pub(crate) mod output;
+pub(crate) mod state;
 
 /// Parse arguments and dispatch to the matching verb handler.
 ///
