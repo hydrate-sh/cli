@@ -123,6 +123,20 @@ impl Client {
             })
     }
 
+    /// Fetch the full graph (nodes + edges + branch version) of `branch_id`.
+    /// This is the read that backs `pull`: it materializes the live branch so
+    /// the author can reference already-committed nodes by their dotted path.
+    pub fn fetch_branch_graph(&self, branch_id: Uuid) -> Result<models::GraphResponse, CliError> {
+        let params = branches_api::FetchBranchGraphV1BranchesBranchIdGraphGetParams {
+            branch_id: branch_id.to_string(),
+        };
+        self.rt
+            .block_on(
+                branches_api::fetch_branch_graph_v1_branches_branch_id_graph_get(&self.cfg, params),
+            )
+            .map_err(CliError::from)
+    }
+
     /// Apply a typed delta batch to `branch_id` under optimistic concurrency.
     pub fn apply_deltas(
         &self,

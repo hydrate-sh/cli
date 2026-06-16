@@ -42,6 +42,10 @@ pub enum Command {
     /// List your working branches.
     Branches,
 
+    /// Refresh the local view of the bound branch's live graph, so you can
+    /// reference already-committed nodes by their dotted path.
+    Pull,
+
     /// Stage a node (behavior or boundary) into the changeset.
     Node {
         #[command(subcommand)]

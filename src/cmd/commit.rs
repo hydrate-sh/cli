@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::lower;
-use crate::state::{Binding, Stage};
+use crate::state::{Binding, Index, Stage};
 
 pub fn run(mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
@@ -30,12 +30,17 @@ pub fn run(mode: OutputMode) -> Result<(), CliError> {
     let config = Config::load()?;
     let client = Client::with_idempotency_key(&config, &key)?;
 
-    // Fetch-before-commit: the current branch version is the OCC token. A 409
-    // here means the branch moved — surfaced as a conflict (exit 4), and because
-    // we only clear the stage AFTER a successful apply, the staged work survives.
-    let expected_version = u32::try_from(
-        client.branch_version(binding.project_id, binding.branch_id)?,
-    )
+    // The OCC token. If this working copy has pulled the live graph, the staged
+    // deltas were resolved against THAT snapshot's version, so we commit against
+    // it: if the branch has moved since the pull, the server rejects with a 409
+    // (exit 4) rather than applying handles resolved against a stale graph —
+    // recover with `hydrate pull` and re-commit. With no pull (the within-session
+    // flow), fall back to fetching the current version.
+    let index = Index::load(&base)?;
+    let expected_version = match &index {
+        Some(index) => u32::try_from(index.version),
+        None => u32::try_from(client.branch_version(binding.project_id, binding.branch_id)?),
+    }
     .map_err(|_| CliError::Other("the server reported a negative branch version".to_string()))?;
 
     let body = hydrate_wire::models::V1DeltasBody {
@@ -67,6 +72,15 @@ fn finalize(
     }
     // The batch is on the branch, so the local stage is spent.
     Stage::empty().save(base)?;
+    // Advance the pulled index's version to the just-committed one (when this
+    // workdir has an index), so a subsequent commit in the same session targets
+    // the new version instead of false-conflicting against the pre-commit one.
+    // The index's path→UUID entries stay as pulled — referencing nodes created
+    // by THIS commit still needs a fresh `pull` — only the OCC token moves.
+    if let Some(mut index) = Index::load(base)? {
+        index.version = applied.branch.version;
+        index.save(base)?;
+    }
     Ok(render(applied, binding, mode))
 }
 
@@ -272,5 +286,69 @@ mod tests {
         assert!(err.to_string().contains("kept"), "{err}");
         // The staged work survives — nothing was wiped.
         assert_eq!(Stage::load(tmp.path()).unwrap().deltas.len(), 1);
+    }
+
+    #[test]
+    fn finalize_advances_the_pulled_index_version_on_success() {
+        let tmp = staged_dir();
+        // Pulled at v3 with a real entry; the commit lands the branch at v8.
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("node:Api".to_string(), Uuid::from_u128(0xA));
+        Index {
+            version: 3,
+            entries,
+        }
+        .save(tmp.path())
+        .unwrap();
+
+        finalize(
+            tmp.path(),
+            &binding(),
+            &applied_response(true, 8, 1),
+            OutputMode::Human,
+        )
+        .unwrap();
+
+        // Index version moved forward so the NEXT commit targets v8, not v3
+        // (which would false-conflict)...
+        let index = Index::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(index.version, 8);
+        // ...and the pulled path→UUID entries are preserved (only the OCC token
+        // moves; the committed graph the entries describe didn't change).
+        assert_eq!(index.get("node:Api"), Some(Uuid::from_u128(0xA)));
+    }
+
+    #[test]
+    fn finalize_does_not_fabricate_an_index_when_none_was_pulled() {
+        let tmp = staged_dir();
+        finalize(
+            tmp.path(),
+            &binding(),
+            &applied_response(true, 8, 1),
+            OutputMode::Human,
+        )
+        .unwrap();
+        // No pull happened, so no index should be written by commit.
+        assert_eq!(Index::load(tmp.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn finalize_leaves_the_index_untouched_when_the_server_did_not_apply() {
+        let tmp = staged_dir();
+        Index {
+            version: 3,
+            entries: Default::default(),
+        }
+        .save(tmp.path())
+        .unwrap();
+        let _ = finalize(
+            tmp.path(),
+            &binding(),
+            &applied_response(false, 8, 0),
+            OutputMode::Human,
+        )
+        .unwrap_err();
+        // A failed apply must not advance the OCC token.
+        assert_eq!(Index::load(tmp.path()).unwrap().unwrap().version, 3);
     }
 }

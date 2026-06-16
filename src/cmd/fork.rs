@@ -12,7 +12,7 @@ use crate::client::Client;
 use crate::config::Config;
 use crate::error::CliError;
 use crate::output::OutputMode;
-use crate::state::{self, Binding, Stage};
+use crate::state::{self, Binding, Index, Stage};
 
 pub fn run(args: ForkArgs, mode: OutputMode) -> Result<(), CliError> {
     // A cheap client-side shape check for fast, clear feedback. The server stays
@@ -49,6 +49,24 @@ pub fn run(args: ForkArgs, mode: OutputMode) -> Result<(), CliError> {
     .map_err(|e| {
         CliError::State(format!(
             "branch '{}' was created on the server, but this directory could not be bound to it: {e}",
+            branch.name
+        ))
+    })?;
+
+    // Re-binding to a new branch: drop any index from the previously-bound
+    // branch first, so that if the pull below fails we fall back to stage-only
+    // resolution rather than resolving paths against the OLD branch's stale
+    // path→UUID map.
+    Index::remove(&base)?;
+
+    // Pull the fresh branch's seed into the local index so the working copy is
+    // immediately usable — `edge add` / `node add --parent` can reference the
+    // seeded nodes without a separate `pull`. The branch is already created and
+    // bound, so a pull failure is a partial success: report it loudly and point
+    // at the recovery rather than leaving the author wondering.
+    super::pull::refresh_index(&client, branch.id, &base).map_err(|e| {
+        CliError::State(format!(
+            "branch '{}' was forked and bound, but its graph could not be pulled: {e} — run `hydrate pull`",
             branch.name
         ))
     })?;
