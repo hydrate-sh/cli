@@ -28,6 +28,8 @@ pub enum CliError {
         kind: String,
         reason: Option<String>,
     },
+    /// A `.hydrate/` workdir-state read/write/parse failure.
+    State(String),
     /// Anything else (a bug, an unexpected response).
     Other(String),
 }
@@ -55,6 +57,7 @@ impl CliError {
             CliError::Network(_) => "network",
             CliError::VersionConflict { .. } => "version_conflict",
             CliError::Service { kind, .. } => kind,
+            CliError::State(_) => "state_error",
             CliError::Other(_) => "error",
         }
     }
@@ -81,6 +84,7 @@ impl fmt::Display for CliError {
             }
             CliError::Service { status, reason: Some(r), .. } => write!(f, "service error ({status}): {r}"),
             CliError::Service { status, .. } => write!(f, "service error ({status})"),
+            CliError::State(detail) => write!(f, "{detail}"),
             CliError::Other(detail) => write!(f, "{detail}"),
         }
     }
