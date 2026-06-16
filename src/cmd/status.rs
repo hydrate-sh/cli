@@ -22,6 +22,7 @@ fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -
             "staged": {
                 "nodes": summary.nodes,
                 "edges": summary.edges,
+                "deletes": summary.deletes,
                 "other": summary.other,
                 "total": summary.total(),
             }
@@ -39,6 +40,9 @@ fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -
                 out.push_str("\nNothing staged.");
             } else {
                 let mut parts = vec![plural(summary.nodes, "node"), plural(summary.edges, "edge")];
+                if summary.deletes > 0 {
+                    parts.push(plural(summary.deletes, "removal"));
+                }
                 // Only surfaces for a delta kind this version doesn't itemize;
                 // shown so the displayed counts never silently undershoot total.
                 if summary.other > 0 {
@@ -80,6 +84,7 @@ mod tests {
         StageSummary {
             nodes,
             edges,
+            deletes: 0,
             other: 0,
             ops: vec![
                 OpSummary::Other {
@@ -132,6 +137,7 @@ mod tests {
         let summary = StageSummary {
             nodes: 0,
             edges: 0,
+            deletes: 0,
             other: 2,
             ops: vec![
                 OpSummary::Other {

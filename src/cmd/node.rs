@@ -4,7 +4,7 @@
 use hydrate_wire::models::node::Kind;
 
 use super::context::require_workdir;
-use crate::cli::{NodeAddArgs, NodeKind};
+use crate::cli::{NodeAddArgs, NodeKind, NodeRmArgs};
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::{parse_port_spec, Changeset, NodeAdded, NodeSpec, PortSpec};
@@ -38,6 +38,35 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
 
 fn parse_ports(raw: &[String]) -> Result<Vec<PortSpec>, CliError> {
     raw.iter().map(|s| parse_port_spec(s)).collect()
+}
+
+pub fn rm(args: NodeRmArgs, mode: OutputMode) -> Result<(), CliError> {
+    let base = require_workdir()?;
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
+    let mut removed = Vec::with_capacity(args.paths.len());
+    for path in &args.paths {
+        // Stage each, in order; a bad path fails loud and stops before writing
+        // (the changeset isn't persisted until all paths resolve).
+        removed.push(changeset.remove_node(path)?.path);
+    }
+    changeset.into_stage().save(&base)?;
+
+    println!("{}", render_removed(&removed, mode));
+    Ok(())
+}
+
+fn render_removed(paths: &[String], mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({ "staged": { "removed": paths } }).to_string(),
+        OutputMode::Human => match paths {
+            [one] => format!("Staged removal of '{one}'."),
+            many => format!(
+                "Staged removal of {} nodes: {}.",
+                many.len(),
+                many.join(", ")
+            ),
+        },
+    }
 }
 
 fn map_kind(kind: NodeKind) -> Kind {

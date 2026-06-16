@@ -108,6 +108,24 @@ impl Changeset {
         self.stage
     }
 
+    /// Top-level node paths from the pulled index (those with no `.` in the
+    /// path) — what `clear` deletes to wipe the branch (cascade removes the
+    /// rest). Empty when nothing has been pulled.
+    pub fn top_level_node_paths(&self) -> Vec<String> {
+        let Some(index) = &self.index else {
+            return Vec::new();
+        };
+        let mut paths: Vec<String> = index
+            .entries
+            .keys()
+            .filter_map(|k| k.strip_prefix("node:"))
+            .filter(|p| !p.contains('.'))
+            .map(str::to_string)
+            .collect();
+        paths.sort();
+        paths
+    }
+
     /// Resolve an alias key (`node:…`/`port:…`) against the stage first, then the
     /// pulled index. Freshly-staged identity wins over committed identity for the
     /// same path — but `add_node` forbids staging a path that already exists in
@@ -235,12 +253,55 @@ impl Changeset {
     }
 
     /// Resolve a dotted node path to its UUID — staged this session or committed
-    /// (pulled into the index) — or fail loud.
+    /// (pulled into the index) — or fail loud. A node already staged for deletion
+    /// is rejected so you can't, e.g., reparent under a node you're removing in
+    /// the same batch.
     fn resolve_node(&self, path: &str) -> Result<Uuid, CliError> {
-        self.lookup(&node_key(path)).ok_or_else(|| {
+        let id = self.lookup(&node_key(path)).ok_or_else(|| {
             CliError::InvalidArgument(format!(
                 "unknown node '{path}'; stage it, or `hydrate pull` if it's already on the branch"
             ))
+        })?;
+        if self.staged_deletions().contains(&id) {
+            return Err(CliError::InvalidArgument(format!(
+                "node '{path}' is staged for deletion; can't reference it in the same changeset"
+            )));
+        }
+        Ok(id)
+    }
+
+    /// The set of node UUIDs already staged for deletion this session. Derived
+    /// from the staged `delete_node` deltas — no separate on-disk state, so the
+    /// stage format is unchanged and a re-run can't double-stage a deletion.
+    fn staged_deletions(&self) -> std::collections::HashSet<Uuid> {
+        self.stage
+            .deltas
+            .iter()
+            .filter(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("delete_node"))
+            .filter_map(|v| v.get("nodeId").and_then(serde_json::Value::as_str))
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect()
+    }
+
+    /// Stage a cascade-deletion of the node at `path` (resolved against the
+    /// stage ∪ pulled index). The server cascade removes its descendant subtree
+    /// and incident edges; we record only the node id. Fails loud on an unknown
+    /// path or a double-delete.
+    pub fn remove_node(&mut self, path: &str) -> Result<NodeRemoved, CliError> {
+        let id = self.lookup(&node_key(path)).ok_or_else(|| {
+            CliError::InvalidArgument(format!(
+                "unknown node '{path}'; nothing to remove (run `hydrate pull` if it's on the branch)"
+            ))
+        })?;
+        if self.staged_deletions().contains(&id) {
+            return Err(CliError::InvalidArgument(format!(
+                "node '{path}' is already staged for deletion"
+            )));
+        }
+        let delta = models::DeleteNodeDelta::new(id, models::delete_node_delta::Type::DeleteNode);
+        self.push(&delta)?;
+        Ok(NodeRemoved {
+            path: path.to_string(),
         })
     }
 
@@ -352,6 +413,12 @@ pub struct EdgeAdded {
     pub to: String,
 }
 
+/// What `remove_node` recorded, for the caller to render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRemoved {
+    pub path: String,
+}
+
 struct MintedPorts {
     deltas: Vec<models::Port>,
     ids: Vec<Uuid>,
@@ -427,8 +494,15 @@ pub fn parse_port_spec(raw: &str) -> Result<PortSpec, CliError> {
 /// refuse to commit something we cannot order or vouch for.
 pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliError> {
     use models::V1DeltasBodyDeltasInner as Inner;
+    // Ordered buckets: create nodes, then wire edges, then deletions last. An
+    // edge's handles reference ports created by the add_node deltas, so nodes
+    // must precede edges; deletions go last so a "clear old + add new" batch
+    // builds the new graph before tearing anything down. Each `type` tag is
+    // dispatched into its CONCRETE struct (never the internally-tagged enum,
+    // which would eat the tag) — see `staged_node_delta_is_commit_ready`.
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
+    let mut deletes = Vec::new();
     for value in &stage.deltas {
         let kind = value
             .get("type")
@@ -437,6 +511,7 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
         match kind {
             "add_node" => nodes.push(Inner::AddNode(Box::new(parse_delta(value)?))),
             "add_edge" => edges.push(Inner::AddEdge(Box::new(parse_delta(value)?))),
+            "delete_node" => deletes.push(Inner::DeleteNode(Box::new(parse_delta(value)?))),
             other => {
                 return Err(CliError::State(format!(
                     "cannot commit an unsupported staged delta '{other}'"
@@ -445,6 +520,7 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
         }
     }
     nodes.append(&mut edges);
+    nodes.append(&mut deletes);
     Ok(nodes)
 }
 
@@ -569,6 +645,10 @@ pub enum OpSummary {
         from: String,
         to: String,
     },
+    /// A staged node deletion (cascades the subtree server-side).
+    DeleteNode {
+        path: String,
+    },
     /// A delta kind this version does not render in detail (forward-compat).
     Other {
         kind: String,
@@ -580,6 +660,7 @@ pub enum OpSummary {
 pub struct StageSummary {
     pub nodes: usize,
     pub edges: usize,
+    pub deletes: usize,
     pub other: usize,
     pub ops: Vec<OpSummary>,
 }
@@ -650,6 +731,21 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     from: handle_path(&port_paths, d.edge.source_handle)?,
                     to: handle_path(&port_paths, d.edge.target_handle)?,
                 });
+            }
+            "delete_node" => {
+                let d: models::DeleteNodeDelta = parse_delta(value)?;
+                // Reverse-map the node id to its dotted path so `status`/`diff`
+                // show WHAT is being deleted, never a UUID. A delete whose target
+                // is in neither the stage nor the pulled index is corruption —
+                // surfaced loudly, never rendered as a bare id.
+                let path = node_paths.get(&d.node_id).cloned().ok_or_else(|| {
+                    CliError::State(
+                        "a staged deletion targets a node that is neither staged nor pulled"
+                            .to_string(),
+                    )
+                })?;
+                summary.deletes += 1;
+                summary.ops.push(OpSummary::DeleteNode { path });
             }
             other => {
                 summary.other += 1;
@@ -1230,10 +1326,13 @@ mod tests {
 
     #[test]
     fn summarize_counts_unknown_delta_types_as_other() {
+        // `reparent_node` is a real delta kind this version doesn't itemize yet —
+        // a good stand-in for "forward-compat unknown" (delete_node is now
+        // itemized, so it would no longer land in `other`).
         let mut stage = Stage::empty();
         stage
             .deltas
-            .push(serde_json::json!({"type": "delete_node", "id": Uuid::new_v4()}));
+            .push(serde_json::json!({"type": "reparent_node", "nodeId": Uuid::new_v4()}));
         let summary = summarize(&stage, None).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.other), (0, 0, 1));
         assert_eq!(summary.total(), 1);
@@ -1644,6 +1743,120 @@ mod tests {
         .unwrap();
         let err = cs.add_edge("Api.Rater.score", "Sink.rating").unwrap_err();
         assert!(err.to_string().contains("hydrate pull"), "{err}");
+    }
+
+    // ---- node rm / delete ----
+
+    #[test]
+    fn remove_node_stages_a_delete_for_a_committed_node() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        let removed = cs.remove_node("Api.Rater").unwrap();
+        assert_eq!(removed.path, "Api.Rater");
+        let stage = cs.into_stage();
+        let d: models::DeleteNodeDelta = serde_json::from_value(stage.deltas[0].clone()).unwrap();
+        // The delete targets the COMMITTED node's UUID from the index.
+        assert_eq!(d.node_id, rater);
+    }
+
+    #[test]
+    fn remove_node_unknown_path_fails_loud() {
+        let mut cs = empty();
+        let err = cs.remove_node("Ghost").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("Ghost"), "{err}");
+    }
+
+    #[test]
+    fn remove_node_rejects_a_double_delete() {
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        cs.remove_node("Rater").unwrap();
+        let err = cs.remove_node("Rater").unwrap_err();
+        assert!(
+            err.to_string().contains("already staged for deletion"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn resolve_node_rejects_a_node_staged_for_deletion() {
+        // Can't reparent a new node under a boundary you're removing this batch.
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            kind: Kind::Boundary,
+            ..behavior("Api", None)
+        })
+        .unwrap();
+        cs.remove_node("Api").unwrap();
+        let err = cs.add_node(&behavior("Rater", Some("Api"))).unwrap_err();
+        assert!(err.to_string().contains("staged for deletion"), "{err}");
+    }
+
+    #[test]
+    fn delete_node_delta_is_commit_ready() {
+        // Reconstructs into the concrete DeleteNodeDelta via the type tag — the
+        // same round-trip guarantee commit relies on (never the tagged enum).
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        cs.remove_node("Rater").unwrap();
+        let value = cs
+            .into_stage()
+            .deltas
+            .into_iter()
+            .find(|v| v["type"] == "delete_node")
+            .unwrap();
+        let d: models::DeleteNodeDelta = serde_json::from_value(value).unwrap();
+        assert_eq!(d.r#type, models::delete_node_delta::Type::DeleteNode);
+    }
+
+    #[test]
+    fn lower_orders_deletes_after_adds() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        let mut cs = empty();
+        cs.add_node(&behavior("Keep", None)).unwrap();
+        cs.add_node(&behavior("Gone", None)).unwrap();
+        cs.remove_node("Gone").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        // Two add_node then the delete_node last.
+        assert!(matches!(lowered[0], Inner::AddNode(_)));
+        assert!(matches!(lowered[1], Inner::AddNode(_)));
+        assert!(
+            matches!(lowered[2], Inner::DeleteNode(_)),
+            "delete must be last"
+        );
+    }
+
+    #[test]
+    fn summarize_renders_a_deletion_by_path_not_uuid() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.remove_node("Api.Rater").unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        assert_eq!(summary.deletes, 1);
+        let path = summary.ops.iter().find_map(|op| match op {
+            OpSummary::DeleteNode { path } => Some(path.clone()),
+            _ => None,
+        });
+        assert_eq!(path.as_deref(), Some("Api.Rater"));
+        // The committed UUID never surfaces.
+        assert!(!format!("{summary:?}").contains(&rater.to_string()));
+    }
+
+    #[test]
+    fn top_level_node_paths_lists_only_roots_from_the_index() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let cs = Changeset::with_index(Stage::empty(), Some(index));
+        // `Api` is top-level; `Api.Rater` is nested → excluded.
+        assert_eq!(cs.top_level_node_paths(), vec!["Api".to_string()]);
+    }
+
+    #[test]
+    fn top_level_node_paths_empty_without_a_pull() {
+        assert!(empty().top_level_node_paths().is_empty());
     }
 
     #[test]

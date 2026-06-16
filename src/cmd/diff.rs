@@ -65,6 +65,7 @@ fn op_line(op: &OpSummary) -> String {
             line
         }
         OpSummary::Edge { from, to } => format!("+ edge {from} -> {to}"),
+        OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
     }
 }
@@ -99,6 +100,10 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "op": "add_edge",
             "from": from,
             "to": to,
+        }),
+        OpSummary::DeleteNode { path } => serde_json::json!({
+            "op": "delete_node",
+            "node": path,
         }),
         OpSummary::Other { kind } => serde_json::json!({ "op": kind }),
     }
@@ -137,6 +142,7 @@ mod tests {
         StageSummary {
             nodes: 0,
             edges: 0,
+            deletes: 0,
             other: 0,
             ops,
         }

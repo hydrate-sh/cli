@@ -46,6 +46,10 @@ pub enum Command {
     /// reference already-committed nodes by their dotted path.
     Pull,
 
+    /// Stage the removal of every top-level node — wipe the branch to rebuild
+    /// in place (cascade removes their subtrees). Requires a prior `pull`.
+    Clear,
+
     /// Stage a node (behavior or boundary) into the changeset.
     Node {
         #[command(subcommand)]
@@ -78,6 +82,16 @@ pub struct ForkArgs {
 pub enum NodeAction {
     /// Add a node to the staged changeset.
     Add(NodeAddArgs),
+
+    /// Stage the removal of one or more nodes (cascades the subtree).
+    Rm(NodeRmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct NodeRmArgs {
+    /// Node(s) to remove, by dotted path (e.g. `Api.Rater`). Repeatable.
+    #[arg(required = true, value_name = "PATH")]
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
