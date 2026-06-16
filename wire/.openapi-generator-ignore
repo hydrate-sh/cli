@@ -1,0 +1,6 @@
+# Keep the committed wire crate to the Rust client only — regen must be deterministic.
+docs/
+.travis.yml
+git_push.sh
+.gitignore
+README.md
