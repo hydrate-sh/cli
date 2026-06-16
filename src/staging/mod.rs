@@ -291,6 +291,41 @@ impl Changeset {
             .collect()
     }
 
+    /// Stage a partial edit of the node at `path` (resolved against the
+    /// stage ∪ pulled index). `UpdateNodeData` is key-presence partial: only the
+    /// fields present in `after` change, the rest are left untouched — so we send
+    /// just what was set, never echoing the node's other data. At least one of
+    /// `description`/`constraints` must be `Some`, else there's nothing to do.
+    pub fn update_node(
+        &mut self,
+        path: &str,
+        description: Option<&str>,
+        constraints: Option<Vec<String>>,
+    ) -> Result<NodeUpdated, CliError> {
+        if description.is_none() && constraints.is_none() {
+            return Err(CliError::InvalidArgument(
+                "nothing to set — pass --description and/or --constraint".to_string(),
+            ));
+        }
+        let id = self.resolve_node(path)?;
+        let after = models::NodeData {
+            description: description.map(str::to_string),
+            constraints: constraints.clone(),
+            ..Default::default()
+        };
+        let delta = models::UpdateNodeDataDelta::new(
+            after,
+            id,
+            models::update_node_data_delta::Type::UpdateNodeData,
+        );
+        self.push(&delta)?;
+        Ok(NodeUpdated {
+            path: path.to_string(),
+            description: description.map(str::to_string),
+            constraints,
+        })
+    }
+
     /// Stage a cascade-deletion of the node at `path` (resolved against the
     /// stage ∪ pulled index). The server cascade removes its descendant subtree
     /// and incident edges; we record only the node id. Fails loud on an unknown
@@ -427,6 +462,15 @@ pub struct NodeRemoved {
     pub path: String,
 }
 
+/// What `update_node` recorded, for the caller to render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeUpdated {
+    pub path: String,
+    pub description: Option<String>,
+    /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
+    pub constraints: Option<Vec<String>>,
+}
+
 struct MintedPorts {
     deltas: Vec<models::Port>,
     ids: Vec<Uuid>,
@@ -513,6 +557,7 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
     // `staged_node_delta_is_commit_ready`.
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
+    let mut updates = Vec::new();
     let mut deletes = Vec::new();
     for value in &stage.deltas {
         let kind = value
@@ -522,6 +567,9 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
         match kind {
             "add_node" => nodes.push(Inner::AddNode(Box::new(parse_delta(value)?))),
             "add_edge" => edges.push(Inner::AddEdge(Box::new(parse_delta(value)?))),
+            "update_node_data" => {
+                updates.push(Inner::UpdateNodeData(Box::new(parse_delta(value)?)))
+            }
             "delete_node" => deletes.push(Inner::DeleteNode(Box::new(parse_delta(value)?))),
             other => {
                 return Err(CliError::State(format!(
@@ -530,7 +578,10 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
             }
         }
     }
+    // nodes → edges → updates → deletes: a node exists before it's wired or
+    // edited, and tear-down comes last.
     nodes.append(&mut edges);
+    nodes.append(&mut updates);
     nodes.append(&mut deletes);
     Ok(nodes)
 }
@@ -656,6 +707,13 @@ pub enum OpSummary {
         from: String,
         to: String,
     },
+    /// A staged partial edit of a node's data (only the set fields change).
+    /// `constraints`: `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
+    UpdateNode {
+        path: String,
+        description: Option<String>,
+        constraints: Option<Vec<String>>,
+    },
     /// A staged node deletion (cascades the subtree server-side).
     DeleteNode {
         path: String,
@@ -671,6 +729,7 @@ pub enum OpSummary {
 pub struct StageSummary {
     pub nodes: usize,
     pub edges: usize,
+    pub updates: usize,
     pub deletes: usize,
     pub other: usize,
     pub ops: Vec<OpSummary>,
@@ -741,6 +800,23 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                 summary.ops.push(OpSummary::Edge {
                     from: handle_path(&port_paths, d.edge.source_handle)?,
                     to: handle_path(&port_paths, d.edge.target_handle)?,
+                });
+            }
+            "update_node_data" => {
+                let d: models::UpdateNodeDataDelta = parse_delta(value)?;
+                let path = node_paths.get(&d.node_id).cloned().ok_or_else(|| {
+                    CliError::State(
+                        "a staged edit targets a node that is neither staged nor pulled"
+                            .to_string(),
+                    )
+                })?;
+                summary.updates += 1;
+                summary.ops.push(OpSummary::UpdateNode {
+                    path,
+                    description: d.after.description.filter(|s| !s.is_empty()),
+                    // Keep the Option so the preview distinguishes "cleared"
+                    // (Some([])) from "untouched" (None) — they are different edits.
+                    constraints: d.after.constraints,
                 });
             }
             "delete_node" => {
@@ -1921,6 +1997,126 @@ mod tests {
             std::collections::HashSet::from([api, store]),
             "clear must stage a delete for each top-level root"
         );
+    }
+
+    // ---- node set / update ----
+
+    #[test]
+    fn update_node_stages_a_partial_edit_for_a_committed_node() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.update_node("Api.Rater", Some("new prompt"), None)
+            .unwrap();
+        let d: models::UpdateNodeDataDelta =
+            serde_json::from_value(cs.into_stage().deltas[0].clone()).unwrap();
+        assert_eq!(d.node_id, rater);
+        // Only the description is present; other fields are left untouched (None).
+        assert_eq!(d.after.description.as_deref(), Some("new prompt"));
+        assert_eq!(d.after.constraints, None);
+        assert_eq!(d.after.name, None);
+    }
+
+    #[test]
+    fn update_node_clear_constraints_sets_an_empty_list() {
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        cs.update_node("Rater", None, Some(vec![])).unwrap();
+        let d: models::UpdateNodeDataDelta = serde_json::from_value(
+            cs.into_stage()
+                .deltas
+                .into_iter()
+                .find(|v| v["type"] == "update_node_data")
+                .unwrap(),
+        )
+        .unwrap();
+        // Present-but-empty = "clear", distinct from absent (untouched).
+        assert_eq!(d.after.constraints, Some(vec![]));
+        assert_eq!(d.after.description, None);
+    }
+
+    #[test]
+    fn update_node_with_nothing_to_set_fails_loud() {
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        let err = cs.update_node("Rater", None, None).unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("nothing to set"), "{err}");
+    }
+
+    #[test]
+    fn update_node_unknown_path_fails_loud() {
+        let mut cs = empty();
+        let err = cs.update_node("Ghost", Some("x"), None).unwrap_err();
+        assert!(err.to_string().contains("Ghost"), "{err}");
+    }
+
+    #[test]
+    fn update_node_delta_is_commit_ready_and_lowers_after_adds_before_deletes() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        cs.add_node(&behavior("Gone", None)).unwrap();
+        cs.update_node("Rater", Some("edited"), None).unwrap();
+        cs.remove_node("Gone").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        // adds (2) → update (1) → delete (1)
+        assert!(matches!(lowered[0], Inner::AddNode(_)));
+        assert!(matches!(lowered[1], Inner::AddNode(_)));
+        assert!(
+            matches!(lowered[2], Inner::UpdateNodeData(_)),
+            "update after adds"
+        );
+        assert!(matches!(lowered[3], Inner::DeleteNode(_)), "delete last");
+    }
+
+    #[test]
+    fn summarize_renders_an_update_by_path_not_uuid() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.update_node("Api.Rater", Some("edited"), Some(vec!["c".to_string()]))
+            .unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        assert_eq!(summary.updates, 1);
+        let found = summary.ops.iter().find_map(|op| match op {
+            OpSummary::UpdateNode {
+                path,
+                description,
+                constraints,
+            } => Some((path.clone(), description.clone(), constraints.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            found,
+            Some((
+                "Api.Rater".to_string(),
+                Some("edited".to_string()),
+                Some(vec!["c".to_string()])
+            ))
+        );
+        assert!(!format!("{summary:?}").contains(&rater.to_string()));
+    }
+
+    #[test]
+    fn summarize_fails_loud_on_an_update_targeting_an_unknown_node() {
+        let mut stage = Stage::empty();
+        stage.deltas.push(serde_json::json!({
+            "type": "update_node_data",
+            "nodeId": Uuid::new_v4(),
+            "after": { "description": "x" },
+        }));
+        let err = summarize(&stage, None).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn update_node_rejects_a_node_staged_for_deletion() {
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        cs.remove_node("Rater").unwrap();
+        let err = cs.update_node("Rater", Some("x"), None).unwrap_err();
+        assert!(err.to_string().contains("staged for deletion"), "{err}");
     }
 
     #[test]

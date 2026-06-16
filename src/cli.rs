@@ -85,6 +85,9 @@ pub enum NodeAction {
 
     /// Stage the removal of one or more nodes (cascades the subtree).
     Rm(NodeRmArgs),
+
+    /// Stage an edit to an existing node's spec (description / constraints).
+    Set(NodeSetArgs),
 }
 
 #[derive(Debug, Args)]
@@ -92,6 +95,25 @@ pub struct NodeRmArgs {
     /// Node(s) to remove, by dotted path (e.g. `Api.Rater`). Repeatable.
     #[arg(required = true, value_name = "PATH")]
     pub paths: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct NodeSetArgs {
+    /// Node to edit, by dotted path (e.g. `Api.Rater`).
+    #[arg(value_name = "PATH")]
+    pub path: String,
+
+    /// New description (the spec/prompt). Only the fields you pass change.
+    #[arg(long)]
+    pub description: Option<String>,
+
+    /// Replace the node's constraints with these (repeatable).
+    #[arg(long = "constraint", value_name = "TEXT")]
+    pub constraints: Vec<String>,
+
+    /// Remove all constraints (mutually exclusive with --constraint).
+    #[arg(long, conflicts_with = "constraints")]
+    pub clear_constraints: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

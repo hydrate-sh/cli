@@ -65,6 +65,27 @@ fn op_line(op: &OpSummary) -> String {
             line
         }
         OpSummary::Edge { from, to } => format!("+ edge {from} -> {to}"),
+        OpSummary::UpdateNode {
+            path,
+            description,
+            constraints,
+        } => {
+            let mut line = format!("~ node {path}");
+            if let Some(d) = description {
+                line.push_str(&format!("\n    description: {d}"));
+            }
+            // Distinguish cleared (Some([])) from untouched (None).
+            match constraints {
+                Some(cs) if cs.is_empty() => line.push_str("\n    constraints: (cleared)"),
+                Some(cs) => {
+                    for c in cs {
+                        line.push_str(&format!("\n    constraint: {c}"));
+                    }
+                }
+                None => {}
+            }
+            line
+        }
         OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
     }
@@ -100,6 +121,16 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "op": "add_edge",
             "from": from,
             "to": to,
+        }),
+        OpSummary::UpdateNode {
+            path,
+            description,
+            constraints,
+        } => serde_json::json!({
+            "op": "update_node_data",
+            "node": path,
+            "description": description,
+            "constraints": constraints,
         }),
         OpSummary::DeleteNode { path } => serde_json::json!({
             "op": "delete_node",
@@ -142,6 +173,7 @@ mod tests {
         StageSummary {
             nodes: 0,
             edges: 0,
+            updates: 0,
             deletes: 0,
             other: 0,
             ops,
