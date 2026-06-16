@@ -17,14 +17,20 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-// All internal — `run` is the only public surface. Promote a module to `pub`
-// only when something outside the crate actually consumes it.
 mod cli;
-mod client;
 mod cmd;
-mod exit;
-mod state;
 mod wire;
+
+// The runtime building blocks the command handlers compose: configuration + the
+// HTTP transport over the generated wire client, the error model that maps to
+// exit codes, and the dual human/JSON output. Public so the integration tests
+// can drive them and so the surface is explicit as the verbs are implemented.
+pub mod client;
+pub mod config;
+pub mod error;
+pub mod exit;
+pub mod output;
+pub mod state;
 
 /// Parse arguments and dispatch to the matching verb handler.
 ///
