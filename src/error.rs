@@ -30,6 +30,13 @@ pub enum CliError {
     },
     /// A `.hydrate/` workdir-state read/write/parse failure.
     State(String),
+    /// A command argument failed a client-side shape check (e.g. branch name).
+    InvalidArgument(String),
+    /// The single-project rule found no project to act on.
+    NoProject,
+    /// The single-project rule found more than one project, so the target is
+    /// ambiguous and must be disambiguated rather than guessed.
+    AmbiguousProject { count: usize },
     /// Anything else (a bug, an unexpected response).
     Other(String),
 }
@@ -58,6 +65,9 @@ impl CliError {
             CliError::VersionConflict { .. } => "version_conflict",
             CliError::Service { kind, .. } => kind,
             CliError::State(_) => "state_error",
+            CliError::InvalidArgument(_) => "invalid_argument",
+            CliError::NoProject => "no_project",
+            CliError::AmbiguousProject { .. } => "ambiguous_project",
             CliError::Other(_) => "error",
         }
     }
@@ -85,6 +95,16 @@ impl fmt::Display for CliError {
             CliError::Service { status, reason: Some(r), .. } => write!(f, "service error ({status}): {r}"),
             CliError::Service { status, .. } => write!(f, "service error ({status})"),
             CliError::State(detail) => write!(f, "{detail}"),
+            CliError::InvalidArgument(detail) => write!(f, "{detail}"),
+            CliError::NoProject => write!(
+                f,
+                "no project found for this account; create one at https://hydrate.sh first"
+            ),
+            CliError::AmbiguousProject { count } => write!(
+                f,
+                "found {count} projects; this command works on a single project — \
+                 run it from a directory already bound to one"
+            ),
             CliError::Other(detail) => write!(f, "{detail}"),
         }
     }
