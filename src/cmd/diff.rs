@@ -170,6 +170,14 @@ mod tests {
     }
 
     #[test]
+    fn human_omits_description_line_when_absent() {
+        // node_op() has description: None, constraints: [] — neither line appears.
+        let out = render(&summary(vec![node_op()]), OutputMode::Human);
+        assert!(!out.contains("description:"), "{out}");
+        assert!(!out.contains("constraint:"), "{out}");
+    }
+
+    #[test]
     fn json_node_carries_description_and_constraints() {
         let op = OpSummary::Node {
             kind: "behavior",

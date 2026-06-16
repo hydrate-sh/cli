@@ -179,13 +179,27 @@ impl Changeset {
             outputs: Some(outputs.deltas),
             user_kind: spec.user_kind.map(|k| Some(k.to_string())),
             path_prefix: spec.path_prefix.map(|p| Some(p.to_string())),
-            // Description (the prompt) and constraints: omit when absent/empty so
-            // the server applies its own defaults rather than us forcing "".
-            description: spec.description.map(str::to_string),
-            constraints: if spec.constraints.is_empty() {
-                None
-            } else {
-                Some(spec.constraints.clone())
+            // Description (the prompt) and constraints: omit when absent OR empty
+            // so the server applies its own defaults rather than us forcing "".
+            // Filtering here (not just in the diff preview) keeps the staged
+            // delta, the `diff` preview, and the committed value identical — an
+            // empty `--description ""` is "no description", everywhere.
+            description: spec
+                .description
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            constraints: {
+                let kept: Vec<String> = spec
+                    .constraints
+                    .iter()
+                    .filter(|c| !c.trim().is_empty())
+                    .cloned()
+                    .collect();
+                if kept.is_empty() {
+                    None
+                } else {
+                    Some(kept)
+                }
             },
             ..Default::default()
         };
@@ -976,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn add_node_omits_empty_description_and_constraints() {
+    fn add_node_omits_absent_description_and_constraints() {
         // No --description / --constraint → the fields are omitted (None), so the
         // server applies its own defaults rather than us forcing "".
         let mut cs = empty();
@@ -986,6 +1000,35 @@ mod tests {
         let data = d.node.data.unwrap();
         assert_eq!(data.description, None);
         assert_eq!(data.constraints, None);
+    }
+
+    #[test]
+    fn add_node_treats_empty_description_and_blank_constraints_as_absent() {
+        // `--description ""` and a blank `--constraint "  "` must collapse to None
+        // in the DELTA (not just the preview) — otherwise an empty string would
+        // ride to the server and override its default, while `diff` showed
+        // nothing. Staged == previewed == committed.
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            description: Some(""),
+            constraints: vec!["   ".to_string(), "real".to_string()],
+            ..behavior("Edge", None)
+        })
+        .unwrap();
+        let stage = cs.into_stage();
+        let d: models::AddNodeDelta = serde_json::from_value(stage.deltas[0].clone()).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.description, None, "empty description must be omitted");
+        // The blank constraint is dropped; only the real one survives.
+        assert_eq!(data.constraints, Some(vec!["real".to_string()]));
+
+        // And the preview agrees (no description shown).
+        let summary = summarize(&stage, None).unwrap();
+        let desc = summary.ops.iter().find_map(|op| match op {
+            OpSummary::Node { description, .. } => Some(description.clone()),
+            _ => None,
+        });
+        assert_eq!(desc, Some(None));
     }
 
     #[test]
