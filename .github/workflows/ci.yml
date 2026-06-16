@@ -5,10 +5,15 @@ on:
   push:
     branches: [main]
 
-# One in-flight run per ref; a new push cancels the previous.
+# Supersede in-flight runs of the SAME PR; let each push-to-main run complete
+# (keyed by sha so main runs never cancel each other).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
+
+# No step needs write access or the token.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,10 +30,11 @@ jobs:
       # generator's formatting); fmt the hand-written crate only.
       - name: fmt
         run: cargo fmt -p hydrate -- --check
-      # The generated crate relaxes its own lints at the crate root, so the
-      # whole workspace can run under -D warnings.
+      # `--locked` on the FIRST resolving step (clippy) so a stale Cargo.lock
+      # fails CI instead of being silently rewritten. The generated crate relaxes
+      # its own lints at the crate root, so the whole workspace runs under -D warnings.
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: build
         run: cargo build --workspace --locked
       - name: test
