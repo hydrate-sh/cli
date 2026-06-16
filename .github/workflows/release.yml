@@ -36,43 +36,52 @@ jobs:
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          key: ${{ matrix.target }}
+      # No build cache: a release binary must not inherit a cache another branch
+      # could have poisoned. Tags are infrequent, so a clean compile is cheap.
       # aarch64 linux needs a cross linker; the rest build natively.
       - name: install the cross linker
         if: matrix.linker
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.linker }}
+      # ring assembles x86_64 asm with NASM on windows-msvc.
+      - name: install NASM
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
       - name: add the target
         run: rustup target add ${{ matrix.target }}
       - name: build (release, locked)
         env:
-          # Honored only by the aarch64-linux build; harmless elsewhere.
+          # Honored only by the aarch64-linux build; inert elsewhere. The CC/AR
+          # vars let ring's build.rs cross-compile its C + asm for that target.
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
         run: cargo build --release --locked -p hydrate --target ${{ matrix.target }}
-      # Package both binaries (hydrate + hyd) and a SHA-256 checksum so a
-      # downloader can verify the artifact.
+      # Package both binaries (hydrate + hyd) FLAT at the archive root, with a
+      # SHA-256 of the archive's basename so `sha256sum -c <file>.sha256` works
+      # from a downloader's cwd.
       - name: package
         shell: bash
         run: |
           set -euo pipefail
           name="hydrate-${GITHUB_REF_NAME}-${{ matrix.target }}"
           bindir="target/${{ matrix.target }}/release"
-          mkdir -p dist
+          dist="$(pwd)/dist"
+          mkdir -p "$dist"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            archive="dist/${name}.zip"
-            7z a "$archive" "./${bindir}/hydrate.exe" "./${bindir}/hyd.exe"
+            base="${name}.zip"
+            ( cd "$bindir" && 7z a "$dist/$base" hydrate.exe hyd.exe )
           else
-            archive="dist/${name}.tar.gz"
-            tar czf "$archive" -C "$bindir" hydrate hyd
+            base="${name}.tar.gz"
+            tar czf "$dist/$base" -C "$bindir" hydrate hyd
           fi
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$archive" > "${archive}.sha256"
-          else
-            shasum -a 256 "$archive" > "${archive}.sha256"
-          fi
+          ( cd "$dist"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$base" > "$base.sha256"
+            else
+              shasum -a 256 "$base" > "$base.sha256"
+            fi )
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.target }}
@@ -87,7 +96,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: write # create the release + upload assets
+      id-token: write # mint the provenance attestation
+      attestations: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: assert the tag matches the crate version
@@ -104,6 +115,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Signed build provenance for the published archives (verifiable with
+      # `gh attestation verify <archive> --repo hydrate-sh/cli`).
+      - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
       - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: dist/*

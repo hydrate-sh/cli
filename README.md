@@ -41,7 +41,8 @@ hydrate commit
 
 Prebuilt binaries (no toolchain needed) ship with each tagged release. Download
 the archive for your platform from the [Releases](https://github.com/hydrate-sh/cli/releases)
-page, verify its checksum, and put `hydrate` (and the `hyd` alias) on your `PATH`:
+page, check it against its published `.sha256`, and put `hydrate` (and the `hyd`
+alias) on your `PATH`:
 
 ```sh
 # Linux x86_64 — adjust the version and target for your platform.
@@ -55,7 +56,9 @@ tar xzf "hydrate-${tag}-${target}.tar.gz"
 ```
 
 Each release publishes archives for Linux (x86_64, aarch64), macOS (x86_64,
-aarch64), and Windows (x86_64), each with a `.sha256` checksum.
+aarch64), and Windows (x86_64), each with a `.sha256` checksum. The archives
+also carry signed build provenance — verify it with
+`gh attestation verify <archive> --repo hydrate-sh/cli`.
 
 ## Building from source
 
