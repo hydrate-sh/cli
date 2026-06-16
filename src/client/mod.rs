@@ -6,8 +6,9 @@
 //! handlers use these methods as they are implemented.
 
 use hydrate_wire::apis::configuration::Configuration;
-use hydrate_wire::apis::{health_api, projects_api};
+use hydrate_wire::apis::{branches_api, health_api, projects_api};
 use hydrate_wire::models;
+use uuid::Uuid;
 
 use crate::config::Config;
 use crate::error::CliError;
@@ -48,6 +49,41 @@ impl Client {
             .block_on(projects_api::list_projects_v1_projects_get(
                 &self.cfg, params,
             ))
+            .map_err(CliError::from)
+    }
+
+    /// Create a new working branch off main in `project_id`, named `name`.
+    ///
+    /// The server does not reject a duplicate branch name, so callers that want
+    /// a name to be unique must check first (see `fork`); this method just
+    /// issues the create. Invalid input and server-side failures surface loudly.
+    pub fn create_branch(
+        &self,
+        project_id: Uuid,
+        name: &str,
+    ) -> Result<models::BranchCreateResponse, CliError> {
+        let params = branches_api::CreateBranchV1ProjectsProjectIdBranchesPostParams {
+            project_id: project_id.to_string(),
+            v1_create_branch_body: models::V1CreateBranchBody {
+                name: Some(Some(name.to_string())),
+            },
+        };
+        self.rt
+            .block_on(
+                branches_api::create_branch_v1_projects_project_id_branches_post(&self.cfg, params),
+            )
+            .map_err(CliError::from)
+    }
+
+    /// List the branches of `project_id`.
+    pub fn list_branches(&self, project_id: Uuid) -> Result<models::BranchListResponse, CliError> {
+        let params = branches_api::ListBranchesV1ProjectsProjectIdBranchesGetParams {
+            project_id: project_id.to_string(),
+        };
+        self.rt
+            .block_on(
+                branches_api::list_branches_v1_projects_project_id_branches_get(&self.cfg, params),
+            )
             .map_err(CliError::from)
     }
 }

@@ -1,16 +1,20 @@
 //! Verb handlers. [`dispatch`] routes a parsed [`Cli`] to exactly one handler.
 //!
-//! The handlers are stubs in this scaffold: they establish the surface and exit
-//! codes; behavior lands in later phases. A stub fails loud (it does not pretend
-//! to succeed) so an accidental call in a script is obvious, never silent.
+//! Implemented verbs return `Result<(), CliError>` and render their own success
+//! output in the selected mode; [`finish`] prints any error in that same mode
+//! and maps it to a stable exit code. The remaining verbs are still stubs that
+//! fail loud (they never pretend to succeed) until their phase lands.
 
 use std::process::ExitCode;
 
 use crate::cli::{Cli, Command, EdgeAction, NodeAction};
+use crate::error::CliError;
 use crate::exit;
+use crate::output::{self, OutputMode};
 
 mod branches;
 mod commit;
+mod context;
 mod diff;
 mod edge;
 mod fork;
@@ -19,9 +23,10 @@ mod status;
 
 /// Route a parsed command to its handler.
 pub fn dispatch(cli: Cli) -> ExitCode {
+    let mode = OutputMode::from_flags(cli.json, cli.human);
     match cli.command {
-        Command::Fork(args) => fork::run(args),
-        Command::Branches => branches::run(),
+        Command::Fork(args) => finish(fork::run(args, mode), mode),
+        Command::Branches => finish(branches::run(mode), mode),
         Command::Node { action } => match action {
             NodeAction::Add(args) => node::add(args),
         },
@@ -31,6 +36,18 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         Command::Status => status::run(),
         Command::Diff => diff::run(),
         Command::Commit => commit::run(),
+    }
+}
+
+/// Render a verb's outcome: success was already printed by the verb, so map it
+/// to `0`; an error is printed in `mode` and mapped to its stable exit code.
+fn finish(result: Result<(), CliError>, mode: OutputMode) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            output::print_error(&e, mode);
+            ExitCode::from(e.exit_code())
+        }
     }
 }
 

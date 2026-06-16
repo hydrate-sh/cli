@@ -40,6 +40,20 @@ fn state_dir(base: &Path) -> PathBuf {
     base.join(DIR)
 }
 
+/// Walk up from `start` looking for the working-copy root: the nearest ancestor
+/// (including `start` itself) that contains a `.hydrate/` directory.
+///
+/// This is the git-style discovery that lets a verb run from any subdirectory
+/// bind to the one working copy above it, instead of silently creating a second,
+/// nested `.hydrate/` that would alias the same project to two locations.
+/// Returns `None` when no ancestor is bound.
+pub fn find_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join(DIR).is_dir())
+        .map(Path::to_path_buf)
+}
+
 /// Create the `.hydrate/` directory if it does not exist.
 fn ensure_dir(base: &Path) -> Result<PathBuf, CliError> {
     let dir = state_dir(base);
@@ -304,6 +318,26 @@ mod tests {
             !leftover.exists(),
             "temp file was not cleaned up: {leftover:?}"
         );
+    }
+
+    #[test]
+    fn find_root_walks_up_to_the_bound_ancestor() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        binding().save(root).unwrap();
+        let nested = root.join("services").join("api");
+        std::fs::create_dir_all(&nested).unwrap();
+        // From a deep subdirectory, discovery finds the ancestor that holds
+        // `.hydrate/` — not the subdirectory itself.
+        assert_eq!(find_root(&nested).as_deref(), Some(root));
+    }
+
+    #[test]
+    fn find_root_is_none_when_unbound() {
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(find_root(&nested), None);
     }
 
     #[test]
