@@ -27,6 +27,8 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
         outputs,
         user_kind: args.user_kind.as_deref(),
         path_prefix: args.path_prefix.as_deref(),
+        description: args.description.as_deref(),
+        constraints: args.constraints.clone(),
     })?;
     changeset.into_stage().save(&base)?;
 

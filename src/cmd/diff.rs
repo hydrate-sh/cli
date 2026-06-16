@@ -40,6 +40,8 @@ fn op_line(op: &OpSummary) -> String {
             path,
             inputs,
             outputs,
+            description,
+            constraints,
         } => {
             let mut line = format!("+ {kind} {path}");
             let mut parts = Vec::new();
@@ -51,6 +53,14 @@ fn op_line(op: &OpSummary) -> String {
             }
             if !parts.is_empty() {
                 line.push_str(&format!(" ({})", parts.join("; ")));
+            }
+            // Show the spec content so it's verifiable in the terminal, not only
+            // after a commit + editor round-trip.
+            if let Some(d) = description {
+                line.push_str(&format!("\n    description: {d}"));
+            }
+            for c in constraints {
+                line.push_str(&format!("\n    constraint: {c}"));
             }
             line
         }
@@ -74,12 +84,16 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             path,
             inputs,
             outputs,
+            description,
+            constraints,
         } => serde_json::json!({
             "op": "add_node",
             "kind": kind,
             "node": path,
             "inputs": ports_json(inputs),
             "outputs": ports_json(outputs),
+            "description": description,
+            "constraints": constraints,
         }),
         OpSummary::Edge { from, to } => serde_json::json!({
             "op": "add_edge",
@@ -107,6 +121,8 @@ mod tests {
             path: "Api.Rater".to_string(),
             inputs: vec![("raw".to_string(), "HotDog".to_string())],
             outputs: vec![("score".to_string(), "Score".to_string())],
+            description: None,
+            constraints: vec![],
         }
     }
 
@@ -133,6 +149,40 @@ mod tests {
             out,
             "+ behavior Api.Rater (in: raw:HotDog; out: score:Score)"
         );
+    }
+
+    #[test]
+    fn human_renders_description_and_constraints() {
+        // The spec content must be verifiable in the terminal, not only after a
+        // commit + editor round-trip.
+        let op = OpSummary::Node {
+            kind: "behavior",
+            path: "Rater".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("scores a hotdog".to_string()),
+            constraints: vec!["fast".to_string(), "stateless".to_string()],
+        };
+        let out = render(&summary(vec![op]), OutputMode::Human);
+        assert!(out.contains("description: scores a hotdog"), "{out}");
+        assert!(out.contains("constraint: fast"), "{out}");
+        assert!(out.contains("constraint: stateless"), "{out}");
+    }
+
+    #[test]
+    fn json_node_carries_description_and_constraints() {
+        let op = OpSummary::Node {
+            kind: "behavior",
+            path: "Rater".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("the prompt".to_string()),
+            constraints: vec!["c1".to_string()],
+        };
+        let out = render(&summary(vec![op]), OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ops"][0]["description"], "the prompt");
+        assert_eq!(v["ops"][0]["constraints"][0], "c1");
     }
 
     #[test]

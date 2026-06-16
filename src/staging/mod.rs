@@ -61,6 +61,10 @@ pub struct NodeSpec<'a> {
     pub outputs: Vec<PortSpec>,
     pub user_kind: Option<&'a str>,
     pub path_prefix: Option<&'a str>,
+    /// The node's description (the spec/prompt). `None` omits it (server default).
+    pub description: Option<&'a str>,
+    /// Plain-text constraints; empty omits the field.
+    pub constraints: Vec<String>,
 }
 
 /// What `add_node` recorded, for the caller to render.
@@ -175,6 +179,14 @@ impl Changeset {
             outputs: Some(outputs.deltas),
             user_kind: spec.user_kind.map(|k| Some(k.to_string())),
             path_prefix: spec.path_prefix.map(|p| Some(p.to_string())),
+            // Description (the prompt) and constraints: omit when absent/empty so
+            // the server applies its own defaults rather than us forcing "".
+            description: spec.description.map(str::to_string),
+            constraints: if spec.constraints.is_empty() {
+                None
+            } else {
+                Some(spec.constraints.clone())
+            },
             ..Default::default()
         };
         let node = models::Node {
@@ -534,6 +546,10 @@ pub enum OpSummary {
         path: String,
         inputs: Vec<NamedType>,
         outputs: Vec<NamedType>,
+        /// The node's description (the spec/prompt), if one was staged.
+        description: Option<String>,
+        /// Plain-text constraints staged on the node.
+        constraints: Vec<String>,
     },
     Edge {
         from: String,
@@ -609,6 +625,8 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     path,
                     inputs: named_types(data.inputs.as_deref()),
                     outputs: named_types(data.outputs.as_deref()),
+                    description: data.description.filter(|s| !s.is_empty()),
+                    constraints: data.constraints.unwrap_or_default(),
                 });
             }
             "add_edge" => {
@@ -718,6 +736,8 @@ mod tests {
             outputs: vec![],
             user_kind: None,
             path_prefix: None,
+            description: None,
+            constraints: vec![],
         }
     }
 
@@ -937,6 +957,61 @@ mod tests {
         assert_eq!(d.node.kind, Kind::Boundary);
         assert_eq!(data.user_kind, Some(Some("service".to_string())));
         assert_eq!(data.path_prefix, Some(Some("/api".to_string())));
+    }
+
+    #[test]
+    fn add_node_stages_description_and_constraints() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            description: Some("Scores a hotdog 0-10"),
+            constraints: vec!["latency < 50ms".to_string()],
+            ..behavior("Rater", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.description.as_deref(), Some("Scores a hotdog 0-10"));
+        assert_eq!(data.constraints, Some(vec!["latency < 50ms".to_string()]));
+    }
+
+    #[test]
+    fn add_node_omits_empty_description_and_constraints() {
+        // No --description / --constraint → the fields are omitted (None), so the
+        // server applies its own defaults rather than us forcing "".
+        let mut cs = empty();
+        cs.add_node(&behavior("Plain", None)).unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.description, None);
+        assert_eq!(data.constraints, None);
+    }
+
+    #[test]
+    fn summarize_surfaces_description_and_constraints() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            description: Some("the prompt"),
+            constraints: vec!["c1".to_string(), "c2".to_string()],
+            ..behavior("Rater", None)
+        })
+        .unwrap();
+        let summary = summarize(&cs.into_stage(), None).unwrap();
+        let (desc, cons) = summary
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                OpSummary::Node {
+                    description,
+                    constraints,
+                    ..
+                } => Some((description.clone(), constraints.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(desc.as_deref(), Some("the prompt"));
+        assert_eq!(cons, vec!["c1".to_string(), "c2".to_string()]);
     }
 
     // The on-disk surface `commit` depends on: a staged node must survive a real
