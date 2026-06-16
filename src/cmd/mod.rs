@@ -31,10 +31,10 @@ pub fn dispatch(cli: Cli) -> ExitCode {
             NodeAction::Add(args) => finish(node::add(args, mode), mode),
         },
         Command::Edge { action } => match action {
-            EdgeAction::Add(args) => edge::add(args),
+            EdgeAction::Add(args) => finish(edge::add(args, mode), mode),
         },
-        Command::Status => status::run(),
-        Command::Diff => diff::run(),
+        Command::Status => finish(status::run(mode), mode),
+        Command::Diff => finish(diff::run(mode), mode),
         Command::Commit => commit::run(),
     }
 }
