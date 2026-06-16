@@ -8,7 +8,7 @@ use crate::cli::{NodeAddArgs, NodeKind};
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::{parse_port_spec, Changeset, NodeAdded, NodeSpec, PortSpec};
-use crate::state::Stage;
+use crate::state::{Index, Stage};
 
 pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
@@ -18,7 +18,7 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
     let inputs = parse_ports(&args.inputs)?;
     let outputs = parse_ports(&args.outputs)?;
 
-    let mut changeset = Changeset::from_stage(Stage::load(&base)?);
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
     let added = changeset.add_node(&NodeSpec {
         kind: map_kind(args.kind),
         name: &args.name,

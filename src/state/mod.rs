@@ -34,6 +34,7 @@ use crate::error::CliError;
 pub const DIR: &str = ".hydrate";
 const CONFIG_FILE: &str = "config.toml";
 const STAGE_FILE: &str = "stage.json";
+const INDEX_FILE: &str = "index.json";
 
 /// Absolute path to the `.hydrate/` directory under `base`.
 fn state_dir(base: &Path) -> PathBuf {
@@ -184,6 +185,69 @@ impl Stage {
         let path = dir.join(STAGE_FILE);
         let body = serde_json::to_string_pretty(self)
             .map_err(|e| CliError::State(format!("could not serialize stage: {e}")))?;
+        atomic_write(&path, body.as_bytes())
+    }
+}
+
+/// A pulled, read-only snapshot of the bound branch's graph, reduced to what the
+/// authoring verbs need to resolve a dotted `node.port` path against the **live**
+/// graph: a map from the same `node:`/`port:` keys the [`Stage`] alias table uses
+/// to the server's UUIDs, plus the branch version the snapshot was taken at.
+///
+/// This is the local "working copy" — but an *index*, not a round-trippable
+/// document. It is never a source of deltas (the stage is); it only lets
+/// `edge add` / `node add --parent` reference nodes that were committed in an
+/// earlier session. Absent means "no pull yet" (resolution falls back to the
+/// stage alone), a normal state; a malformed file is loud corruption, never
+/// papered over — a stale-but-parseable index that silently mis-resolves a path
+/// to the wrong UUID is exactly the failure we refuse.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Index {
+    /// The branch version this snapshot was pulled at — the optimistic-
+    /// concurrency token `commit` sends so a branch that moved since the pull
+    /// is rejected loudly rather than committed against blindly.
+    pub version: i32,
+    /// `node:<path>` / `port:<path>:<side>:<name>` → the server's UUID. The key
+    /// scheme is identical to the stage's alias table, so resolution can consult
+    /// one then the other with the same key.
+    pub entries: BTreeMap<String, Uuid>,
+}
+
+impl Index {
+    /// Look up a pre-built alias key (`node:…` / `port:…`) in the snapshot.
+    pub fn get(&self, key: &str) -> Option<Uuid> {
+        self.entries.get(key).copied()
+    }
+
+    /// Read the index from `base/.hydrate/index.json`.
+    ///
+    /// A missing file is `Ok(None)` — the workdir simply hasn't pulled yet, a
+    /// normal state callers handle by resolving against the stage alone. A file
+    /// that exists but cannot be read or parsed is a loud [`CliError::State`].
+    pub fn load(base: &Path) -> Result<Option<Index>, CliError> {
+        let path = state_dir(base).join(INDEX_FILE);
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(CliError::State(format!(
+                    "could not read {}: {e}",
+                    path.display()
+                )))
+            }
+        };
+        serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|e| CliError::State(format!("{} is corrupt: {e}", path.display())))
+    }
+
+    /// Write the index to `base/.hydrate/index.json`, creating `.hydrate/`.
+    pub fn save(&self, base: &Path) -> Result<(), CliError> {
+        let dir = ensure_dir(base)?;
+        let path = dir.join(INDEX_FILE);
+        let body = serde_json::to_string_pretty(self)
+            .map_err(|e| CliError::State(format!("could not serialize index: {e}")))?;
         atomic_write(&path, body.as_bytes())
     }
 }
@@ -347,5 +411,67 @@ mod tests {
         Stage::empty().save(tmp.path()).unwrap();
         assert!(Binding::load(tmp.path()).unwrap().is_some());
         assert_eq!(Stage::load(tmp.path()).unwrap(), Stage::empty());
+    }
+
+    fn index() -> Index {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "node:Api".to_string(),
+            Uuid::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555),
+        );
+        entries.insert(
+            "port:Api.Rater:out:score".to_string(),
+            Uuid::from_u128(0x6666_6666_6666_6666_6666_6666_6666_6666),
+        );
+        Index {
+            version: 7,
+            entries,
+        }
+    }
+
+    #[test]
+    fn index_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        let i = index();
+        i.save(tmp.path()).unwrap();
+        assert_eq!(Index::load(tmp.path()).unwrap(), Some(i));
+    }
+
+    #[test]
+    fn missing_index_is_none_not_error() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(Index::load(tmp.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn corrupt_index_fails_loud() {
+        let tmp = TempDir::new().unwrap();
+        ensure_dir(tmp.path()).unwrap();
+        std::fs::write(state_dir(tmp.path()).join(INDEX_FILE), "{ not valid json").unwrap();
+        let err = Index::load(tmp.path()).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert_eq!(err.kind(), "state_error");
+    }
+
+    // A parseable-but-incomplete index (missing a required key) must fail loud,
+    // not silently degrade to an empty/zeroed snapshot that would mis-resolve
+    // every committed path.
+    #[test]
+    fn index_missing_key_fails_loud() {
+        let tmp = TempDir::new().unwrap();
+        ensure_dir(tmp.path()).unwrap();
+        std::fs::write(state_dir(tmp.path()).join(INDEX_FILE), r#"{"entries": {}}"#).unwrap();
+        let err = Index::load(tmp.path()).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn index_get_resolves_a_known_key_and_misses_otherwise() {
+        let i = index();
+        assert_eq!(
+            i.get("node:Api"),
+            Some(Uuid::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555))
+        );
+        assert_eq!(i.get("node:Ghost"), None);
     }
 }

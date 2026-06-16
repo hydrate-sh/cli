@@ -6,11 +6,11 @@ use crate::cli::EdgeAddArgs;
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::{Changeset, EdgeAdded};
-use crate::state::Stage;
+use crate::state::{Index, Stage};
 
 pub fn add(args: EdgeAddArgs, mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
-    let mut changeset = Changeset::from_stage(Stage::load(&base)?);
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
     let added = changeset.add_edge(&args.from, &args.to)?;
     changeset.into_stage().save(&base)?;
 

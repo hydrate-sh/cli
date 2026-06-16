@@ -53,6 +53,18 @@ pub fn run(args: ForkArgs, mode: OutputMode) -> Result<(), CliError> {
         ))
     })?;
 
+    // Pull the fresh branch's seed into the local index so the working copy is
+    // immediately usable — `edge add` / `node add --parent` can reference the
+    // seeded nodes without a separate `pull`. The branch is already created and
+    // bound, so a pull failure is a partial success: report it loudly and point
+    // at the recovery rather than leaving the author wondering.
+    super::pull::refresh_index(&client, branch.id, &base).map_err(|e| {
+        CliError::State(format!(
+            "branch '{}' was forked and bound, but its graph could not be pulled: {e} — run `hydrate pull`",
+            branch.name
+        ))
+    })?;
+
     println!("{}", render(&project, &branch, &base, mode));
     Ok(())
 }

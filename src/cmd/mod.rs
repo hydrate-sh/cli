@@ -18,6 +18,7 @@ mod diff;
 mod edge;
 mod fork;
 mod node;
+mod pull;
 mod status;
 
 /// Route a parsed command to its handler.
@@ -26,6 +27,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
     match cli.command {
         Command::Fork(args) => finish(fork::run(args, mode), mode),
         Command::Branches => finish(branches::run(mode), mode),
+        Command::Pull => finish(pull::run(mode), mode),
         Command::Node { action } => match action {
             NodeAction::Add(args) => finish(node::add(args, mode), mode),
         },
