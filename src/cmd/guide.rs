@@ -61,13 +61,18 @@ Full reference and concepts: https://docs.hydrate.sh\
 ";
 
 pub fn run(mode: OutputMode) -> Result<(), CliError> {
-    match mode {
-        OutputMode::Human => println!("{GUIDE}"),
-        // Same information, machine-wrapped, so a piped consumer gets one stable
-        // key it can read the text from.
-        OutputMode::Json => println!("{}", serde_json::json!({ "guide": GUIDE })),
-    }
+    println!("{}", render(mode));
     Ok(())
+}
+
+/// The rendered guide for `mode`, returned (not printed) so the human/JSON
+/// branch selection is directly testable. Human = the text; JSON = the same
+/// text under one stable `guide` key (dual-output parity).
+fn render(mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Human => GUIDE.to_string(),
+        OutputMode::Json => serde_json::json!({ "guide": GUIDE }).to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -110,11 +115,15 @@ mod tests {
     }
 
     #[test]
-    fn json_mode_wraps_the_same_text_under_one_key() {
-        // Can't capture stdout here, but the JSON shape is the contract: a single
-        // `guide` string carrying the full text (dual-output parity).
-        let v = serde_json::json!({ "guide": GUIDE });
+    fn render_human_is_the_raw_text() {
+        assert_eq!(render(OutputMode::Human), GUIDE);
+    }
+
+    #[test]
+    fn render_json_wraps_the_same_text_under_one_key() {
+        // Exercises the actual JSON branch of `render` (not a re-typed literal):
+        // a single `guide` key carrying the identical text — dual-output parity.
+        let v: serde_json::Value = serde_json::from_str(&render(OutputMode::Json)).unwrap();
         assert_eq!(v["guide"], GUIDE);
-        assert!(v["guide"].as_str().unwrap().contains("authoring loop"));
     }
 }
