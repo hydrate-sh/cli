@@ -48,3 +48,23 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+
+  wire-drift:
+    name: wire client matches the spec (regenerate + diff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # openapi-generator runs on Java; node/npx is preinstalled on the runner.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: regenerate the wire client from the vendored openapi.json
+        run: ./scripts/regen-wire.sh
+      - name: assert the committed wire/ client is in sync
+        run: |
+          if ! git diff --quiet -- wire; then
+            echo "::error::wire/ is out of sync with openapi.json — run scripts/regen-wire.sh and commit the result"
+            git diff --stat -- wire
+            exit 1
+          fi
