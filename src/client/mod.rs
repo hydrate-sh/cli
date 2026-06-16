@@ -34,6 +34,23 @@ impl Client {
         Ok(Client { cfg, rt })
     }
 
+    /// Like [`Client::new`], but every request also carries an `Idempotency-Key`
+    /// header — used by `commit` so a retried apply is at-most-once. The header
+    /// rides on the HTTP client itself (the generated apply call takes no
+    /// per-request headers); harmless on the read it also makes.
+    pub fn with_idempotency_key(config: &Config, key: &str) -> Result<Client, CliError> {
+        let mut client = Client::new(config)?;
+        let value = reqwest::header::HeaderValue::from_str(key)
+            .map_err(|e| CliError::Other(format!("invalid idempotency key: {e}")))?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("idempotency-key", value);
+        client.cfg.client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .map_err(|e| CliError::Network(e.to_string()))?;
+        Ok(client)
+    }
+
     /// Liveness probe (unauthenticated). Proves base URL + transport end to end.
     pub fn health(&self) -> Result<models::HealthzResponse, CliError> {
         self.rt
@@ -83,6 +100,41 @@ impl Client {
         self.rt
             .block_on(
                 branches_api::list_branches_v1_projects_project_id_branches_get(&self.cfg, params),
+            )
+            .map_err(CliError::from)
+    }
+
+    /// The current version of `branch_id` (the optimistic-concurrency token to
+    /// pass as `expected_version`). Fails loud if the branch is gone.
+    pub fn branch_version(&self, project_id: Uuid, branch_id: Uuid) -> Result<i32, CliError> {
+        self.list_branches(project_id)?
+            .branches
+            .iter()
+            .find(|b| b.id == branch_id)
+            .map(|b| b.version)
+            .ok_or_else(|| {
+                CliError::Other(
+                    "the bound branch was not found on the server; it may have been deleted"
+                        .to_string(),
+                )
+            })
+    }
+
+    /// Apply a typed delta batch to `branch_id` under optimistic concurrency.
+    pub fn apply_deltas(
+        &self,
+        branch_id: Uuid,
+        body: models::V1DeltasBody,
+    ) -> Result<models::DeltaApplyResponse, CliError> {
+        let params = branches_api::ApplyBranchDeltasV1BranchesBranchIdDeltasPostParams {
+            branch_id: branch_id.to_string(),
+            v1_deltas_body: body,
+        };
+        self.rt
+            .block_on(
+                branches_api::apply_branch_deltas_v1_branches_branch_id_deltas_post(
+                    &self.cfg, params,
+                ),
             )
             .map_err(CliError::from)
     }

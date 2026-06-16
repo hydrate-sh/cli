@@ -30,10 +30,13 @@ dotenvy = "0.15"
 # Robust URL parsing for the base-URL scheme/host check (plaintext http only
 # to localhost). Already in the dependency tree via the wire client.
 url = "2"
+# Used only to attach the per-commit Idempotency-Key header on a client built
+# from the same reqwest already in the tree (rustls, no OpenSSL).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# SHA-256 of the staged batch -> the Idempotency-Key (at-most-once apply).
+sha2 = "0.10"
 
 [dev-dependencies]
-# Build a reqwest::StatusCode to construct wire ResponseError values in tests.
-reqwest = { version = "0.12", default-features = false }
 # Isolated temp dirs for the .hydrate workdir-state tests.
 tempfile = "3"
 

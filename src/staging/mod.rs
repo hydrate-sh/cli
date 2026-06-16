@@ -362,6 +362,35 @@ pub fn parse_port_spec(raw: &str) -> Result<PortSpec, CliError> {
     })
 }
 
+/// Lower the staged changeset into the typed delta batch `commit` POSTs.
+///
+/// Nodes are ordered before edges: an edge's handles reference ports created by
+/// the `add_node` deltas, so the nodes must be applied first within the batch.
+/// A delta this version did not author (an unknown `type`) is a loud error — we
+/// refuse to commit something we cannot order or vouch for.
+pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliError> {
+    use models::V1DeltasBodyDeltasInner as Inner;
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for value in &stage.deltas {
+        let kind = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CliError::State("a staged delta is missing its type".to_string()))?;
+        match kind {
+            "add_node" => nodes.push(Inner::AddNode(Box::new(parse_delta(value)?))),
+            "add_edge" => edges.push(Inner::AddEdge(Box::new(parse_delta(value)?))),
+            other => {
+                return Err(CliError::State(format!(
+                    "cannot commit an unsupported staged delta '{other}'"
+                )))
+            }
+        }
+    }
+    nodes.append(&mut edges);
+    Ok(nodes)
+}
+
 /// A `name:type` pair, e.g. an input port `raw:HotDog`.
 pub type NamedType = (String, String);
 
@@ -938,5 +967,65 @@ mod tests {
         let summary = summarize(&stage).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.other), (0, 0, 1));
         assert_eq!(summary.total(), 1);
+    }
+
+    // ---- lower (stage -> commit batch) ----
+
+    fn raw_edge() -> serde_json::Value {
+        serde_json::json!({
+            "type": "add_edge",
+            "edge": {
+                "id": Uuid::new_v4(),
+                "sourceHandle": Uuid::new_v4(),
+                "targetHandle": Uuid::new_v4(),
+            }
+        })
+    }
+
+    fn raw_node() -> serde_json::Value {
+        serde_json::json!({
+            "type": "add_node",
+            "node": { "id": Uuid::new_v4(), "kind": "behavior", "parent_id": null }
+        })
+    }
+
+    #[test]
+    fn lower_orders_nodes_before_edges() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        // Stage them edge-first; lower must still emit the node first so the
+        // edge's handles resolve when the batch is applied.
+        let mut stage = Stage::empty();
+        stage.deltas.push(raw_edge());
+        stage.deltas.push(raw_node());
+        let lowered = lower(&stage).unwrap();
+        assert_eq!(lowered.len(), 2);
+        assert!(
+            matches!(lowered[0], Inner::AddNode(_)),
+            "node must be first"
+        );
+        assert!(matches!(lowered[1], Inner::AddEdge(_)), "edge must be last");
+    }
+
+    #[test]
+    fn lower_rejects_an_unsupported_delta() {
+        let mut stage = Stage::empty();
+        stage
+            .deltas
+            .push(serde_json::json!({"type": "flatten_boundary", "id": Uuid::new_v4()}));
+        let err = lower(&stage).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("unsupported"), "{err}");
+    }
+
+    #[test]
+    fn lower_a_real_staged_graph_round_trips_into_the_batch() {
+        let mut cs = graph_with_two_ports();
+        cs.add_edge("Maker.dog", "Rater.raw").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        assert_eq!(lowered.len(), 3);
+        // Serializing the batch produces valid wire JSON (the POST body).
+        let json = serde_json::to_value(&lowered).unwrap();
+        assert_eq!(json[0]["type"], "add_node");
+        assert_eq!(json[2]["type"], "add_edge");
     }
 }
