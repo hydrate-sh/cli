@@ -567,9 +567,24 @@ impl StageSummary {
 /// Summarize a staged changeset for `status`/`diff`, rendering minted UUIDs back
 /// to the dotted paths the author used. A staged delta that cannot be parsed is
 /// a loud error — corruption is surfaced, never silently skipped.
-pub fn summarize(stage: &Stage) -> Result<StageSummary, CliError> {
-    let node_paths = reverse_paths(stage, "node:", render_node_path);
-    let port_paths = reverse_paths(stage, "port:", render_port_path);
+/// Load the stage and the pulled index from `base`, then summarize. The single
+/// entry point `status`/`diff` use, so the index is always threaded into
+/// rendering — a committed edge handle resolves to its dotted path rather than
+/// reading as "not staged". Keeping this here (not inline in each command) means
+/// the wiring can't silently regress to summarizing the stage alone.
+pub fn summarize_workdir(base: &std::path::Path) -> Result<StageSummary, CliError> {
+    let stage = Stage::load(base)?;
+    let index = Index::load(base)?;
+    summarize(&stage, index.as_ref())
+}
+
+pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, CliError> {
+    // Build the UUID → path maps from BOTH the stage aliases and the pulled
+    // index: a cross-commit edge's handle is a COMMITTED port UUID that lives
+    // only in the index, so rendering it (status/diff) needs the index too —
+    // otherwise it reads as "references a port that is not staged".
+    let node_paths = reverse_paths(stage, index, "node:", render_node_path);
+    let port_paths = reverse_paths(stage, index, "port:", render_port_path);
 
     let mut summary = StageSummary::default();
     for value in &stage.deltas {
@@ -620,15 +635,18 @@ fn parse_delta<D: serde::de::DeserializeOwned>(value: &serde_json::Value) -> Res
         .map_err(|e| CliError::State(format!("a staged delta could not be read: {e}")))
 }
 
-/// Build a UUID → display-string map from the alias keys with the given prefix.
+/// Build a UUID → display-string map from the alias keys with the given prefix,
+/// over the stage aliases AND the pulled index entries (committed identity).
 fn reverse_paths(
     stage: &Stage,
+    index: Option<&Index>,
     prefix: &str,
     render: fn(&str) -> String,
 ) -> std::collections::HashMap<Uuid, String> {
     stage
         .aliases
         .iter()
+        .chain(index.into_iter().flat_map(|i| i.entries.iter()))
         .filter_map(|(key, id)| key.strip_prefix(prefix).map(|rest| (*id, render(rest))))
         .collect()
 }
@@ -659,7 +677,10 @@ fn handle_path(
         .flatten()
         .ok_or_else(|| CliError::State("a staged edge is missing an endpoint".to_string()))?;
     map.get(&id).cloned().ok_or_else(|| {
-        CliError::State("a staged edge references a port that is not staged".to_string())
+        CliError::State(
+            "a staged edge references a port that is neither staged nor in the pulled index"
+                .to_string(),
+        )
     })
 }
 
@@ -1032,7 +1053,7 @@ mod tests {
         // Every minted UUID, as it appears stringified — none may surface.
         let minted: Vec<String> = stage.aliases.values().map(Uuid::to_string).collect();
 
-        let summary = summarize(&stage).unwrap();
+        let summary = summarize(&stage, None).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.total()), (2, 1, 3));
 
         // The edge op renders both endpoints by their dotted port paths.
@@ -1068,7 +1089,7 @@ mod tests {
     fn summarize_flags_a_delta_missing_its_type() {
         let mut stage = Stage::empty();
         stage.deltas.push(serde_json::json!({"node": {}}));
-        let err = summarize(&stage).unwrap_err();
+        let err = summarize(&stage, None).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
     }
 
@@ -1085,7 +1106,7 @@ mod tests {
                 "targetHandle": Uuid::new_v4(),
             }
         }));
-        let err = summarize(&stage).unwrap_err();
+        let err = summarize(&stage, None).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
     }
 
@@ -1095,7 +1116,7 @@ mod tests {
         stage
             .deltas
             .push(serde_json::json!({"type": "delete_node", "id": Uuid::new_v4()}));
-        let summary = summarize(&stage).unwrap();
+        let summary = summarize(&stage, None).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.other), (0, 0, 1));
         assert_eq!(summary.total(), 1);
     }
@@ -1171,6 +1192,7 @@ mod tests {
                     "position": { "x": 0.0, "y": 0.0 },
                     "data": { "name": "Rater", "description": "", "status": "idle",
                               "isTestNode": false, "is_external": false,
+                              "inputs": [ { "id": Uuid::from_u128(0x4ABC), "name": "raw", "type": "Patty" } ],
                               "outputs": [ { "id": score, "name": "score", "type": "Rating" } ] }
                 }
             ]
@@ -1365,6 +1387,96 @@ mod tests {
             d.edge.target_handle,
             Some(Some(stage.aliases["port:Sink:in:rating"]))
         );
+    }
+
+    #[test]
+    fn summarize_renders_a_cross_commit_edge_via_the_index() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.add_node(&NodeSpec {
+            inputs: vec![port("rating", "Rating")],
+            ..behavior("Sink", None)
+        })
+        .unwrap();
+        cs.add_edge("Api.Rater.score", "Sink.rating").unwrap();
+        let stage = cs.into_stage();
+
+        // The bug: the edge's source handle is a COMMITTED port UUID, absent
+        // from the stage aliases, so rendering without the index fails loud.
+        let err = summarize(&stage, None).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+
+        // The fix: with the index, the committed source renders by its path.
+        let summary = summarize(&stage, Some(&index)).unwrap();
+        let edge = summary
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                OpSummary::Edge { from, to } => Some((from.clone(), to.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            edge,
+            ("Api.Rater.score".to_string(), "Sink.rating".to_string())
+        );
+    }
+
+    #[test]
+    fn summarize_renders_a_committed_target_via_the_index() {
+        // The symmetric case: a freshly-staged SOURCE wired into a COMMITTED
+        // input port (`Api.Rater.raw`, in the index only). The target handle
+        // must also resolve through the index, not just the source.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.add_node(&NodeSpec {
+            outputs: vec![port("patty", "Patty")],
+            ..behavior("Grill", None)
+        })
+        .unwrap();
+        cs.add_edge("Grill.patty", "Api.Rater.raw").unwrap();
+        let stage = cs.into_stage();
+
+        let summary = summarize(&stage, Some(&index)).unwrap();
+        let edge = summary
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                OpSummary::Edge { from, to } => Some((from.clone(), to.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            edge,
+            ("Grill.patty".to_string(), "Api.Rater.raw".to_string())
+        );
+    }
+
+    #[test]
+    fn summarize_workdir_loads_and_threads_the_index_from_disk() {
+        // Guards the status/diff wiring: a cross-commit edge persisted to a
+        // workdir must render via summarize_workdir, which has to load AND pass
+        // the index. If the index weren't threaded, handle_path would fail loud.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.add_node(&NodeSpec {
+            inputs: vec![port("rating", "Rating")],
+            ..behavior("Sink", None)
+        })
+        .unwrap();
+        cs.add_edge("Api.Rater.score", "Sink.rating").unwrap();
+        cs.into_stage().save(tmp.path()).unwrap();
+        index.save(tmp.path()).unwrap();
+
+        let summary = summarize_workdir(tmp.path()).unwrap();
+        assert!(summary.ops.iter().any(|op| matches!(
+            op,
+            OpSummary::Edge { from, to } if from == "Api.Rater.score" && to == "Sink.rating"
+        )));
     }
 
     #[test]

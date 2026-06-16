@@ -4,12 +4,11 @@
 use super::context::require_workdir;
 use crate::error::CliError;
 use crate::output::OutputMode;
-use crate::staging::{summarize, NamedType, OpSummary, StageSummary};
-use crate::state::Stage;
+use crate::staging::{summarize_workdir, NamedType, OpSummary, StageSummary};
 
 pub fn run(mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
-    let summary = summarize(&Stage::load(&base)?)?;
+    let summary = summarize_workdir(&base)?;
     println!("{}", render(&summary, mode));
     Ok(())
 }
