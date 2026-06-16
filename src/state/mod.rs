@@ -17,6 +17,9 @@
 //!
 //! Consumed by the branch-context verbs (`fork`, `branches`, …) as they are
 //! implemented; until then this module is exercised by its own tests only.
+//! (`expect` can't replace `allow` here: under `--all-targets` the test build
+//! uses every item, so `dead_code` never fires there and an `expect` would be
+//! reported unfulfilled.)
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -45,9 +48,28 @@ fn ensure_dir(base: &Path) -> Result<PathBuf, CliError> {
     Ok(dir)
 }
 
+/// Write `body` to `path` atomically: write a sibling temp file, then `rename`
+/// it into place. A crash or full disk mid-write leaves the previous file
+/// intact rather than a truncated one — staged work is never half-written away.
+/// The temp file is a sibling so the rename stays within one filesystem (where
+/// it is atomic), and the rename replaces any existing target in a single step.
+fn atomic_write(path: &Path, body: &[u8]) -> Result<(), CliError> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, body)
+        .map_err(|e| CliError::State(format!("could not write {}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        // Best-effort cleanup; the rename error is the one that matters.
+        let _ = std::fs::remove_file(&tmp);
+        CliError::State(format!("could not replace {}: {e}", path.display()))
+    })
+}
+
 /// Which project and branch this working copy is attached to. Written by `fork`,
 /// read by every verb that needs a branch context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Binding {
     /// The project this workdir belongs to.
     pub project_id: Uuid,
@@ -88,8 +110,7 @@ impl Binding {
         let path = dir.join(CONFIG_FILE);
         let body = toml::to_string_pretty(self)
             .map_err(|e| CliError::State(format!("could not serialize binding: {e}")))?;
-        std::fs::write(&path, body)
-            .map_err(|e| CliError::State(format!("could not write {}: {e}", path.display())))
+        atomic_write(&path, body.as_bytes())
     }
 }
 
@@ -100,13 +121,19 @@ impl Binding {
 /// In this phase the stage is only round-tripped; the authoring verbs that fill
 /// `deltas` and `aliases` land in a later phase. The delta payloads are held as
 /// opaque JSON so the stage format does not have to track every wire delta shape.
+///
+/// Both fields are required on disk and unknown keys are rejected: a real stage
+/// always writes both, so a `stage.json` missing one or carrying a typo'd/renamed
+/// key is corruption, and corruption is surfaced loudly rather than papered over
+/// with an empty default that would silently drop the user's staged batch.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Stage {
     /// The staged deltas, in author order. Opaque here; shaped by the verbs.
-    #[serde(default)]
     pub deltas: Vec<serde_json::Value>,
-    /// Local name → server-assigned UUID, for names already committed upstream.
-    #[serde(default)]
+    /// Local name → the UUID minted for it at stage time, so a later delta in the
+    /// same batch can address a freshly-created node by its path/name before the
+    /// server has confirmed it.
     pub aliases: BTreeMap<String, Uuid>,
 }
 
@@ -143,8 +170,7 @@ impl Stage {
         let path = dir.join(STAGE_FILE);
         let body = serde_json::to_string_pretty(self)
             .map_err(|e| CliError::State(format!("could not serialize stage: {e}")))?;
-        std::fs::write(&path, body)
-            .map_err(|e| CliError::State(format!("could not write {}: {e}", path.display())))
+        atomic_write(&path, body.as_bytes())
     }
 }
 
@@ -225,6 +251,59 @@ mod tests {
         std::fs::write(state_dir(tmp.path()).join(STAGE_FILE), "{ not valid json").unwrap();
         let err = Stage::load(tmp.path()).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert_eq!(err.kind(), "state_error");
+    }
+
+    // A structurally-valid JSON object that is missing a required key must NOT
+    // degrade to an empty stage — that would silently discard staged work.
+    #[test]
+    fn stage_missing_key_fails_loud() {
+        let tmp = TempDir::new().unwrap();
+        ensure_dir(tmp.path()).unwrap();
+        std::fs::write(state_dir(tmp.path()).join(STAGE_FILE), r#"{"deltas": []}"#).unwrap();
+        let err = Stage::load(tmp.path()).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    // A typo'd / renamed key must be rejected, not silently dropped.
+    #[test]
+    fn stage_unknown_key_fails_loud() {
+        let tmp = TempDir::new().unwrap();
+        ensure_dir(tmp.path()).unwrap();
+        std::fs::write(
+            state_dir(tmp.path()).join(STAGE_FILE),
+            r#"{"deltas": [], "aliases": {}, "delta": []}"#,
+        )
+        .unwrap();
+        let err = Stage::load(tmp.path()).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn binding_unknown_key_fails_loud() {
+        let tmp = TempDir::new().unwrap();
+        let mut toml = toml::to_string_pretty(&binding()).unwrap();
+        toml.push_str("\nstray_key = \"x\"\n");
+        ensure_dir(tmp.path()).unwrap();
+        std::fs::write(state_dir(tmp.path()).join(CONFIG_FILE), toml).unwrap();
+        let err = Binding::load(tmp.path()).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+
+    // Re-saving overwrites in place (atomic rename) and leaves no `.tmp` litter.
+    #[test]
+    fn save_overwrites_and_leaves_no_temp_file() {
+        let tmp = TempDir::new().unwrap();
+        binding().save(tmp.path()).unwrap();
+        let mut updated = binding();
+        updated.branch_name = "feature".into();
+        updated.save(tmp.path()).unwrap();
+        assert_eq!(Binding::load(tmp.path()).unwrap(), Some(updated));
+        let leftover = state_dir(tmp.path()).join("config.toml.tmp");
+        assert!(
+            !leftover.exists(),
+            "temp file was not cleaned up: {leftover:?}"
+        );
     }
 
     #[test]
