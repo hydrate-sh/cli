@@ -618,6 +618,17 @@ mod tests {
         assert_eq!(i.edge_id(src, Uuid::from_u128(0x99)), None);
     }
 
+    #[test]
+    fn port_info_loads_an_index_without_a_description_field() {
+        // Back-compat: an index pulled before `description` existed has no such
+        // key; `#[serde(default)]` must load it as empty, not error.
+        let p: PortInfo = serde_json::from_str(
+            r#"{"id":"00000000-0000-0000-0000-000000000001","name":"raw","type":"T"}"#,
+        )
+        .expect("loads without a description key");
+        assert_eq!(p.description, "");
+    }
+
     // The richer index must survive a real save → load round trip with the new
     // fields populated.
     #[test]

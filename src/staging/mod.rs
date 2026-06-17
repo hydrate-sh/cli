@@ -4054,6 +4054,57 @@ mod tests {
     }
 
     #[test]
+    fn staged_fold_preserves_a_ports_description_across_two_edits() {
+        // The staged-fold path (staged_side_ports reading "description") is
+        // separate from the pulled snapshot: a second same-side edit must keep
+        // the description the first edit carried for a surviving port.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let raw_id = Uuid::from_u128(0x4ABC);
+        let mut graph = pulled_graph(api, rater, score, 5);
+        for n in graph.nodes.iter_mut() {
+            if n.id == rater {
+                for p in n.data.inputs.iter_mut().flatten() {
+                    if p.id == raw_id {
+                        p.description = Some("the raw upload".to_string());
+                    }
+                }
+            }
+        }
+        let index = index_from_graph(&graph).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_in: vec![port("a", "T")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_in: vec![port("b", "T")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let last = cs
+            .into_stage()
+            .deltas
+            .into_iter()
+            .rfind(|v| v["type"] == "update_node_data")
+            .unwrap();
+        let d: models::UpdateNodeDataDelta = serde_json::from_value(last).unwrap();
+        let inputs = d.after.inputs.unwrap();
+        let raw = inputs.iter().find(|p| p.id == raw_id).unwrap();
+        assert_eq!(
+            raw.description.as_deref(),
+            Some("the raw upload"),
+            "description survives the staged fold"
+        );
+    }
+
+    #[test]
     fn update_node_retype_config_keeps_id_changes_type() {
         let (mut cs, _r, cfg) = rater_with_config();
         cs.update_node(
