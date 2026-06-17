@@ -66,11 +66,10 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         args.clear_constraints,
     );
     let edit = NodeEdit {
-        name: args
-            .name
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_string),
+        // A node has no "clear name" semantics, so an empty/blank `--name` is
+        // garbage, not an untouched field — pass it through and let
+        // `validate_slug` reject it loudly rather than silently dropping it.
+        name: args.name.clone(),
         description,
         constraints,
         add_in: parse_ports(&args.add_in)?,
@@ -241,6 +240,35 @@ mod tests {
         let many = render_removed(&["Api".to_string(), "Store".to_string()], OutputMode::Human);
         assert!(many.contains("2 nodes"), "{many}");
         assert!(many.contains("Api, Store"), "{many}");
+    }
+
+    #[test]
+    fn render_updated_names_the_rename_and_ports_fields() {
+        let human = render_updated(
+            &NodeUpdated {
+                path: "Api.Rater".to_string(),
+                name: Some("Scorer".to_string()),
+                description: None,
+                constraints: None,
+                ports_changed: true,
+            },
+            OutputMode::Human,
+        );
+        assert!(human.contains("name + ports"), "{human}");
+
+        let out = render_updated(
+            &NodeUpdated {
+                path: "Api.Rater".to_string(),
+                name: Some("Scorer".to_string()),
+                description: None,
+                constraints: None,
+                ports_changed: true,
+            },
+            OutputMode::Json,
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["staged"]["name"], "Scorer");
+        assert_eq!(v["staged"]["ports_changed"], true);
     }
 
     #[test]
