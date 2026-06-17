@@ -7,10 +7,11 @@
 
 use std::process::ExitCode;
 
-use crate::cli::{Cli, Command, EdgeAction, NodeAction};
+use crate::cli::{BoundaryAction, Cli, Command, EdgeAction, NodeAction};
 use crate::error::CliError;
 use crate::output::{self, OutputMode};
 
+mod boundary;
 mod branches;
 mod clear;
 mod commit;
@@ -41,6 +42,9 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         Command::Edge { action } => match action {
             EdgeAction::Add(args) => finish(edge::add(args, mode), mode),
             EdgeAction::Rm(args) => finish(edge::rm(args, mode), mode),
+        },
+        Command::Boundary { action } => match action {
+            BoundaryAction::Flatten(args) => finish(boundary::flatten(args, mode), mode),
         },
         Command::Status => finish(status::run(mode), mode),
         Command::Diff => finish(diff::run(mode), mode),

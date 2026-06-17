@@ -331,6 +331,22 @@ impl Changeset {
             .collect()
     }
 
+    /// Node ids already staged for flattening (the `nodeId` of every staged
+    /// `flatten_boundary`). Mirrors `staged_deletions` so a boundary can't be
+    /// flattened twice — the second flatten targets a node the first already
+    /// dissolved, so without this guard it would silently stage a duplicate.
+    fn staged_flattens(&self) -> std::collections::HashSet<Uuid> {
+        self.stage
+            .deltas
+            .iter()
+            .filter(|v| {
+                v.get("type").and_then(serde_json::Value::as_str) == Some("flatten_boundary")
+            })
+            .filter_map(|v| v.get("nodeId").and_then(serde_json::Value::as_str))
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect()
+    }
+
     /// Edge ids already staged for deletion (the `edgeId` of every staged
     /// `delete_edge`). Mirrors `staged_deletions` so a committed edge can't be
     /// queued for deletion twice — the index isn't mutated, so without this a
@@ -634,6 +650,41 @@ impl Changeset {
         })
     }
 
+    /// Stage a flatten of the boundary at `path`: promotes its children to its
+    /// parent and removes the boundary. Requires the node to be a pulled
+    /// boundary — fails loud on a behavior, or when its kind isn't pulled.
+    pub fn flatten_boundary(&mut self, path: &str) -> Result<BoundaryFlattened, CliError> {
+        let id = self.resolve_node(path)?;
+        let info = self
+            .index
+            .as_ref()
+            .and_then(|i| i.node_info(&id))
+            .ok_or_else(|| {
+                CliError::InvalidArgument(format!(
+                    "can't flatten '{path}' — its kind isn't pulled; run `hydrate pull`"
+                ))
+            })?;
+        if info.kind != "boundary" {
+            return Err(CliError::InvalidArgument(format!(
+                "'{path}' is a {}, not a boundary — only boundaries can be flattened",
+                info.kind
+            )));
+        }
+        if self.staged_flattens().contains(&id) {
+            return Err(CliError::InvalidArgument(format!(
+                "boundary '{path}' is already staged for flatten"
+            )));
+        }
+        let delta = models::FlattenBoundaryDelta::new(
+            id,
+            models::flatten_boundary_delta::Type::FlattenBoundary,
+        );
+        self.push(&delta)?;
+        Ok(BoundaryFlattened {
+            path: path.to_string(),
+        })
+    }
+
     /// Stage a reparent of the node at `path` under `new_parent` (a dotted path,
     /// or `None` = top level). Rejects moving a node under itself or one of its
     /// own descendants (a cycle) — the server enforces this too.
@@ -787,6 +838,12 @@ pub struct NodeReparented {
     pub new_parent: Option<String>,
 }
 
+/// What `flatten_boundary` recorded, for the caller to render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundaryFlattened {
+    pub path: String,
+}
+
 /// What `update_node` recorded, for the caller to render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeUpdated {
@@ -898,6 +955,9 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
                 updates.push(Inner::UpdateNodeData(Box::new(parse_delta(value)?)))
             }
             "reparent_node" => updates.push(Inner::ReparentNode(Box::new(parse_delta(value)?))),
+            "flatten_boundary" => {
+                updates.push(Inner::FlattenBoundary(Box::new(parse_delta(value)?)))
+            }
             "delete_edge" => deletes.push(Inner::DeleteEdge(Box::new(parse_delta(value)?))),
             "delete_node" => deletes.push(Inner::DeleteNode(Box::new(parse_delta(value)?))),
             other => {
@@ -1120,6 +1180,10 @@ pub enum OpSummary {
         path: String,
         new_parent: Option<String>,
     },
+    /// A staged boundary flatten (promotes children, removes the boundary).
+    Flatten {
+        path: String,
+    },
     /// A staged edge deletion, rendered by its two port paths.
     DeleteEdge {
         from: String,
@@ -1265,6 +1329,17 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                 };
                 summary.updates += 1;
                 summary.ops.push(OpSummary::Reparent { path, new_parent });
+            }
+            "flatten_boundary" => {
+                let d: models::FlattenBoundaryDelta = parse_delta(value)?;
+                let path = node_paths.get(&d.node_id).cloned().ok_or_else(|| {
+                    CliError::State(
+                        "a staged flatten targets a node that is neither staged nor pulled"
+                            .to_string(),
+                    )
+                })?;
+                summary.updates += 1;
+                summary.ops.push(OpSummary::Flatten { path });
             }
             "delete_edge" => {
                 let d: models::DeleteEdgeDelta = parse_delta(value)?;
@@ -1859,6 +1934,103 @@ mod tests {
         assert!(err.to_string().contains("already staged"), "{err}");
     }
 
+    // ---- boundary flatten ----
+
+    #[test]
+    fn flatten_boundary_emits_the_delta_for_a_committed_boundary() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.flatten_boundary("Api").unwrap();
+        let d: models::FlattenBoundaryDelta = serde_json::from_value(
+            cs.into_stage()
+                .deltas
+                .into_iter()
+                .find(|v| v["type"] == "flatten_boundary")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(d.node_id, api);
+    }
+
+    #[test]
+    fn flatten_boundary_rejects_a_behavior() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        let err = cs.flatten_boundary("Api.Rater").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("not a boundary"), "{err}");
+    }
+
+    #[test]
+    fn flatten_boundary_without_a_pull_fails_loud() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            kind: Kind::Boundary,
+            ..behavior("Api", None)
+        })
+        .unwrap();
+        let err = cs.flatten_boundary("Api").unwrap_err();
+        assert!(err.to_string().contains("hydrate pull"), "{err}");
+    }
+
+    #[test]
+    fn summarize_renders_a_flatten_by_path() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.flatten_boundary("Api").unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        let found = summary.ops.iter().find_map(|op| match op {
+            OpSummary::Flatten { path } => Some(path.clone()),
+            _ => None,
+        });
+        assert_eq!(found.as_deref(), Some("Api"));
+        assert!(!format!("{summary:?}").contains(&api.to_string()));
+    }
+
+    #[test]
+    fn flatten_boundary_twice_fails_loud() {
+        // A second flatten targets a node the first already dissolved — reject it
+        // locally, parity with node rm / edge rm double-stage guards.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.flatten_boundary("Api").unwrap();
+        let err = cs.flatten_boundary("Api").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("already staged for flatten"),
+            "{err}"
+        );
+        let count = cs
+            .into_stage()
+            .deltas
+            .iter()
+            .filter(|v| v["type"] == "flatten_boundary")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn flatten_boundary_lowers_among_updates_after_adds_before_deletes() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.add_node(&behavior("New", None)).unwrap();
+        cs.flatten_boundary("Api").unwrap();
+        cs.remove_node("Api.Rater").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        assert!(matches!(lowered[0], Inner::AddNode(_)), "add first");
+        assert!(
+            matches!(lowered[1], Inner::FlattenBoundary(_)),
+            "flatten after adds, before deletes"
+        );
+        assert!(matches!(lowered[2], Inner::DeleteNode(_)), "delete last");
+    }
+
     // ---- node mv (reparent) ----
 
     #[test]
@@ -2226,12 +2398,12 @@ mod tests {
 
     #[test]
     fn summarize_counts_unknown_delta_types_as_other() {
-        // `flatten_boundary` is a real delta kind this version doesn't itemize
-        // yet — a good stand-in for "forward-compat unknown".
+        // A delta kind this version doesn't itemize (forward-compat). All current
+        // /v1 deltas are now rendered, so use a hypothetical future kind.
         let mut stage = Stage::empty();
         stage
             .deltas
-            .push(serde_json::json!({"type": "flatten_boundary", "nodeId": Uuid::new_v4()}));
+            .push(serde_json::json!({"type": "future_delta_kind", "nodeId": Uuid::new_v4()}));
         let summary = summarize(&stage, None).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.other), (0, 0, 1));
         assert_eq!(summary.total(), 1);
@@ -2279,7 +2451,7 @@ mod tests {
         let mut stage = Stage::empty();
         stage
             .deltas
-            .push(serde_json::json!({"type": "flatten_boundary", "id": Uuid::new_v4()}));
+            .push(serde_json::json!({"type": "future_delta_kind", "id": Uuid::new_v4()}));
         let err = lower(&stage).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
         assert!(err.to_string().contains("unsupported"), "{err}");

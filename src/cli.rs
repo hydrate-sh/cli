@@ -66,6 +66,12 @@ pub enum Command {
         action: EdgeAction,
     },
 
+    /// Operate on a boundary node.
+    Boundary {
+        #[command(subcommand)]
+        action: BoundaryAction,
+    },
+
     /// Show the bound branch and a summary of staged operations.
     Status,
 
@@ -229,6 +235,19 @@ pub struct EdgeRmArgs {
     /// Target port of the edge to remove (`node.port`).
     #[arg(long)]
     pub to: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BoundaryAction {
+    /// Flatten a boundary: promote its children to its parent and remove it.
+    Flatten(BoundaryFlattenArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BoundaryFlattenArgs {
+    /// Boundary to flatten, by dotted path (e.g. `Api`).
+    #[arg(value_name = "PATH")]
+    pub path: String,
 }
 
 #[derive(Debug, Args)]

@@ -104,6 +104,7 @@ fn op_line(op: &OpSummary) -> String {
                 new_parent.as_deref().unwrap_or("(top level)")
             )
         }
+        OpSummary::Flatten { path } => format!("~ flatten {path}"),
         OpSummary::DeleteEdge { from, to } => format!("- edge {from} -> {to}"),
         OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
@@ -161,6 +162,10 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "op": "reparent_node",
             "node": path,
             "parent": new_parent,
+        }),
+        OpSummary::Flatten { path } => serde_json::json!({
+            "op": "flatten_boundary",
+            "node": path,
         }),
         OpSummary::DeleteEdge { from, to } => serde_json::json!({
             "op": "delete_edge",
@@ -299,6 +304,21 @@ mod tests {
     fn human_renders_edge_by_paths() {
         let out = render(&summary(vec![edge_op()]), OutputMode::Human);
         assert_eq!(out, "+ edge Maker.dog -> Api.Rater.raw");
+    }
+
+    #[test]
+    fn human_and_json_render_a_flatten_by_path() {
+        let op = OpSummary::Flatten {
+            path: "Api".to_string(),
+        };
+        assert_eq!(
+            render(&summary(vec![op.clone()]), OutputMode::Human),
+            "~ flatten Api"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["op"], "flatten_boundary");
+        assert_eq!(v["ops"][0]["node"], "Api");
     }
 
     #[test]
