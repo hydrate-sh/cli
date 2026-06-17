@@ -93,6 +93,17 @@ pub struct NodeEdit {
     pub rm_out: Vec<String>,
     pub retype_in: Vec<PortSpec>,
     pub retype_out: Vec<PortSpec>,
+    /// Boundary classifier (`--user-kind`). `None` = untouched.
+    pub user_kind: Option<String>,
+    /// Boundary path prefix (`--path-prefix`). `None` = untouched.
+    pub path_prefix: Option<String>,
+    /// External marker toggle. `None` = untouched, `Some(true)` = `--external`,
+    /// `Some(false)` = `--no-external`.
+    pub is_external: Option<bool>,
+    /// External system kind label (`--external-kind`). `None` = untouched.
+    pub external_kind: Option<String>,
+    /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = replace.
+    pub verifications: Option<Vec<String>>,
 }
 
 impl NodeEdit {
@@ -109,6 +120,11 @@ impl NodeEdit {
         self.description.is_none()
             && self.constraints.is_none()
             && self.name.is_none()
+            && self.user_kind.is_none()
+            && self.path_prefix.is_none()
+            && self.is_external.is_none()
+            && self.external_kind.is_none()
+            && self.verifications.is_none()
             && !self.touches_ports()
     }
 }
@@ -441,7 +457,9 @@ impl Changeset {
     pub fn update_node(&mut self, path: &str, edit: &NodeEdit) -> Result<NodeUpdated, CliError> {
         if edit.is_empty() {
             return Err(CliError::InvalidArgument(
-                "nothing to set — pass --description, --constraint, --name, or a port flag"
+                "nothing to set — pass a field flag (--description, --constraint, \
+                 --name, --user-kind, --path-prefix, --external/--no-external, \
+                 --external-kind, --verification) or a port flag"
                     .to_string(),
             ));
         }
@@ -461,6 +479,26 @@ impl Changeset {
             constraints: edit.constraints.clone(),
             inputs,
             outputs,
+            // Scalar boundary/external fields are key-presence: present only when
+            // the flag was set. The double-option wire fields take Some(Some(v)).
+            user_kind: edit.user_kind.clone().map(Some),
+            path_prefix: edit.path_prefix.clone().map(Some),
+            is_external: edit.is_external,
+            external_kind: edit.external_kind.clone().map(Some),
+            // Verifications: None untouched, Some([]) clears, Some(vec) replaces —
+            // each text becomes a Verification with a minted id + default author.
+            verifications: edit.verifications.as_ref().map(|texts| {
+                texts
+                    .iter()
+                    .map(|text| {
+                        models::Verification::new(
+                            models::verification::Author::default(),
+                            Uuid::new_v4(),
+                            text.clone(),
+                        )
+                    })
+                    .collect()
+            }),
             ..Default::default()
         };
         let delta = models::UpdateNodeDataDelta::new(
@@ -485,6 +523,11 @@ impl Changeset {
             name: edit.name.clone(),
             description: edit.description.clone(),
             constraints: edit.constraints.clone(),
+            user_kind: edit.user_kind.clone(),
+            path_prefix: edit.path_prefix.clone(),
+            is_external: edit.is_external,
+            external_kind: edit.external_kind.clone(),
+            verifications: edit.verifications.clone(),
             ports_changed: edit.touches_ports(),
         })
     }
@@ -871,6 +914,12 @@ pub struct NodeUpdated {
     pub description: Option<String>,
     /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
     pub constraints: Option<Vec<String>>,
+    pub user_kind: Option<String>,
+    pub path_prefix: Option<String>,
+    pub is_external: Option<bool>,
+    pub external_kind: Option<String>,
+    /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
+    pub verifications: Option<Vec<String>>,
     pub ports_changed: bool,
 }
 
@@ -1212,6 +1261,11 @@ pub enum OpSummary {
         constraints: Option<Vec<String>>,
         inputs: Option<Vec<NamedType>>,
         outputs: Option<Vec<NamedType>>,
+        user_kind: Option<String>,
+        path_prefix: Option<String>,
+        external: Option<bool>,
+        external_kind: Option<String>,
+        verifications: Option<Vec<String>>,
     },
     /// A staged reparent: `new_parent` is `None` for the top level.
     Reparent {
@@ -1353,6 +1407,15 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     constraints: d.after.constraints,
                     inputs: d.after.inputs.map(|p| named_types(Some(&p))),
                     outputs: d.after.outputs.map(|p| named_types(Some(&p))),
+                    // Double-option wire fields flatten to "is it set" for display.
+                    user_kind: d.after.user_kind.flatten(),
+                    path_prefix: d.after.path_prefix.flatten(),
+                    external: d.after.is_external,
+                    external_kind: d.after.external_kind.flatten(),
+                    verifications: d
+                        .after
+                        .verifications
+                        .map(|vs| vs.into_iter().map(|v| v.text).collect()),
                 });
             }
             "reparent_node" => {
@@ -1953,6 +2016,50 @@ mod tests {
         let outs = outputs.expect("the resent output list is present");
         assert!(outs.iter().any(|(n, t)| n == "extra" && t == "Blob"));
         assert!(outs.iter().any(|(n, _)| n == "score"));
+    }
+
+    #[test]
+    fn summarize_update_node_carries_scalar_and_verification_fields() {
+        // delta -> OpSummary must flatten the double-option scalars and extract
+        // verification texts, so the preview shows them by value.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                user_kind: Some("subsystem".to_string()),
+                is_external: Some(true),
+                external_kind: Some("rest-api".to_string()),
+                verifications: Some(vec!["responds in 50ms".to_string()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        let found = summary
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                OpSummary::UpdateNode {
+                    user_kind,
+                    external,
+                    external_kind,
+                    verifications,
+                    ..
+                } => Some((
+                    user_kind.clone(),
+                    *external,
+                    external_kind.clone(),
+                    verifications.clone(),
+                )),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(found.0.as_deref(), Some("subsystem"));
+        assert_eq!(found.1, Some(true));
+        assert_eq!(found.2.as_deref(), Some("rest-api"));
+        assert_eq!(found.3, Some(vec!["responds in 50ms".to_string()]));
     }
 
     // The on-disk surface `commit` depends on: a staged node must survive a real
@@ -3428,6 +3535,81 @@ mod tests {
         )
         .unwrap();
         assert_eq!(update_delta(cs).after.name.as_deref(), Some("Scorer"));
+    }
+
+    #[test]
+    fn update_node_sets_boundary_and_external_scalars() {
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                user_kind: Some("subsystem".to_string()),
+                path_prefix: Some("src/api/".to_string()),
+                is_external: Some(true),
+                external_kind: Some("rest-api".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        // Double-option wire fields carry Some(Some(value)); is_external is a bool.
+        assert_eq!(d.after.user_kind, Some(Some("subsystem".to_string())));
+        assert_eq!(d.after.path_prefix, Some(Some("src/api/".to_string())));
+        assert_eq!(d.after.is_external, Some(true));
+        assert_eq!(d.after.external_kind, Some(Some("rest-api".to_string())));
+        // Untouched fields stay None (key-presence).
+        assert_eq!(d.after.description, None);
+        assert_eq!(d.after.verifications, None);
+    }
+
+    #[test]
+    fn update_node_no_external_sets_is_external_false() {
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                is_external: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(update_delta(cs).after.is_external, Some(false));
+    }
+
+    #[test]
+    fn update_node_replaces_verifications_with_minted_rows() {
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                verifications: Some(vec![
+                    "responds within 50ms".to_string(),
+                    "is idempotent".to_string(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let vs = update_delta(cs).after.verifications.unwrap();
+        let texts: Vec<&str> = vs.iter().map(|v| v.text.as_str()).collect();
+        assert_eq!(texts, vec!["responds within 50ms", "is idempotent"]);
+        // Each minted verification has a fresh id (distinct).
+        assert_ne!(vs[0].id, vs[1].id);
+    }
+
+    #[test]
+    fn update_node_clear_verifications_sets_an_empty_list() {
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                verifications: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Present-but-empty = cleared (distinct from None = untouched).
+        assert_eq!(update_delta(cs).after.verifications.unwrap().len(), 0);
     }
 
     #[test]

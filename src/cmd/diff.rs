@@ -80,6 +80,11 @@ fn op_line(op: &OpSummary) -> String {
             constraints,
             inputs,
             outputs,
+            user_kind,
+            path_prefix,
+            external,
+            external_kind,
+            verifications,
         } => {
             let mut line = format!("~ node {path}");
             if let Some(n) = name {
@@ -97,6 +102,27 @@ fn op_line(op: &OpSummary) -> String {
                     }
                 }
                 None => {}
+            }
+            match verifications {
+                Some(vs) if vs.is_empty() => line.push_str("\n    verifications: (cleared)"),
+                Some(vs) => {
+                    for v in vs {
+                        line.push_str(&format!("\n    verification: {v}"));
+                    }
+                }
+                None => {}
+            }
+            if let Some(uk) = user_kind {
+                line.push_str(&format!("\n    user-kind: {uk}"));
+            }
+            if let Some(pp) = path_prefix {
+                line.push_str(&format!("\n    path-prefix: {pp}"));
+            }
+            if let Some(ext) = external {
+                line.push_str(&format!("\n    external: {ext}"));
+            }
+            if let Some(ek) = external_kind {
+                line.push_str(&format!("\n    external-kind: {ek}"));
             }
             if let Some(ps) = inputs {
                 line.push_str(&format!("\n    inputs -> {}", join_ports(ps)));
@@ -161,6 +187,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             constraints,
             inputs,
             outputs,
+            user_kind,
+            path_prefix,
+            external,
+            external_kind,
+            verifications,
         } => serde_json::json!({
             "op": "update_node_data",
             "node": path,
@@ -169,6 +200,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "constraints": constraints,
             "inputs": inputs.as_ref().map(|p| ports_json(p)),
             "outputs": outputs.as_ref().map(|p| ports_json(p)),
+            "user_kind": user_kind,
+            "path_prefix": path_prefix,
+            "external": external,
+            "external_kind": external_kind,
+            "verifications": verifications,
         }),
         OpSummary::Reparent { path, new_parent } => serde_json::json!({
             "op": "reparent_node",
@@ -331,6 +367,11 @@ mod tests {
                 ("score".to_string(), "Rating".to_string()),
                 ("extra".to_string(), "Blob".to_string()),
             ]),
+            user_kind: None,
+            path_prefix: None,
+            external: None,
+            external_kind: None,
+            verifications: None,
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
         assert!(human.contains("~ node Api.Rater"), "{human}");
@@ -397,6 +438,53 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&render(&summary(vec![to_top]), OutputMode::Json)).unwrap();
         assert!(v["ops"][0]["parent"].is_null(), "{v}");
+    }
+
+    #[test]
+    fn human_and_json_render_update_scalar_and_verification_fields() {
+        let op = OpSummary::UpdateNode {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            inputs: None,
+            outputs: None,
+            user_kind: Some("subsystem".to_string()),
+            path_prefix: Some("src/api/".to_string()),
+            external: Some(true),
+            external_kind: Some("rest-api".to_string()),
+            verifications: Some(vec!["responds in 50ms".to_string()]),
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert!(human.contains("user-kind: subsystem"), "{human}");
+        assert!(human.contains("path-prefix: src/api/"), "{human}");
+        assert!(human.contains("external: true"), "{human}");
+        assert!(human.contains("external-kind: rest-api"), "{human}");
+        assert!(human.contains("verification: responds in 50ms"), "{human}");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["user_kind"], "subsystem");
+        assert_eq!(v["ops"][0]["external"], true);
+        assert_eq!(v["ops"][0]["verifications"][0], "responds in 50ms");
+    }
+
+    #[test]
+    fn human_renders_cleared_verifications_distinctly() {
+        let op = OpSummary::UpdateNode {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            inputs: None,
+            outputs: None,
+            user_kind: None,
+            path_prefix: None,
+            external: None,
+            external_kind: None,
+            verifications: Some(vec![]),
+        };
+        assert!(render(&summary(vec![op]), OutputMode::Human).contains("verifications: (cleared)"));
     }
 
     #[test]

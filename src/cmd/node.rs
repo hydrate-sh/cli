@@ -82,6 +82,20 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         rm_out: args.rm_out.clone(),
         retype_in: parse_ports(&args.retype_in)?,
         retype_out: parse_ports(&args.retype_out)?,
+        // Scalars: a blank value is "untouched", mirroring `--description ""`.
+        user_kind: blank_to_none(args.user_kind.as_deref()),
+        path_prefix: blank_to_none(args.path_prefix.as_deref()),
+        // --external / --no-external toggle is_external; neither = untouched
+        // (clap conflicts_with rules out both).
+        is_external: if args.external {
+            Some(true)
+        } else if args.no_external {
+            Some(false)
+        } else {
+            None
+        },
+        external_kind: blank_to_none(args.external_kind.as_deref()),
+        verifications: list_field(&args.verifications, args.clear_verifications),
     };
     let updated = changeset.update_node(&args.path, &edit)?;
     changeset.into_stage().save(&base)?;
@@ -102,20 +116,33 @@ fn set_fields(
     let description = description
         .filter(|s| !s.trim().is_empty())
         .map(str::to_string);
-    let constraints = if clear_constraints {
+    let constraints = list_field(constraints, clear_constraints);
+    (description, constraints)
+}
+
+/// A blank/whitespace scalar flag is "untouched" (`None`), mirroring how
+/// `--description ""` is treated everywhere. Pure, so it's unit-testable.
+fn blank_to_none(value: Option<&str>) -> Option<String> {
+    value.filter(|s| !s.trim().is_empty()).map(str::to_string)
+}
+
+/// Map a repeatable list flag + its `--clear-*` companion to key-presence intent:
+/// clear → `Some([])`; any values → `Some(list)` with blanks dropped; neither →
+/// `None` (untouched). Shared by constraints and verifications.
+fn list_field(values: &[String], clear: bool) -> Option<Vec<String>> {
+    if clear {
         Some(Vec::new())
-    } else if constraints.is_empty() {
+    } else if values.is_empty() {
         None
     } else {
         Some(
-            constraints
+            values
                 .iter()
-                .filter(|c| !c.trim().is_empty())
+                .filter(|v| !v.trim().is_empty())
                 .cloned()
                 .collect(),
         )
-    };
-    (description, constraints)
+    }
 }
 
 fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
@@ -126,6 +153,11 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
                 "name": u.name,
                 "description": u.description,
                 "constraints": u.constraints,
+                "user_kind": u.user_kind,
+                "path_prefix": u.path_prefix,
+                "external": u.is_external,
+                "external_kind": u.external_kind,
+                "verifications": u.verifications,
                 "ports_changed": u.ports_changed,
             }
         })
@@ -142,6 +174,23 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
                 Some(cs) if cs.is_empty() => fields.push("constraints cleared".to_string()),
                 Some(_) => fields.push("constraints".to_string()),
                 None => {}
+            }
+            match &u.verifications {
+                Some(vs) if vs.is_empty() => fields.push("verifications cleared".to_string()),
+                Some(_) => fields.push("verifications".to_string()),
+                None => {}
+            }
+            if u.user_kind.is_some() {
+                fields.push("user-kind".to_string());
+            }
+            if u.path_prefix.is_some() {
+                fields.push("path-prefix".to_string());
+            }
+            if u.is_external.is_some() {
+                fields.push("external".to_string());
+            }
+            if u.external_kind.is_some() {
+                fields.push("external-kind".to_string());
             }
             if u.ports_changed {
                 fields.push("ports".to_string());
@@ -317,6 +366,11 @@ mod tests {
                 name: Some("Scorer".to_string()),
                 description: None,
                 constraints: None,
+                user_kind: None,
+                path_prefix: None,
+                is_external: None,
+                external_kind: None,
+                verifications: None,
                 ports_changed: true,
             },
             OutputMode::Human,
@@ -329,6 +383,11 @@ mod tests {
                 name: Some("Scorer".to_string()),
                 description: None,
                 constraints: None,
+                user_kind: None,
+                path_prefix: None,
+                is_external: None,
+                external_kind: None,
+                verifications: None,
                 ports_changed: true,
             },
             OutputMode::Json,
@@ -346,6 +405,11 @@ mod tests {
                 name: None,
                 description: Some("p".to_string()),
                 constraints: Some(vec!["c".to_string()]),
+                user_kind: None,
+                path_prefix: None,
+                is_external: None,
+                external_kind: None,
+                verifications: None,
                 ports_changed: false,
             },
             OutputMode::Human,
@@ -360,6 +424,11 @@ mod tests {
                 name: None,
                 description: None,
                 constraints: Some(vec![]),
+                user_kind: None,
+                path_prefix: None,
+                is_external: None,
+                external_kind: None,
+                verifications: None,
                 ports_changed: false,
             },
             OutputMode::Human,
@@ -373,6 +442,11 @@ mod tests {
                 name: None,
                 description: Some("p".to_string()),
                 constraints: None,
+                user_kind: None,
+                path_prefix: None,
+                is_external: None,
+                external_kind: None,
+                verifications: None,
                 ports_changed: false,
             },
             OutputMode::Json,
@@ -381,6 +455,76 @@ mod tests {
         assert_eq!(v["staged"]["set"], "Api.Rater");
         assert_eq!(v["staged"]["description"], "p");
         assert!(v["staged"]["constraints"].is_null(), "{out}");
+    }
+
+    #[test]
+    fn blank_to_none_filters_whitespace() {
+        assert_eq!(blank_to_none(None), None);
+        assert_eq!(blank_to_none(Some("  ")), None);
+        assert_eq!(
+            blank_to_none(Some("subsystem")),
+            Some("subsystem".to_string())
+        );
+    }
+
+    #[test]
+    fn list_field_maps_clear_values_and_none() {
+        assert_eq!(list_field(&[], false), None); // untouched
+        assert_eq!(list_field(&[], true), Some(vec![])); // cleared
+        assert_eq!(
+            list_field(&["a".to_string(), "  ".to_string()], false),
+            Some(vec!["a".to_string()]) // blanks dropped
+        );
+    }
+
+    #[test]
+    fn render_updated_names_the_scalar_and_verification_fields() {
+        let u = NodeUpdated {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            user_kind: Some("subsystem".to_string()),
+            path_prefix: Some("src/api/".to_string()),
+            is_external: Some(true),
+            external_kind: Some("rest-api".to_string()),
+            verifications: Some(vec!["responds in 50ms".to_string()]),
+            ports_changed: false,
+        };
+        let human = render_updated(&u, OutputMode::Human);
+        for label in [
+            "user-kind",
+            "path-prefix",
+            "external",
+            "external-kind",
+            "verifications",
+        ] {
+            assert!(human.contains(label), "{human} missing {label}");
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&render_updated(&u, OutputMode::Json)).unwrap();
+        assert_eq!(v["staged"]["user_kind"], "subsystem");
+        assert_eq!(v["staged"]["path_prefix"], "src/api/");
+        assert_eq!(v["staged"]["external"], true);
+        assert_eq!(v["staged"]["external_kind"], "rest-api");
+        assert_eq!(v["staged"]["verifications"][0], "responds in 50ms");
+    }
+
+    #[test]
+    fn render_updated_distinguishes_cleared_verifications() {
+        let u = NodeUpdated {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            user_kind: None,
+            path_prefix: None,
+            is_external: None,
+            external_kind: None,
+            verifications: Some(vec![]),
+            ports_changed: false,
+        };
+        assert!(render_updated(&u, OutputMode::Human).contains("verifications cleared"));
     }
 
     #[test]
