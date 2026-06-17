@@ -34,6 +34,11 @@ pub struct Cli {
 }
 
 /// The verb set: branch context, authoring, inspection, commit.
+// `node set` carries the full NodeData write surface, so its Args struct is much
+// larger than the niladic verbs (Guide/Pull/…). The enum is parsed once at
+// startup, so the size spread is irrelevant — boxing would only obscure the clap
+// derive.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Print an orientation to authoring graphs: the loop, the concepts, a
@@ -170,6 +175,36 @@ pub struct NodeSetArgs {
     /// Change an output port's type, keeping its identity: `name:newtype` (repeatable).
     #[arg(long = "retype-out", value_name = "NAME:TYPE")]
     pub retype_out: Vec<String>,
+
+    /// Boundary classifier (e.g. `subsystem`). Boundary nodes only.
+    #[arg(long)]
+    pub user_kind: Option<String>,
+
+    /// Boundary path prefix (e.g. `src/media/`). Boundary nodes only.
+    #[arg(long)]
+    pub path_prefix: Option<String>,
+
+    /// Mark the node external (an outside system the graph depends on).
+    #[arg(long, conflicts_with = "no_external")]
+    pub external: bool,
+
+    /// Unmark the node external.
+    #[arg(long = "no-external")]
+    pub no_external: bool,
+
+    /// The external system's kind label (e.g. `rest-api`). For external nodes;
+    /// the server validates it against the node's external state.
+    #[arg(long)]
+    pub external_kind: Option<String>,
+
+    /// Replace the node's verifications (the checks it must satisfy) with these
+    /// (repeatable).
+    #[arg(long = "verification", value_name = "TEXT")]
+    pub verifications: Vec<String>,
+
+    /// Remove all verifications (mutually exclusive with --verification).
+    #[arg(long, conflicts_with = "verifications")]
+    pub clear_verifications: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
