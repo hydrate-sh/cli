@@ -618,8 +618,8 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
             node.id,
             crate::state::NodeInfo {
                 kind: node_kind_str(node.kind).to_string(),
-                inputs: port_infos(node.data.inputs.as_deref()),
-                outputs: port_infos(node.data.outputs.as_deref()),
+                inputs: port_infos(node.data.inputs.as_deref())?,
+                outputs: port_infos(node.data.outputs.as_deref())?,
             },
         );
     }
@@ -661,18 +661,27 @@ fn node_kind_str(kind: models::wire_node::Kind) -> &'static str {
     }
 }
 
-/// Project a wire port list into the index's [`PortInfo`]. Unnamed ports are
-/// skipped (not path-addressable, so `node set` can't target them; the server
-/// keeps them as-is when the surrounding node is updated).
-fn port_infos(ports: Option<&[models::WirePort]>) -> Vec<crate::state::PortInfo> {
+/// Project a wire port list into the index's [`PortInfo`] — ALL ports, including
+/// unnamed ones (recorded with an empty name). `node set` resends the full port
+/// list to preserve UUIDs, so dropping a port here would delete it (and its
+/// edges) on the next update. A port with no type is loud corruption: it can't
+/// be faithfully resent, so fail rather than fabricate `""` and clobber the
+/// server's type.
+fn port_infos(ports: Option<&[models::WirePort]>) -> Result<Vec<crate::state::PortInfo>, CliError> {
     ports
         .unwrap_or_default()
         .iter()
-        .filter_map(|p| {
-            Some(crate::state::PortInfo {
+        .map(|p| {
+            let r#type = p.r#type.clone().ok_or_else(|| {
+                CliError::State(format!(
+                    "the branch graph has a port (id {}) with no type",
+                    p.id
+                ))
+            })?;
+            Ok(crate::state::PortInfo {
                 id: p.id,
-                name: p.name.clone()?,
-                r#type: p.r#type.clone().unwrap_or_default(),
+                name: p.name.clone().unwrap_or_default(),
+                r#type,
             })
         })
         .collect()
@@ -1623,6 +1632,79 @@ mod tests {
             (score, "score", "Rating")
         );
         assert_eq!(rater_info.inputs[0].name, "raw");
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_a_typeless_port() {
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA), "version": "1",
+            "edges": [],
+            "nodes": [ { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
+                "position": {"x":0.0,"y":0.0},
+                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                         "outputs":[{"id":Uuid::from_u128(7),"name":"o"}]} } ],
+        }))
+        .unwrap();
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("with no type"), "{err}");
+    }
+
+    #[test]
+    fn index_from_graph_keeps_an_unnamed_port_in_node_info() {
+        // Unnamed ports aren't path-addressable (excluded from `entries`), but
+        // node_info MUST keep them (id + type) so `node set` can resend the full
+        // list without dropping them.
+        let node = Uuid::from_u128(1);
+        let unnamed = Uuid::from_u128(0x99);
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA), "version": "1",
+            "edges": [],
+            "nodes": [ { "id": node, "kind": "behavior", "parent_id": null,
+                "position": {"x":0.0,"y":0.0},
+                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                         "outputs":[{"id":unnamed,"type":"T"}]} } ],
+        }))
+        .unwrap();
+        let index = index_from_graph(&graph).unwrap();
+        // Not path-addressable...
+        assert!(index.entries.keys().all(|k| !k.starts_with("port:")));
+        // ...but preserved in node_info (id kept, empty name).
+        let outs = &index.node_info(&node).unwrap().outputs;
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].id, unnamed);
+        assert_eq!(outs[0].name, "");
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_two_edges_between_the_same_ports() {
+        let (src, tgt) = (Uuid::from_u128(0x50), Uuid::from_u128(0x70));
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA), "version": "1",
+            "nodes": [
+                { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "outputs":[{"id":src,"name":"o","type":"T"}]} },
+                { "id": Uuid::from_u128(2), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"B","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "inputs":[{"id":tgt,"name":"i","type":"T"}]} },
+            ],
+            "edges": [
+                { "id": Uuid::from_u128(0xE1), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "sourceHandle": src, "targetHandle": tgt },
+                { "id": Uuid::from_u128(0xE2), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "sourceHandle": src, "targetHandle": tgt },
+            ],
+        }))
+        .unwrap();
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(
+            err.to_string().contains("two edges between the same ports"),
+            "{err}"
+        );
     }
 
     #[test]
