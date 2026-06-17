@@ -50,6 +50,10 @@ pub struct PortSpec {
     pub r#type: String,
 }
 
+/// The new full port list for one edited side (`None` = leave untouched) plus
+/// the `(name, id)` pairs that were added, for alias recording.
+type EditedSide = (Option<Vec<models::Port>>, Vec<(String, Uuid)>);
+
 /// A node to stage. `parent` is the dotted path of an already-staged boundary
 /// (or `None` for a top-level node).
 #[derive(Debug, Clone)]
@@ -65,6 +69,42 @@ pub struct NodeSpec<'a> {
     pub description: Option<&'a str>,
     /// Plain-text constraints; empty omits the field.
     pub constraints: Vec<String>,
+}
+
+/// A partial edit to an existing node, for `node set`. Empty fields are left
+/// untouched (key-presence). Port edits start from the node's current (pulled)
+/// ports and preserve surviving port UUIDs.
+#[derive(Debug, Clone, Default)]
+pub struct NodeEdit {
+    pub description: Option<String>,
+    /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = replace.
+    pub constraints: Option<Vec<String>>,
+    /// Rename the node.
+    pub name: Option<String>,
+    pub add_in: Vec<PortSpec>,
+    pub add_out: Vec<PortSpec>,
+    pub rm_in: Vec<String>,
+    pub rm_out: Vec<String>,
+    pub retype_in: Vec<PortSpec>,
+    pub retype_out: Vec<PortSpec>,
+}
+
+impl NodeEdit {
+    fn touches_ports(&self) -> bool {
+        !(self.add_in.is_empty()
+            && self.add_out.is_empty()
+            && self.rm_in.is_empty()
+            && self.rm_out.is_empty()
+            && self.retype_in.is_empty()
+            && self.retype_out.is_empty())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.description.is_none()
+            && self.constraints.is_none()
+            && self.name.is_none()
+            && !self.touches_ports()
+    }
 }
 
 /// What `add_node` recorded, for the caller to render.
@@ -296,21 +336,29 @@ impl Changeset {
     /// fields present in `after` change, the rest are left untouched — so we send
     /// just what was set, never echoing the node's other data. At least one of
     /// `description`/`constraints` must be `Some`, else there's nothing to do.
-    pub fn update_node(
-        &mut self,
-        path: &str,
-        description: Option<&str>,
-        constraints: Option<Vec<String>>,
-    ) -> Result<NodeUpdated, CliError> {
-        if description.is_none() && constraints.is_none() {
+    pub fn update_node(&mut self, path: &str, edit: &NodeEdit) -> Result<NodeUpdated, CliError> {
+        if edit.is_empty() {
             return Err(CliError::InvalidArgument(
-                "nothing to set — pass --description and/or --constraint".to_string(),
+                "nothing to set — pass --description, --constraint, --name, or a port flag"
+                    .to_string(),
             ));
         }
         let id = self.resolve_node(path)?;
+        if let Some(new) = &edit.name {
+            validate_slug(new, "node name")?;
+        }
+        // Port edits resend the FULL list for the touched side, starting from the
+        // node's CURRENT ports (from the pulled snapshot) so surviving ports keep
+        // their UUIDs — change a port id and you orphan every edge on it.
+        let (inputs, in_added) = self.edited_side(id, path, Side::In, edit)?;
+        let (outputs, out_added) = self.edited_side(id, path, Side::Out, edit)?;
+
         let after = models::NodeData {
-            description: description.map(str::to_string),
-            constraints: constraints.clone(),
+            name: edit.name.clone(),
+            description: edit.description.clone(),
+            constraints: edit.constraints.clone(),
+            inputs,
+            outputs,
             ..Default::default()
         };
         let delta = models::UpdateNodeDataDelta::new(
@@ -319,11 +367,109 @@ impl Changeset {
             models::update_node_data_delta::Type::UpdateNodeData,
         );
         self.push(&delta)?;
+        // Record aliases for newly-added ports so they're wireable this session.
+        for (name, port_id) in in_added {
+            self.stage
+                .aliases
+                .insert(port_key(path, Side::In, &name), port_id);
+        }
+        for (name, port_id) in out_added {
+            self.stage
+                .aliases
+                .insert(port_key(path, Side::Out, &name), port_id);
+        }
         Ok(NodeUpdated {
             path: path.to_string(),
-            description: description.map(str::to_string),
-            constraints,
+            name: edit.name.clone(),
+            description: edit.description.clone(),
+            constraints: edit.constraints.clone(),
+            ports_changed: edit.touches_ports(),
         })
+    }
+
+    /// Compute the new full port list for `side` when the edit touches it, else
+    /// `None` (leave it untouched, per key-presence). Surviving ports keep their
+    /// pulled UUIDs; added ports mint new ones. Returns the wire ports plus the
+    /// `(name, id)` pairs added, for alias recording. Fails loud on removing /
+    /// retyping a port that isn't there, or adding one that already exists.
+    fn edited_side(
+        &self,
+        node_id: Uuid,
+        path: &str,
+        side: Side,
+        edit: &NodeEdit,
+    ) -> Result<EditedSide, CliError> {
+        let (add, rm, retype) = match side {
+            Side::In => (&edit.add_in, &edit.rm_in, &edit.retype_in),
+            Side::Out => (&edit.add_out, &edit.rm_out, &edit.retype_out),
+        };
+        if add.is_empty() && rm.is_empty() && retype.is_empty() {
+            return Ok((None, Vec::new()));
+        }
+        let info = self
+            .index
+            .as_ref()
+            .and_then(|i| i.node_info(&node_id))
+            .ok_or_else(|| {
+                CliError::InvalidArgument(format!(
+                    "can't edit ports of '{path}' — its current ports aren't pulled; run `hydrate pull`"
+                ))
+            })?;
+        let current = match side {
+            Side::In => &info.inputs,
+            Side::Out => &info.outputs,
+        };
+        let mut ports: Vec<(String, Uuid, String)> = current
+            .iter()
+            .map(|p| (p.name.clone(), p.id, p.r#type.clone()))
+            .collect();
+
+        for name in rm {
+            let before = ports.len();
+            ports.retain(|(n, _, _)| n != name);
+            if ports.len() == before {
+                return Err(CliError::InvalidArgument(format!(
+                    "'{path}' has no {} port '{name}' to remove",
+                    side.as_str()
+                )));
+            }
+        }
+        for spec in retype {
+            let port = ports
+                .iter_mut()
+                .find(|(n, _, _)| n == &spec.name)
+                .ok_or_else(|| {
+                    CliError::InvalidArgument(format!(
+                        "'{path}' has no {} port '{}' to retype",
+                        side.as_str(),
+                        spec.name
+                    ))
+                })?;
+            port.2 = spec.r#type.clone(); // keep id + name, change only the type
+        }
+        let mut added = Vec::new();
+        for spec in add {
+            if ports.iter().any(|(n, _, _)| n == &spec.name) {
+                return Err(CliError::InvalidArgument(format!(
+                    "'{path}' already has a {} port '{}'",
+                    side.as_str(),
+                    spec.name
+                )));
+            }
+            let id = Uuid::new_v4();
+            ports.push((spec.name.clone(), id, spec.r#type.clone()));
+            added.push((spec.name.clone(), id));
+        }
+        let wire = ports
+            .into_iter()
+            .map(|(name, id, r#type)| models::Port {
+                description: None,
+                id,
+                name: Some(name),
+                r#type: Some(r#type),
+            })
+            .collect();
+        Ok((Some(wire), added))
     }
 
     /// Stage a cascade-deletion of the node at `path` (resolved against the
@@ -466,9 +612,11 @@ pub struct NodeRemoved {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeUpdated {
     pub path: String,
+    pub name: Option<String>,
     pub description: Option<String>,
     /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
     pub constraints: Option<Vec<String>>,
+    pub ports_changed: bool,
 }
 
 struct MintedPorts {
@@ -768,10 +916,14 @@ pub enum OpSummary {
     },
     /// A staged partial edit of a node's data (only the set fields change).
     /// `constraints`: `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
+    /// `inputs`/`outputs`: `Some(list)` = that side was replaced (full new list).
     UpdateNode {
         path: String,
+        name: Option<String>,
         description: Option<String>,
         constraints: Option<Vec<String>>,
+        inputs: Option<Vec<NamedType>>,
+        outputs: Option<Vec<NamedType>>,
     },
     /// A staged node deletion (cascades the subtree server-side).
     DeleteNode {
@@ -872,10 +1024,13 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                 summary.updates += 1;
                 summary.ops.push(OpSummary::UpdateNode {
                     path,
+                    name: d.after.name,
                     description: d.after.description.filter(|s| !s.is_empty()),
                     // Keep the Option so the preview distinguishes "cleared"
                     // (Some([])) from "untouched" (None) — they are different edits.
                     constraints: d.after.constraints,
+                    inputs: d.after.inputs.map(|p| named_types(Some(&p))),
+                    outputs: d.after.outputs.map(|p| named_types(Some(&p))),
                 });
             }
             "delete_node" => {
@@ -999,6 +1154,14 @@ mod tests {
 
     fn empty() -> Changeset {
         Changeset::with_index(Stage::empty(), None)
+    }
+
+    /// A scalar `node set` edit setting only the description.
+    fn desc_edit(d: &str) -> NodeEdit {
+        NodeEdit {
+            description: Some(d.to_string()),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -2127,7 +2290,7 @@ mod tests {
         let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
         let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
         let mut cs = Changeset::with_index(Stage::empty(), Some(index));
-        cs.update_node("Api.Rater", Some("new prompt"), None)
+        cs.update_node("Api.Rater", &desc_edit("new prompt"))
             .unwrap();
         let d: models::UpdateNodeDataDelta =
             serde_json::from_value(cs.into_stage().deltas[0].clone()).unwrap();
@@ -2138,11 +2301,187 @@ mod tests {
         assert_eq!(d.after.name, None);
     }
 
+    /// Pull a node with one input (`raw:Patty`, id 0x4ABC) and one output
+    /// (`score:Rating`, id == `score`), for the port-edit tests.
+    fn rater_changeset() -> (Changeset, Uuid, Uuid) {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        (
+            Changeset::with_index(Stage::empty(), Some(index)),
+            Uuid::from_u128(0x4ABC),
+            score,
+        )
+    }
+
+    fn update_delta(cs: Changeset) -> models::UpdateNodeDataDelta {
+        serde_json::from_value(
+            cs.into_stage()
+                .deltas
+                .into_iter()
+                .find(|v| v["type"] == "update_node_data")
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn update_node_add_port_resends_full_list_preserving_existing_ids() {
+        let (mut cs, _raw, _score) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_out: vec![port("extra", "Blob")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let alias_present = cs
+            .into_stage()
+            .aliases
+            .contains_key("port:Api.Rater:out:extra");
+        assert!(alias_present, "added port must be wireable this session");
+
+        let (mut cs, _raw, score) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_out: vec![port("extra", "Blob")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        let outs = d.after.outputs.unwrap();
+        // The existing output is resent with its ORIGINAL id (edges stay intact).
+        assert!(outs
+            .iter()
+            .any(|p| p.id == score && p.name.as_deref() == Some("score")));
+        // The new port has a fresh id and the given type.
+        let extra = outs
+            .iter()
+            .find(|p| p.name.as_deref() == Some("extra"))
+            .unwrap();
+        assert_ne!(extra.id, score);
+        assert_eq!(extra.r#type.as_deref(), Some("Blob"));
+        // The untouched side stays None (key-presence: leave it).
+        assert_eq!(d.after.inputs, None);
+    }
+
+    #[test]
+    fn update_node_retype_keeps_the_port_id_changes_only_the_type() {
+        let (mut cs, _raw, score) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                retype_out: vec![port("score", "NewType")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        let s = d
+            .after
+            .outputs
+            .unwrap()
+            .into_iter()
+            .find(|p| p.name.as_deref() == Some("score"))
+            .unwrap();
+        assert_eq!(s.id, score, "retype must preserve the port UUID");
+        assert_eq!(s.r#type.as_deref(), Some("NewType"));
+    }
+
+    #[test]
+    fn update_node_rm_port_drops_it() {
+        let (mut cs, _raw, _score) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                rm_in: vec!["raw".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        // The only input was removed → inputs is present-but-empty (that side replaced).
+        assert_eq!(d.after.inputs.unwrap().len(), 0);
+        assert_eq!(d.after.outputs, None);
+    }
+
+    #[test]
+    fn update_node_port_edits_fail_loud() {
+        // rm a port that isn't there
+        let (mut cs, _r, _s) = rater_changeset();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    rm_in: vec!["nope".to_string()],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("no in port 'nope'"), "{err}");
+
+        // add a port that already exists
+        let (mut cs, _r, _s) = rater_changeset();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    add_in: vec![port("raw", "X")],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already has a in port 'raw'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_node_port_edit_without_a_pull_fails_loud() {
+        // A staged-only node has no pulled ports, so port edits can't proceed.
+        let mut cs = empty();
+        cs.add_node(&behavior("Rater", None)).unwrap();
+        let err = cs
+            .update_node(
+                "Rater",
+                &NodeEdit {
+                    add_out: vec![port("x", "T")],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("hydrate pull"), "{err}");
+    }
+
+    #[test]
+    fn update_node_rename_sets_the_name() {
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                name: Some("Scorer".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(update_delta(cs).after.name.as_deref(), Some("Scorer"));
+    }
+
     #[test]
     fn update_node_clear_constraints_sets_an_empty_list() {
         let mut cs = empty();
         cs.add_node(&behavior("Rater", None)).unwrap();
-        cs.update_node("Rater", None, Some(vec![])).unwrap();
+        cs.update_node(
+            "Rater",
+            &NodeEdit {
+                constraints: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let d: models::UpdateNodeDataDelta = serde_json::from_value(
             cs.into_stage()
                 .deltas
@@ -2160,7 +2499,7 @@ mod tests {
     fn update_node_with_nothing_to_set_fails_loud() {
         let mut cs = empty();
         cs.add_node(&behavior("Rater", None)).unwrap();
-        let err = cs.update_node("Rater", None, None).unwrap_err();
+        let err = cs.update_node("Rater", &NodeEdit::default()).unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
         assert!(err.to_string().contains("nothing to set"), "{err}");
     }
@@ -2168,7 +2507,7 @@ mod tests {
     #[test]
     fn update_node_unknown_path_fails_loud() {
         let mut cs = empty();
-        let err = cs.update_node("Ghost", Some("x"), None).unwrap_err();
+        let err = cs.update_node("Ghost", &desc_edit("x")).unwrap_err();
         assert!(err.to_string().contains("Ghost"), "{err}");
     }
 
@@ -2178,7 +2517,7 @@ mod tests {
         let mut cs = empty();
         cs.add_node(&behavior("Rater", None)).unwrap();
         cs.add_node(&behavior("Gone", None)).unwrap();
-        cs.update_node("Rater", Some("edited"), None).unwrap();
+        cs.update_node("Rater", &desc_edit("edited")).unwrap();
         cs.remove_node("Gone").unwrap();
         let lowered = lower(&cs.into_stage()).unwrap();
         // adds (2) → update (1) → delete (1)
@@ -2196,8 +2535,15 @@ mod tests {
         let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
         let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
         let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
-        cs.update_node("Api.Rater", Some("edited"), Some(vec!["c".to_string()]))
-            .unwrap();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                description: Some("edited".to_string()),
+                constraints: Some(vec!["c".to_string()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
         assert_eq!(summary.updates, 1);
         let found = summary.ops.iter().find_map(|op| match op {
@@ -2205,6 +2551,7 @@ mod tests {
                 path,
                 description,
                 constraints,
+                ..
             } => Some((path.clone(), description.clone(), constraints.clone())),
             _ => None,
         });
@@ -2236,7 +2583,7 @@ mod tests {
         let mut cs = empty();
         cs.add_node(&behavior("Rater", None)).unwrap();
         cs.remove_node("Rater").unwrap();
-        let err = cs.update_node("Rater", Some("x"), None).unwrap_err();
+        let err = cs.update_node("Rater", &desc_edit("x")).unwrap_err();
         assert!(err.to_string().contains("staged for deletion"), "{err}");
     }
 

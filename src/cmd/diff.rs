@@ -67,10 +67,16 @@ fn op_line(op: &OpSummary) -> String {
         OpSummary::Edge { from, to } => format!("+ edge {from} -> {to}"),
         OpSummary::UpdateNode {
             path,
+            name,
             description,
             constraints,
+            inputs,
+            outputs,
         } => {
             let mut line = format!("~ node {path}");
+            if let Some(n) = name {
+                line.push_str(&format!("\n    rename -> {n}"));
+            }
             if let Some(d) = description {
                 line.push_str(&format!("\n    description: {d}"));
             }
@@ -83,6 +89,12 @@ fn op_line(op: &OpSummary) -> String {
                     }
                 }
                 None => {}
+            }
+            if let Some(ps) = inputs {
+                line.push_str(&format!("\n    inputs -> {}", join_ports(ps)));
+            }
+            if let Some(ps) = outputs {
+                line.push_str(&format!("\n    outputs -> {}", join_ports(ps)));
             }
             line
         }
@@ -124,13 +136,19 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
         }),
         OpSummary::UpdateNode {
             path,
+            name,
             description,
             constraints,
+            inputs,
+            outputs,
         } => serde_json::json!({
             "op": "update_node_data",
             "node": path,
+            "name": name,
             "description": description,
             "constraints": constraints,
+            "inputs": inputs.as_ref().map(|p| ports_json(p)),
+            "outputs": outputs.as_ref().map(|p| ports_json(p)),
         }),
         OpSummary::DeleteNode { path } => serde_json::json!({
             "op": "delete_node",

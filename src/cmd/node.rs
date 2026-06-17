@@ -7,7 +7,9 @@ use super::context::require_workdir;
 use crate::cli::{NodeAddArgs, NodeKind, NodeRmArgs, NodeSetArgs};
 use crate::error::CliError;
 use crate::output::OutputMode;
-use crate::staging::{parse_port_spec, Changeset, NodeAdded, NodeSpec, NodeUpdated, PortSpec};
+use crate::staging::{
+    parse_port_spec, Changeset, NodeAdded, NodeEdit, NodeSpec, NodeUpdated, PortSpec,
+};
 use crate::state::{Index, Stage};
 
 pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
@@ -63,7 +65,22 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         &args.constraints,
         args.clear_constraints,
     );
-    let updated = changeset.update_node(&args.path, description.as_deref(), constraints)?;
+    let edit = NodeEdit {
+        name: args
+            .name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string),
+        description,
+        constraints,
+        add_in: parse_ports(&args.add_in)?,
+        add_out: parse_ports(&args.add_out)?,
+        rm_in: args.rm_in.clone(),
+        rm_out: args.rm_out.clone(),
+        retype_in: parse_ports(&args.retype_in)?,
+        retype_out: parse_ports(&args.retype_out)?,
+    };
+    let updated = changeset.update_node(&args.path, &edit)?;
     changeset.into_stage().save(&base)?;
 
     println!("{}", render_updated(&updated, mode));
@@ -103,13 +120,18 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
         OutputMode::Json => serde_json::json!({
             "staged": {
                 "set": u.path,
+                "name": u.name,
                 "description": u.description,
                 "constraints": u.constraints,
+                "ports_changed": u.ports_changed,
             }
         })
         .to_string(),
         OutputMode::Human => {
             let mut fields = Vec::new();
+            if u.name.is_some() {
+                fields.push("name".to_string());
+            }
             if u.description.is_some() {
                 fields.push("description".to_string());
             }
@@ -117,6 +139,9 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
                 Some(cs) if cs.is_empty() => fields.push("constraints cleared".to_string()),
                 Some(_) => fields.push("constraints".to_string()),
                 None => {}
+            }
+            if u.ports_changed {
+                fields.push("ports".to_string());
             }
             format!("Staged edit of '{}' ({}).", u.path, fields.join(" + "))
         }
@@ -223,8 +248,10 @@ mod tests {
         let human = render_updated(
             &NodeUpdated {
                 path: "Api.Rater".to_string(),
+                name: None,
                 description: Some("p".to_string()),
                 constraints: Some(vec!["c".to_string()]),
+                ports_changed: false,
             },
             OutputMode::Human,
         );
@@ -235,8 +262,10 @@ mod tests {
         let cleared = render_updated(
             &NodeUpdated {
                 path: "Api.Rater".to_string(),
+                name: None,
                 description: None,
                 constraints: Some(vec![]),
+                ports_changed: false,
             },
             OutputMode::Human,
         );
@@ -246,8 +275,10 @@ mod tests {
         let out = render_updated(
             &NodeUpdated {
                 path: "Api.Rater".to_string(),
+                name: None,
                 description: Some("p".to_string()),
                 constraints: None,
+                ports_changed: false,
             },
             OutputMode::Json,
         );
