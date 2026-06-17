@@ -47,6 +47,7 @@ fn op_line(op: &OpSummary) -> String {
             protocol,
             doc_url,
             is_test_node,
+            config,
         } => {
             let mut line = format!("+ {kind} {path}");
             if *external {
@@ -61,6 +62,9 @@ fn op_line(op: &OpSummary) -> String {
             }
             if !outputs.is_empty() {
                 parts.push(format!("out: {}", join_ports(outputs)));
+            }
+            if !config.is_empty() {
+                parts.push(format!("config: {}", join_ports(config)));
             }
             if !parts.is_empty() {
                 line.push_str(&format!(" ({})", parts.join("; ")));
@@ -100,6 +104,7 @@ fn op_line(op: &OpSummary) -> String {
             doc_url,
             is_test_node,
             verifications,
+            config,
         } => {
             let mut line = format!("~ node {path}");
             if let Some(n) = name {
@@ -146,6 +151,9 @@ fn op_line(op: &OpSummary) -> String {
             }
             if let Some(ps) = outputs {
                 line.push_str(&format!("\n    outputs -> {}", join_ports(ps)));
+            }
+            if let Some(ps) = config {
+                line.push_str(&format!("\n    config -> {}", join_ports(ps)));
             }
             line
         }
@@ -194,12 +202,14 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             protocol,
             doc_url,
             is_test_node,
+            config,
         } => serde_json::json!({
             "op": "add_node",
             "kind": kind,
             "node": path,
             "inputs": ports_json(inputs),
             "outputs": ports_json(outputs),
+            "config": ports_json(config),
             "description": description,
             "constraints": constraints,
             "verifications": verifications,
@@ -228,6 +238,7 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             doc_url,
             is_test_node,
             verifications,
+            config,
         } => {
             let mut obj = serde_json::json!({
                 "op": "update_node_data",
@@ -237,6 +248,7 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
                 "constraints": constraints,
                 "inputs": inputs.as_ref().map(|p| ports_json(p)),
                 "outputs": outputs.as_ref().map(|p| ports_json(p)),
+                "config": config.as_ref().map(|p| ports_json(p)),
                 "external": external,
                 "test_node": is_test_node,
                 "verifications": verifications,
@@ -309,6 +321,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: false,
+            config: vec![],
         }
     }
 
@@ -355,6 +368,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: false,
+            config: vec![],
         };
         let out = render(&summary(vec![op]), OutputMode::Human);
         assert!(out.contains("description: scores a hotdog"), "{out}");
@@ -384,6 +398,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: false,
+            config: vec![],
         };
         let out = render(&summary(vec![op]), OutputMode::Json);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -405,6 +420,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: false,
+            config: vec![],
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
         assert!(human.contains("(external)"), "{human}");
@@ -443,6 +459,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: None,
+            config: None,
             verifications: None,
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
@@ -528,6 +545,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: None,
+            config: None,
             verifications: Some(vec!["responds in 50ms".to_string()]),
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
@@ -563,6 +581,7 @@ mod tests {
             doc_url: None,
             is_test_node: Some(true),
             verifications: None,
+            config: None,
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
         assert!(human.contains("user-kind: (cleared)"), "{human}");
@@ -587,6 +606,52 @@ mod tests {
     }
 
     #[test]
+    fn render_shows_config_ports_on_add_and_update() {
+        let add = OpSummary::Node {
+            kind: "behavior",
+            path: "Worker".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            description: None,
+            constraints: vec![],
+            verifications: vec![],
+            external: false,
+            protocol: None,
+            doc_url: None,
+            is_test_node: false,
+            config: vec![("region".to_string(), "String".to_string())],
+        };
+        let human = render(&summary(vec![add.clone()]), OutputMode::Human);
+        assert!(human.contains("config: region:String"), "{human}");
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![add]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["config"][0]["name"], "region");
+
+        let upd = OpSummary::UpdateNode {
+            path: "Worker".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            inputs: None,
+            outputs: None,
+            user_kind: None,
+            path_prefix: None,
+            external: None,
+            external_kind: None,
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
+            verifications: None,
+            config: Some(vec![("region".to_string(), "String".to_string())]),
+        };
+        let human = render(&summary(vec![upd.clone()]), OutputMode::Human);
+        assert!(human.contains("config -> region:String"), "{human}");
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![upd]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["config"][0]["type"], "String");
+    }
+
+    #[test]
     fn render_node_add_shows_protocol_doc_and_test() {
         let op = OpSummary::Node {
             kind: "behavior",
@@ -600,6 +665,7 @@ mod tests {
             protocol: Some("gRPC".to_string()),
             doc_url: Some("https://x".to_string()),
             is_test_node: true,
+            config: vec![],
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
         assert!(
@@ -633,6 +699,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: None,
+            config: None,
             verifications: Some(vec![]),
         };
         let untouched = OpSummary::UpdateNode {
@@ -649,6 +716,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: None,
+            config: None,
             verifications: None,
         };
         let v: serde_json::Value =
@@ -676,6 +744,7 @@ mod tests {
             protocol: None,
             doc_url: None,
             is_test_node: None,
+            config: None,
             verifications: Some(vec![]),
         };
         assert!(render(&summary(vec![op]), OutputMode::Human).contains("verifications: (cleared)"));

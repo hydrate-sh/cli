@@ -233,6 +233,11 @@ pub struct NodeInfo {
     pub kind: String,
     pub inputs: Vec<PortInfo>,
     pub outputs: Vec<PortInfo>,
+    /// Config ports (a third channel alongside inputs/outputs; not edge
+    /// endpoints). `#[serde(default)]` for back-compat with an index pulled
+    /// before this field existed.
+    #[serde(default)]
+    pub config: Vec<PortInfo>,
 }
 
 /// A single port's identity as pulled: its server UUID, name, and type. Editing
@@ -590,6 +595,7 @@ mod tests {
                     r#type: "T".into(),
                 }],
                 outputs: vec![],
+                config: vec![],
             },
         );
         let mut edges = BTreeMap::new();
@@ -620,6 +626,7 @@ mod tests {
                 kind: "boundary".into(),
                 inputs: vec![],
                 outputs: vec![],
+                config: vec![],
             },
         );
         let mut edges = BTreeMap::new();
