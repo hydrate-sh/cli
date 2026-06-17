@@ -256,6 +256,35 @@ mod tests {
     }
 
     #[test]
+    fn human_and_json_render_update_with_rename_and_ports() {
+        let op = OpSummary::UpdateNode {
+            path: "Api.Rater".to_string(),
+            name: Some("Scorer".to_string()),
+            description: None,
+            constraints: None,
+            inputs: None,
+            outputs: Some(vec![
+                ("score".to_string(), "Rating".to_string()),
+                ("extra".to_string(), "Blob".to_string()),
+            ]),
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert!(human.contains("~ node Api.Rater"), "{human}");
+        assert!(human.contains("rename -> Scorer"), "{human}");
+        assert!(
+            human.contains("outputs -> score:Rating, extra:Blob"),
+            "{human}"
+        );
+
+        let out = render(&summary(vec![op]), OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ops"][0]["op"], "update_node_data");
+        assert_eq!(v["ops"][0]["name"], "Scorer");
+        assert_eq!(v["ops"][0]["outputs"][1]["name"], "extra");
+        assert_eq!(v["ops"][0]["outputs"][1]["type"], "Blob");
+    }
+
+    #[test]
     fn human_renders_edge_by_paths() {
         let out = render(&summary(vec![edge_op()]), OutputMode::Human);
         assert_eq!(out, "+ edge Maker.dog -> Api.Rater.raw");
