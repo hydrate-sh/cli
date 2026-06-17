@@ -69,6 +69,12 @@ pub struct NodeSpec<'a> {
     pub description: Option<&'a str>,
     /// Plain-text constraints; empty omits the field.
     pub constraints: Vec<String>,
+    /// Mark the node external (an outside system the graph depends on).
+    pub is_external: bool,
+    /// The external system's kind label (server requires it when `is_external`).
+    pub external_kind: Option<&'a str>,
+    /// Plain-text verifications (how the node is checked); empty omits the field.
+    pub verifications: Vec<String>,
 }
 
 /// A partial edit to an existing node, for `node set`. Empty fields are left
@@ -246,18 +252,25 @@ impl Changeset {
                 .description
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
-            constraints: {
-                let kept: Vec<String> = spec
-                    .constraints
-                    .iter()
-                    .filter(|c| !c.trim().is_empty())
-                    .cloned()
-                    .collect();
-                if kept.is_empty() {
-                    None
-                } else {
-                    Some(kept)
-                }
+            constraints: non_empty(&spec.constraints),
+            // External marker + its kind label (server enforces external→kind).
+            is_external: if spec.is_external { Some(true) } else { None },
+            external_kind: spec.external_kind.map(|k| Some(k.to_string())),
+            // Verifications: each non-blank text becomes a Verification with a
+            // minted id and the default author.
+            verifications: {
+                let texts = non_empty(&spec.verifications);
+                texts.map(|ts| {
+                    ts.into_iter()
+                        .map(|text| {
+                            models::Verification::new(
+                                models::verification::Author::default(),
+                                Uuid::new_v4(),
+                                text,
+                            )
+                        })
+                        .collect()
+                })
             },
             ..Default::default()
         };
@@ -799,6 +812,21 @@ pub fn validate_type(value: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Drop blank/whitespace-only entries; `None` when nothing survives (so the
+/// field is omitted from the delta and the server keeps its default).
+fn non_empty(items: &[String]) -> Option<Vec<String>> {
+    let kept: Vec<String> = items
+        .iter()
+        .filter(|c| !c.trim().is_empty())
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept)
+    }
+}
+
 /// Parse a `name:type` port flag. Both parts are required; the type may contain
 /// anything but whitespace-only.
 pub fn parse_port_spec(raw: &str) -> Result<PortSpec, CliError> {
@@ -1047,6 +1075,10 @@ pub enum OpSummary {
         description: Option<String>,
         /// Plain-text constraints staged on the node.
         constraints: Vec<String>,
+        /// Plain-text verifications staged on the node.
+        verifications: Vec<String>,
+        /// Whether the node was marked external.
+        external: bool,
     },
     Edge {
         from: String,
@@ -1168,6 +1200,13 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     outputs: named_types(data.outputs.as_deref()),
                     description: data.description.filter(|s| !s.is_empty()),
                     constraints: data.constraints.unwrap_or_default(),
+                    verifications: data
+                        .verifications
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|v| v.text)
+                        .collect(),
+                    external: data.is_external.unwrap_or(false),
                 });
             }
             "add_edge" => {
@@ -1369,6 +1408,9 @@ mod tests {
             path_prefix: None,
             description: None,
             constraints: vec![],
+            is_external: false,
+            external_kind: None,
+            verifications: vec![],
         }
     }
 
@@ -1654,6 +1696,39 @@ mod tests {
             _ => None,
         });
         assert_eq!(desc, Some(None));
+    }
+
+    #[test]
+    fn add_node_stages_external_and_verifications() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            is_external: true,
+            external_kind: Some("postgres"),
+            verifications: vec!["responds within 50ms".to_string(), "  ".to_string()],
+            ..behavior("Db", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.is_external, Some(true));
+        assert_eq!(data.external_kind, Some(Some("postgres".to_string())));
+        // The blank verification is dropped; the real one becomes a Verification.
+        let vs = data.verifications.unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(vs[0].text, "responds within 50ms");
+    }
+
+    #[test]
+    fn add_node_omits_external_and_verifications_when_absent() {
+        let mut cs = empty();
+        cs.add_node(&behavior("Plain", None)).unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.is_external, None);
+        assert_eq!(data.external_kind, None);
+        assert_eq!(data.verifications, None);
     }
 
     #[test]
