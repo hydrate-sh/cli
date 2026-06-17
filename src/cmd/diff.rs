@@ -44,10 +44,16 @@ fn op_line(op: &OpSummary) -> String {
             constraints,
             verifications,
             external,
+            protocol,
+            doc_url,
+            is_test_node,
         } => {
             let mut line = format!("+ {kind} {path}");
             if *external {
                 line.push_str(" (external)");
+            }
+            if *is_test_node {
+                line.push_str(" (test)");
             }
             let mut parts = Vec::new();
             if !inputs.is_empty() {
@@ -70,6 +76,12 @@ fn op_line(op: &OpSummary) -> String {
             for v in verifications {
                 line.push_str(&format!("\n    verification: {v}"));
             }
+            if let Some(p) = protocol {
+                line.push_str(&format!("\n    protocol: {p}"));
+            }
+            if let Some(d) = doc_url {
+                line.push_str(&format!("\n    doc-url: {d}"));
+            }
             line
         }
         OpSummary::Edge { from, to } => format!("+ edge {from} -> {to}"),
@@ -84,6 +96,9 @@ fn op_line(op: &OpSummary) -> String {
             path_prefix,
             external,
             external_kind,
+            protocol,
+            doc_url,
+            is_test_node,
             verifications,
         } => {
             let mut line = format!("~ node {path}");
@@ -112,17 +127,16 @@ fn op_line(op: &OpSummary) -> String {
                 }
                 None => {}
             }
-            if let Some(uk) = user_kind {
-                line.push_str(&format!("\n    user-kind: {uk}"));
-            }
-            if let Some(pp) = path_prefix {
-                line.push_str(&format!("\n    path-prefix: {pp}"));
-            }
+            line.push_str(&scalar_line(user_kind, "user-kind"));
+            line.push_str(&scalar_line(path_prefix, "path-prefix"));
+            line.push_str(&scalar_line(external_kind, "external-kind"));
+            line.push_str(&scalar_line(protocol, "protocol"));
+            line.push_str(&scalar_line(doc_url, "doc-url"));
             if let Some(ext) = external {
                 line.push_str(&format!("\n    external: {ext}"));
             }
-            if let Some(ek) = external_kind {
-                line.push_str(&format!("\n    external-kind: {ek}"));
+            if let Some(t) = is_test_node {
+                line.push_str(&format!("\n    test-node: {t}"));
             }
             if let Some(ps) = inputs {
                 line.push_str(&format!("\n    inputs -> {}", join_ports(ps)));
@@ -145,6 +159,16 @@ fn op_line(op: &OpSummary) -> String {
     }
 }
 
+/// Render a double-option scalar edit line: cleared (`Some(None)`) reads
+/// distinctly from set (`Some(Some)`); untouched (`None`) renders nothing.
+fn scalar_line(field: &Option<Option<String>>, label: &str) -> String {
+    match field {
+        Some(None) => format!("\n    {label}: (cleared)"),
+        Some(Some(v)) => format!("\n    {label}: {v}"),
+        None => String::new(),
+    }
+}
+
 fn join_ports(ports: &[NamedType]) -> String {
     ports
         .iter()
@@ -164,6 +188,9 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             constraints,
             verifications,
             external,
+            protocol,
+            doc_url,
+            is_test_node,
         } => serde_json::json!({
             "op": "add_node",
             "kind": kind,
@@ -174,6 +201,9 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "constraints": constraints,
             "verifications": verifications,
             "external": external,
+            "protocol": protocol,
+            "doc_url": doc_url,
+            "test_node": is_test_node,
         }),
         OpSummary::Edge { from, to } => serde_json::json!({
             "op": "add_edge",
@@ -191,21 +221,45 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             path_prefix,
             external,
             external_kind,
+            protocol,
+            doc_url,
+            is_test_node,
             verifications,
-        } => serde_json::json!({
-            "op": "update_node_data",
-            "node": path,
-            "name": name,
-            "description": description,
-            "constraints": constraints,
-            "inputs": inputs.as_ref().map(|p| ports_json(p)),
-            "outputs": outputs.as_ref().map(|p| ports_json(p)),
-            "user_kind": user_kind,
-            "path_prefix": path_prefix,
-            "external": external,
-            "external_kind": external_kind,
-            "verifications": verifications,
-        }),
+        } => {
+            let mut obj = serde_json::json!({
+                "op": "update_node_data",
+                "node": path,
+                "name": name,
+                "description": description,
+                "constraints": constraints,
+                "inputs": inputs.as_ref().map(|p| ports_json(p)),
+                "outputs": outputs.as_ref().map(|p| ports_json(p)),
+                "external": external,
+                "test_node": is_test_node,
+                "verifications": verifications,
+            });
+            // Double-option scalars: untouched → key omitted; cleared → null; set
+            // → value. Keeping the distinction in JSON mirrors the human output.
+            let map = obj.as_object_mut().expect("json object");
+            for (key, field) in [
+                ("user_kind", user_kind),
+                ("path_prefix", path_prefix),
+                ("external_kind", external_kind),
+                ("protocol", protocol),
+                ("doc_url", doc_url),
+            ] {
+                if let Some(inner) = field {
+                    map.insert(
+                        key.to_string(),
+                        match inner {
+                            Some(v) => serde_json::Value::String(v.clone()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                }
+            }
+            obj
+        }
         OpSummary::Reparent { path, new_parent } => serde_json::json!({
             "op": "reparent_node",
             "node": path,
@@ -249,6 +303,9 @@ mod tests {
             constraints: vec![],
             verifications: vec![],
             external: false,
+            protocol: None,
+            doc_url: None,
+            is_test_node: false,
         }
     }
 
@@ -292,6 +349,9 @@ mod tests {
             constraints: vec!["fast".to_string(), "stateless".to_string()],
             verifications: vec![],
             external: false,
+            protocol: None,
+            doc_url: None,
+            is_test_node: false,
         };
         let out = render(&summary(vec![op]), OutputMode::Human);
         assert!(out.contains("description: scores a hotdog"), "{out}");
@@ -318,6 +378,9 @@ mod tests {
             constraints: vec!["c1".to_string()],
             verifications: vec![],
             external: false,
+            protocol: None,
+            doc_url: None,
+            is_test_node: false,
         };
         let out = render(&summary(vec![op]), OutputMode::Json);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -336,6 +399,9 @@ mod tests {
             constraints: vec![],
             verifications: vec!["responds within 50ms".to_string()],
             external: true,
+            protocol: None,
+            doc_url: None,
+            is_test_node: false,
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
         assert!(human.contains("(external)"), "{human}");
@@ -371,6 +437,9 @@ mod tests {
             path_prefix: None,
             external: None,
             external_kind: None,
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
             verifications: None,
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
@@ -449,10 +518,13 @@ mod tests {
             constraints: None,
             inputs: None,
             outputs: None,
-            user_kind: Some("subsystem".to_string()),
-            path_prefix: Some("src/api/".to_string()),
+            user_kind: Some(Some("subsystem".to_string())),
+            path_prefix: Some(Some("src/api/".to_string())),
             external: Some(true),
-            external_kind: Some("rest-api".to_string()),
+            external_kind: Some(Some("rest-api".to_string())),
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
             verifications: Some(vec!["responds in 50ms".to_string()]),
         };
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
@@ -472,6 +544,75 @@ mod tests {
     }
 
     #[test]
+    fn render_update_distinguishes_cleared_set_and_untouched_scalars() {
+        let op = OpSummary::UpdateNode {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            inputs: None,
+            outputs: None,
+            user_kind: Some(None),
+            path_prefix: None,
+            external: None,
+            external_kind: None,
+            protocol: Some(Some("gRPC".to_string())),
+            doc_url: None,
+            is_test_node: Some(true),
+            verifications: None,
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert!(human.contains("user-kind: (cleared)"), "{human}");
+        assert!(human.contains("protocol: gRPC"), "{human}");
+        assert!(human.contains("test-node: true"), "{human}");
+        assert!(!human.contains("path-prefix"), "untouched omitted: {human}");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
+        // cleared → key present + null; set → value; untouched → key absent.
+        assert!(
+            v["ops"][0].get("user_kind").is_some(),
+            "cleared key present"
+        );
+        assert!(v["ops"][0]["user_kind"].is_null(), "cleared → null");
+        assert_eq!(v["ops"][0]["protocol"], "gRPC");
+        assert!(
+            v["ops"][0].get("path_prefix").is_none(),
+            "untouched key absent"
+        );
+        assert_eq!(v["ops"][0]["test_node"], true);
+    }
+
+    #[test]
+    fn render_node_add_shows_protocol_doc_and_test() {
+        let op = OpSummary::Node {
+            kind: "behavior",
+            path: "Ext".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            description: None,
+            constraints: vec![],
+            verifications: vec![],
+            external: true,
+            protocol: Some("gRPC".to_string()),
+            doc_url: Some("https://x".to_string()),
+            is_test_node: true,
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert!(
+            human.contains("(external)") && human.contains("(test)"),
+            "{human}"
+        );
+        assert!(human.contains("protocol: gRPC"), "{human}");
+        assert!(human.contains("doc-url: https://x"), "{human}");
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["protocol"], "gRPC");
+        assert_eq!(v["ops"][0]["doc_url"], "https://x");
+        assert_eq!(v["ops"][0]["test_node"], true);
+    }
+
+    #[test]
     fn json_distinguishes_cleared_verifications_from_untouched() {
         // Dual-output rule: the cleared-vs-untouched distinction must hold in JSON
         // too — Some([]) -> [] (cleared), None -> null (untouched).
@@ -486,6 +627,9 @@ mod tests {
             path_prefix: None,
             external: None,
             external_kind: None,
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
             verifications: Some(vec![]),
         };
         let untouched = OpSummary::UpdateNode {
@@ -499,6 +643,9 @@ mod tests {
             path_prefix: None,
             external: None,
             external_kind: None,
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
             verifications: None,
         };
         let v: serde_json::Value =
@@ -523,6 +670,9 @@ mod tests {
             path_prefix: None,
             external: None,
             external_kind: None,
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
             verifications: Some(vec![]),
         };
         assert!(render(&summary(vec![op]), OutputMode::Human).contains("verifications: (cleared)"));

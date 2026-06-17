@@ -75,6 +75,12 @@ pub struct NodeSpec<'a> {
     pub external_kind: Option<&'a str>,
     /// Plain-text verifications (how the node is checked); empty omits the field.
     pub verifications: Vec<String>,
+    /// External-system protocol (e.g. `gRPC`); `None`/blank omits it.
+    pub protocol: Option<&'a str>,
+    /// Documentation URL; `None`/blank omits it.
+    pub doc_url: Option<&'a str>,
+    /// Mark the node a test node.
+    pub is_test_node: bool,
 }
 
 /// A partial edit to an existing node, for `node set`. Empty fields are left
@@ -104,6 +110,32 @@ pub struct NodeEdit {
     pub external_kind: Option<String>,
     /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = replace.
     pub verifications: Option<Vec<String>>,
+    /// External-system protocol (`--protocol`). `None` = untouched.
+    pub protocol: Option<String>,
+    /// Documentation URL (`--doc-url`). `None` = untouched.
+    pub doc_url: Option<String>,
+    /// Test-node marker toggle. `None` = untouched, `Some(true)` = `--test-node`,
+    /// `Some(false)` = `--no-test-node`.
+    pub is_test_node: Option<bool>,
+    /// `--clear-*` companions: clear the corresponding scalar to null (or, for
+    /// `description`, to empty). A clear flag overrides any value for the field.
+    pub clear_description: bool,
+    pub clear_user_kind: bool,
+    pub clear_path_prefix: bool,
+    pub clear_external_kind: bool,
+    pub clear_protocol: bool,
+    pub clear_doc_url: bool,
+}
+
+/// Resolve a value + its clear flag to the wire double-option field:
+/// clear → `Some(None)` (null); a value → `Some(Some(v))`; neither → `None`
+/// (untouched).
+fn scalar_or_clear(value: &Option<String>, clear: bool) -> Option<Option<String>> {
+    if clear {
+        Some(None)
+    } else {
+        value.clone().map(Some)
+    }
 }
 
 impl NodeEdit {
@@ -125,6 +157,15 @@ impl NodeEdit {
             && self.is_external.is_none()
             && self.external_kind.is_none()
             && self.verifications.is_none()
+            && self.protocol.is_none()
+            && self.doc_url.is_none()
+            && self.is_test_node.is_none()
+            && !self.clear_description
+            && !self.clear_user_kind
+            && !self.clear_path_prefix
+            && !self.clear_external_kind
+            && !self.clear_protocol
+            && !self.clear_doc_url
             && !self.touches_ports()
     }
 }
@@ -274,10 +315,19 @@ impl Changeset {
             // so it collapses to None and the server's external→kind check fires
             // rather than us forwarding an empty label.
             is_external: if spec.is_external { Some(true) } else { None },
+            is_test_node: if spec.is_test_node { Some(true) } else { None },
             external_kind: spec
                 .external_kind
                 .filter(|k| !k.trim().is_empty())
                 .map(|k| Some(k.to_string())),
+            protocol: spec
+                .protocol
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| Some(p.to_string())),
+            documentation_url: spec
+                .doc_url
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| Some(d.to_string())),
             // Verifications: each non-blank text becomes a Verification with a
             // minted id and the default author.
             verifications: {
@@ -475,16 +525,26 @@ impl Changeset {
 
         let after = models::NodeData {
             name: edit.name.clone(),
-            description: edit.description.clone(),
+            // description has no null on the wire — `--clear-description` sets it
+            // to empty; otherwise the value (or untouched).
+            description: if edit.clear_description {
+                Some(String::new())
+            } else {
+                edit.description.clone()
+            },
             constraints: edit.constraints.clone(),
             inputs,
             outputs,
-            // Scalar boundary/external fields are key-presence: present only when
-            // the flag was set. The double-option wire fields take Some(Some(v)).
-            user_kind: edit.user_kind.clone().map(Some),
-            path_prefix: edit.path_prefix.clone().map(Some),
+            // Boundary/external/doc scalars are key-presence double-option fields:
+            // a value → Some(Some(v)); a `--clear-*` → Some(None) (null);
+            // untouched → None.
+            user_kind: scalar_or_clear(&edit.user_kind, edit.clear_user_kind),
+            path_prefix: scalar_or_clear(&edit.path_prefix, edit.clear_path_prefix),
             is_external: edit.is_external,
-            external_kind: edit.external_kind.clone().map(Some),
+            is_test_node: edit.is_test_node,
+            external_kind: scalar_or_clear(&edit.external_kind, edit.clear_external_kind),
+            protocol: scalar_or_clear(&edit.protocol, edit.clear_protocol),
+            documentation_url: scalar_or_clear(&edit.doc_url, edit.clear_doc_url),
             // Verifications: None untouched, Some([]) clears, Some(vec) replaces —
             // each text becomes a Verification with a minted id + default author.
             verifications: edit.verifications.as_ref().map(|texts| {
@@ -521,12 +581,19 @@ impl Changeset {
         Ok(NodeUpdated {
             path: path.to_string(),
             name: edit.name.clone(),
-            description: edit.description.clone(),
+            description: if edit.clear_description {
+                Some(String::new())
+            } else {
+                edit.description.clone()
+            },
             constraints: edit.constraints.clone(),
-            user_kind: edit.user_kind.clone(),
-            path_prefix: edit.path_prefix.clone(),
+            user_kind: scalar_or_clear(&edit.user_kind, edit.clear_user_kind),
+            path_prefix: scalar_or_clear(&edit.path_prefix, edit.clear_path_prefix),
             is_external: edit.is_external,
-            external_kind: edit.external_kind.clone(),
+            external_kind: scalar_or_clear(&edit.external_kind, edit.clear_external_kind),
+            protocol: scalar_or_clear(&edit.protocol, edit.clear_protocol),
+            doc_url: scalar_or_clear(&edit.doc_url, edit.clear_doc_url),
+            is_test_node: edit.is_test_node,
             verifications: edit.verifications.clone(),
             ports_changed: edit.touches_ports(),
         })
@@ -911,13 +978,19 @@ pub struct BoundaryFlattened {
 pub struct NodeUpdated {
     pub path: String,
     pub name: Option<String>,
+    /// `None` = untouched, `Some("")` = cleared, `Some(v)` = set.
     pub description: Option<String>,
     /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
     pub constraints: Option<Vec<String>>,
-    pub user_kind: Option<String>,
-    pub path_prefix: Option<String>,
+    /// Double-option scalars: `None` = untouched, `Some(None)` = cleared,
+    /// `Some(Some(v))` = set.
+    pub user_kind: Option<Option<String>>,
+    pub path_prefix: Option<Option<String>>,
     pub is_external: Option<bool>,
-    pub external_kind: Option<String>,
+    pub external_kind: Option<Option<String>>,
+    pub protocol: Option<Option<String>>,
+    pub doc_url: Option<Option<String>>,
+    pub is_test_node: Option<bool>,
     /// `None` = untouched, `Some([])` = cleared, `Some(vec)` = set.
     pub verifications: Option<Vec<String>>,
     pub ports_changed: bool,
@@ -1246,6 +1319,12 @@ pub enum OpSummary {
         verifications: Vec<String>,
         /// Whether the node was marked external.
         external: bool,
+        /// External-system protocol, if staged.
+        protocol: Option<String>,
+        /// Documentation URL, if staged.
+        doc_url: Option<String>,
+        /// Whether the node was marked a test node.
+        is_test_node: bool,
     },
     Edge {
         from: String,
@@ -1261,10 +1340,15 @@ pub enum OpSummary {
         constraints: Option<Vec<String>>,
         inputs: Option<Vec<NamedType>>,
         outputs: Option<Vec<NamedType>>,
-        user_kind: Option<String>,
-        path_prefix: Option<String>,
+        /// Double-option scalars: `None` = untouched, `Some(None)` = cleared,
+        /// `Some(Some(v))` = set.
+        user_kind: Option<Option<String>>,
+        path_prefix: Option<Option<String>>,
         external: Option<bool>,
-        external_kind: Option<String>,
+        external_kind: Option<Option<String>>,
+        protocol: Option<Option<String>>,
+        doc_url: Option<Option<String>>,
+        is_test_node: Option<bool>,
         verifications: Option<Vec<String>>,
     },
     /// A staged reparent: `new_parent` is `None` for the top level.
@@ -1379,6 +1463,9 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                         .map(|v| v.text)
                         .collect(),
                     external: data.is_external.unwrap_or(false),
+                    protocol: data.protocol.flatten(),
+                    doc_url: data.documentation_url.flatten(),
+                    is_test_node: data.is_test_node.unwrap_or(false),
                 });
             }
             "add_edge" => {
@@ -1407,11 +1494,15 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     constraints: d.after.constraints,
                     inputs: d.after.inputs.map(|p| named_types(Some(&p))),
                     outputs: d.after.outputs.map(|p| named_types(Some(&p))),
-                    // Double-option wire fields flatten to "is it set" for display.
-                    user_kind: d.after.user_kind.flatten(),
-                    path_prefix: d.after.path_prefix.flatten(),
+                    // Keep the double-option so the preview distinguishes cleared
+                    // (Some(None)) from untouched (None) from set (Some(Some(v))).
+                    user_kind: d.after.user_kind,
+                    path_prefix: d.after.path_prefix,
                     external: d.after.is_external,
-                    external_kind: d.after.external_kind.flatten(),
+                    external_kind: d.after.external_kind,
+                    protocol: d.after.protocol,
+                    doc_url: d.after.documentation_url,
+                    is_test_node: d.after.is_test_node,
                     verifications: d
                         .after
                         .verifications
@@ -1592,6 +1683,9 @@ mod tests {
             is_external: false,
             external_kind: None,
             verifications: vec![],
+            protocol: None,
+            doc_url: None,
+            is_test_node: false,
         }
     }
 
@@ -2059,10 +2153,11 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(found.0.as_deref(), Some("subsystem"));
-        assert_eq!(found.1.as_deref(), Some("src/api/"));
+        // Double-option scalars: Some(Some(v)) = set (vs Some(None) = cleared).
+        assert_eq!(found.0, Some(Some("subsystem".to_string())));
+        assert_eq!(found.1, Some(Some("src/api/".to_string())));
         assert_eq!(found.2, Some(true));
-        assert_eq!(found.3.as_deref(), Some("rest-api"));
+        assert_eq!(found.3, Some(Some("rest-api".to_string())));
         assert_eq!(found.4, Some(vec!["responds in 50ms".to_string()]));
     }
 
@@ -3608,6 +3703,101 @@ mod tests {
             };
             assert_eq!(got, want, "{label}");
         }
+    }
+
+    #[test]
+    fn update_node_clears_a_scalar_to_null() {
+        // `--clear-user-kind` → wire Some(None) (explicit null), distinct from
+        // untouched (None) and set (Some(Some(v))).
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                clear_user_kind: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        assert_eq!(d.after.user_kind, Some(None), "cleared to null");
+        assert_eq!(d.after.path_prefix, None, "others untouched");
+    }
+
+    #[test]
+    fn update_node_clear_overrides_a_value() {
+        // A clear flag wins over a value for the same field.
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                external_kind: Some("rest-api".to_string()),
+                clear_external_kind: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(update_delta(cs).after.external_kind, Some(None));
+    }
+
+    #[test]
+    fn update_node_sets_protocol_doc_url_and_test_node() {
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                protocol: Some("gRPC".to_string()),
+                doc_url: Some("https://x/docs".to_string()),
+                is_test_node: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        assert_eq!(d.after.protocol, Some(Some("gRPC".to_string())));
+        assert_eq!(
+            d.after.documentation_url,
+            Some(Some("https://x/docs".to_string()))
+        );
+        assert_eq!(d.after.is_test_node, Some(true));
+    }
+
+    #[test]
+    fn add_node_sets_protocol_doc_url_and_test_node() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            is_external: true,
+            external_kind: Some("rest-api"),
+            protocol: Some("HTTPS REST"),
+            doc_url: Some("https://x/api"),
+            is_test_node: true,
+            ..behavior("Ext", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.protocol, Some(Some("HTTPS REST".to_string())));
+        assert_eq!(
+            data.documentation_url,
+            Some(Some("https://x/api".to_string()))
+        );
+        assert_eq!(data.is_test_node, Some(true));
+    }
+
+    #[test]
+    fn add_node_drops_a_blank_protocol_and_doc_url() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            protocol: Some("  "),
+            doc_url: Some(""),
+            ..behavior("N", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.protocol, None, "blank protocol omitted");
+        assert_eq!(data.documentation_url, None, "blank doc-url omitted");
     }
 
     #[test]
