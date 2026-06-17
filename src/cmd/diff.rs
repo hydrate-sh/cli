@@ -290,6 +290,36 @@ mod tests {
     }
 
     #[test]
+    fn human_and_json_render_external_and_verifications() {
+        let op = OpSummary::Node {
+            kind: "behavior",
+            path: "Db".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            description: None,
+            constraints: vec![],
+            verifications: vec!["responds within 50ms".to_string()],
+            external: true,
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert!(human.contains("(external)"), "{human}");
+        assert!(
+            human.contains("verification: responds within 50ms"),
+            "{human}"
+        );
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["external"], true);
+        assert_eq!(v["ops"][0]["verifications"][0], "responds within 50ms");
+
+        // Negative: a plain node renders neither marker.
+        let plain = render(&summary(vec![node_op()]), OutputMode::Human);
+        assert!(!plain.contains("(external)"), "{plain}");
+        assert!(!plain.contains("verification:"), "{plain}");
+    }
+
+    #[test]
     fn human_renders_edge_by_paths() {
         let out = render(&summary(vec![edge_op()]), OutputMode::Human);
         assert_eq!(out, "+ edge Maker.dog -> Api.Rater.raw");

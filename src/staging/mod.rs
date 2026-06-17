@@ -254,8 +254,14 @@ impl Changeset {
                 .map(str::to_string),
             constraints: non_empty(&spec.constraints),
             // External marker + its kind label (server enforces external→kind).
+            // A blank `--external-kind ""` is "no kind" (parity with --description),
+            // so it collapses to None and the server's external→kind check fires
+            // rather than us forwarding an empty label.
             is_external: if spec.is_external { Some(true) } else { None },
-            external_kind: spec.external_kind.map(|k| Some(k.to_string())),
+            external_kind: spec
+                .external_kind
+                .filter(|k| !k.trim().is_empty())
+                .map(|k| Some(k.to_string())),
             // Verifications: each non-blank text becomes a Verification with a
             // minted id and the default author.
             verifications: {
@@ -1729,6 +1735,50 @@ mod tests {
         assert_eq!(data.is_external, None);
         assert_eq!(data.external_kind, None);
         assert_eq!(data.verifications, None);
+    }
+
+    #[test]
+    fn add_node_drops_a_blank_external_kind() {
+        // Parity with --description "": a blank kind is "no kind", not "".
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            is_external: true,
+            external_kind: Some("  "),
+            ..behavior("Db", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(data.is_external, Some(true));
+        assert_eq!(data.external_kind, None, "blank kind must collapse to None");
+    }
+
+    #[test]
+    fn summarize_surfaces_external_and_verifications() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            is_external: true,
+            external_kind: Some("postgres"),
+            verifications: vec!["responds within 50ms".to_string()],
+            ..behavior("Db", None)
+        })
+        .unwrap();
+        let summary = summarize(&cs.into_stage(), None).unwrap();
+        let (external, verifications) = summary
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                OpSummary::Node {
+                    external,
+                    verifications,
+                    ..
+                } => Some((*external, verifications.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert!(external, "is_external must map to external == true");
+        assert_eq!(verifications, vec!["responds within 50ms".to_string()]);
     }
 
     #[test]
