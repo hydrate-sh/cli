@@ -273,6 +273,36 @@ mod tests {
     }
 
     #[test]
+    fn human_and_json_render_a_reparent_by_path() {
+        let to_core = OpSummary::Reparent {
+            path: "Api.Rater".to_string(),
+            new_parent: Some("Core".to_string()),
+        };
+        assert_eq!(
+            render(&summary(vec![to_core.clone()]), OutputMode::Human),
+            "~ move Api.Rater -> Core"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![to_core]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["op"], "reparent_node");
+        assert_eq!(v["ops"][0]["node"], "Api.Rater");
+        assert_eq!(v["ops"][0]["parent"], "Core");
+
+        // Top level renders distinctly (human label + JSON null).
+        let to_top = OpSummary::Reparent {
+            path: "Api.Rater".to_string(),
+            new_parent: None,
+        };
+        assert_eq!(
+            render(&summary(vec![to_top.clone()]), OutputMode::Human),
+            "~ move Api.Rater -> (top level)"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![to_top]), OutputMode::Json)).unwrap();
+        assert!(v["ops"][0]["parent"].is_null(), "{v}");
+    }
+
+    #[test]
     fn human_reports_empty_stage() {
         assert_eq!(
             render(&summary(vec![]), OutputMode::Human),

@@ -1745,6 +1745,7 @@ mod tests {
             ..behavior("Core", None)
         })
         .unwrap();
+        let core = cs.lookup(&node_key("Core")).unwrap();
         cs.reparent_node("Api.Rater", Some("Core")).unwrap();
         let d: models::ReparentNodeDelta = serde_json::from_value(
             cs.into_stage()
@@ -1755,6 +1756,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(d.node_id, rater);
+        // The load-bearing field: the new parent resolves to Core's id, not None.
+        assert_eq!(d.parent_id, Some(core));
     }
 
     #[test]
@@ -1798,6 +1801,87 @@ mod tests {
         });
         assert_eq!(found, Some(("Api.Rater".to_string(), None)));
         assert!(!format!("{summary:?}").contains(&rater.to_string()));
+    }
+
+    #[test]
+    fn reparent_node_rejects_moving_under_itself() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        let err = cs.reparent_node("Api", Some("Api")).unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("itself or a descendant"), "{err}");
+    }
+
+    #[test]
+    fn reparent_node_lowers_among_updates_after_adds_before_deletes() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.add_node(&behavior("New", None)).unwrap();
+        cs.reparent_node("Api.Rater", None).unwrap();
+        cs.remove_node("Api").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        assert!(matches!(lowered[0], Inner::AddNode(_)), "add first");
+        assert!(
+            matches!(lowered[1], Inner::ReparentNode(_)),
+            "reparent after adds, before deletes"
+        );
+        assert!(matches!(lowered[2], Inner::DeleteNode(_)), "delete last");
+    }
+
+    #[test]
+    fn summarize_renders_a_reparent_with_a_named_parent() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        // Add a boundary, then move Api.Rater under it; the Some(parent) path must
+        // reverse-resolve to that boundary's dotted path.
+        cs.add_node(&NodeSpec {
+            kind: Kind::Boundary,
+            ..behavior("Core", None)
+        })
+        .unwrap();
+        cs.reparent_node("Api.Rater", Some("Core")).unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        let found = summary.ops.iter().find_map(|op| match op {
+            OpSummary::Reparent { path, new_parent } => Some((path.clone(), new_parent.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            found,
+            Some(("Api.Rater".to_string(), Some("Core".to_string())))
+        );
+    }
+
+    #[test]
+    fn summarize_flags_a_reparent_to_an_unresolvable_node() {
+        let mut stage = Stage::empty();
+        stage.deltas.push(serde_json::json!({
+            "type": "reparent_node", "nodeId": Uuid::from_u128(0xDEAD), "parent_id": null
+        }));
+        let err = summarize(&stage, None).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("reparent targets a node"), "{err}");
+    }
+
+    #[test]
+    fn summarize_flags_a_reparent_to_an_unresolvable_parent() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut stage = Stage::empty();
+        // Node resolves (Api == id 1), but the parent id is dangling.
+        stage.deltas.push(serde_json::json!({
+            "type": "reparent_node", "nodeId": api, "parent_id": Uuid::from_u128(0xDEAD)
+        }));
+        let _ = (rater, score);
+        let err = summarize(&stage, Some(&index)).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("reparent targets a parent"),
+            "{err}"
+        );
     }
 
     // ---- edge rm ----

@@ -269,6 +269,34 @@ mod tests {
     }
 
     #[test]
+    fn render_moved_human_and_json_for_parent_and_top_level() {
+        let to_core = NodeReparented {
+            path: "Api.Rater".to_string(),
+            new_parent: Some("Core".to_string()),
+        };
+        assert_eq!(
+            render_moved(&to_core, OutputMode::Human),
+            "Staged move of 'Api.Rater' to Core."
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render_moved(&to_core, OutputMode::Json)).unwrap();
+        assert_eq!(v["staged"]["move"], "Api.Rater");
+        assert_eq!(v["staged"]["parent"], "Core");
+
+        let to_top = NodeReparented {
+            path: "Api.Rater".to_string(),
+            new_parent: None,
+        };
+        assert_eq!(
+            render_moved(&to_top, OutputMode::Human),
+            "Staged move of 'Api.Rater' to the top level."
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render_moved(&to_top, OutputMode::Json)).unwrap();
+        assert!(v["staged"]["parent"].is_null(), "{v}");
+    }
+
+    #[test]
     fn render_removed_human_singular_and_plural() {
         assert_eq!(
             render_removed(&["Api.Rater".to_string()], OutputMode::Human),
