@@ -107,6 +107,10 @@ pub struct NodeSetArgs {
     #[arg(value_name = "PATH")]
     pub path: String,
 
+    /// Rename the node (its leaf name within its parent scope).
+    #[arg(long)]
+    pub name: Option<String>,
+
     /// New description (the spec/prompt). Only the fields you pass change.
     #[arg(long)]
     pub description: Option<String>,
@@ -118,6 +122,30 @@ pub struct NodeSetArgs {
     /// Remove all constraints (mutually exclusive with --constraint).
     #[arg(long, conflicts_with = "constraints")]
     pub clear_constraints: bool,
+
+    /// Add an input port `name:type` (repeatable).
+    #[arg(long = "add-in", value_name = "NAME:TYPE")]
+    pub add_in: Vec<String>,
+
+    /// Add an output port `name:type` (repeatable).
+    #[arg(long = "add-out", value_name = "NAME:TYPE")]
+    pub add_out: Vec<String>,
+
+    /// Remove an input port by name (repeatable).
+    #[arg(long = "rm-in", value_name = "NAME")]
+    pub rm_in: Vec<String>,
+
+    /// Remove an output port by name (repeatable).
+    #[arg(long = "rm-out", value_name = "NAME")]
+    pub rm_out: Vec<String>,
+
+    /// Change an input port's type, keeping its identity: `name:newtype` (repeatable).
+    #[arg(long = "retype-in", value_name = "NAME:TYPE")]
+    pub retype_in: Vec<String>,
+
+    /// Change an output port's type, keeping its identity: `name:newtype` (repeatable).
+    #[arg(long = "retype-out", value_name = "NAME:TYPE")]
+    pub retype_out: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
