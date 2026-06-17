@@ -42,8 +42,13 @@ fn op_line(op: &OpSummary) -> String {
             outputs,
             description,
             constraints,
+            verifications,
+            external,
         } => {
             let mut line = format!("+ {kind} {path}");
+            if *external {
+                line.push_str(" (external)");
+            }
             let mut parts = Vec::new();
             if !inputs.is_empty() {
                 parts.push(format!("in: {}", join_ports(inputs)));
@@ -61,6 +66,9 @@ fn op_line(op: &OpSummary) -> String {
             }
             for c in constraints {
                 line.push_str(&format!("\n    constraint: {c}"));
+            }
+            for v in verifications {
+                line.push_str(&format!("\n    verification: {v}"));
             }
             line
         }
@@ -128,6 +136,8 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             outputs,
             description,
             constraints,
+            verifications,
+            external,
         } => serde_json::json!({
             "op": "add_node",
             "kind": kind,
@@ -136,6 +146,8 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "outputs": ports_json(outputs),
             "description": description,
             "constraints": constraints,
+            "verifications": verifications,
+            "external": external,
         }),
         OpSummary::Edge { from, to } => serde_json::json!({
             "op": "add_edge",
@@ -199,6 +211,8 @@ mod tests {
             outputs: vec![("score".to_string(), "Score".to_string())],
             description: None,
             constraints: vec![],
+            verifications: vec![],
+            external: false,
         }
     }
 
@@ -240,6 +254,8 @@ mod tests {
             outputs: vec![],
             description: Some("scores a hotdog".to_string()),
             constraints: vec!["fast".to_string(), "stateless".to_string()],
+            verifications: vec![],
+            external: false,
         };
         let out = render(&summary(vec![op]), OutputMode::Human);
         assert!(out.contains("description: scores a hotdog"), "{out}");
@@ -264,11 +280,43 @@ mod tests {
             outputs: vec![],
             description: Some("the prompt".to_string()),
             constraints: vec!["c1".to_string()],
+            verifications: vec![],
+            external: false,
         };
         let out = render(&summary(vec![op]), OutputMode::Json);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["ops"][0]["description"], "the prompt");
         assert_eq!(v["ops"][0]["constraints"][0], "c1");
+    }
+
+    #[test]
+    fn human_and_json_render_external_and_verifications() {
+        let op = OpSummary::Node {
+            kind: "behavior",
+            path: "Db".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            description: None,
+            constraints: vec![],
+            verifications: vec!["responds within 50ms".to_string()],
+            external: true,
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert!(human.contains("(external)"), "{human}");
+        assert!(
+            human.contains("verification: responds within 50ms"),
+            "{human}"
+        );
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["external"], true);
+        assert_eq!(v["ops"][0]["verifications"][0], "responds within 50ms");
+
+        // Negative: a plain node renders neither marker.
+        let plain = render(&summary(vec![node_op()]), OutputMode::Human);
+        assert!(!plain.contains("(external)"), "{plain}");
+        assert!(!plain.contains("verification:"), "{plain}");
     }
 
     #[test]

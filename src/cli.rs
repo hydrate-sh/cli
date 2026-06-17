@@ -196,6 +196,18 @@ pub struct NodeAddArgs {
     #[arg(long = "constraint", value_name = "TEXT")]
     pub constraints: Vec<String>,
 
+    /// A verification on the node (repeatable). Plain text; how it is checked.
+    #[arg(long = "verification", value_name = "TEXT")]
+    pub verifications: Vec<String>,
+
+    /// Mark the node external (an outside system the graph depends on).
+    #[arg(long)]
+    pub external: bool,
+
+    /// The external system's kind label (requires --external).
+    #[arg(long, requires = "external")]
+    pub external_kind: Option<String>,
+
     /// Parent node, addressed by dotted path (e.g. `Api.Rater`).
     #[arg(long)]
     pub parent: Option<String>,

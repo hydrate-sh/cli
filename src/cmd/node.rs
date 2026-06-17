@@ -32,6 +32,9 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
         path_prefix: args.path_prefix.as_deref(),
         description: args.description.as_deref(),
         constraints: args.constraints.clone(),
+        is_external: args.external,
+        external_kind: args.external_kind.as_deref(),
+        verifications: args.verifications.clone(),
     })?;
     changeset.into_stage().save(&base)?;
 
