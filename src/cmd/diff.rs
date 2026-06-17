@@ -98,6 +98,7 @@ fn op_line(op: &OpSummary) -> String {
             }
             line
         }
+        OpSummary::DeleteEdge { from, to } => format!("- edge {from} -> {to}"),
         OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
     }
@@ -149,6 +150,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "constraints": constraints,
             "inputs": inputs.as_ref().map(|p| ports_json(p)),
             "outputs": outputs.as_ref().map(|p| ports_json(p)),
+        }),
+        OpSummary::DeleteEdge { from, to } => serde_json::json!({
+            "op": "delete_edge",
+            "from": from,
+            "to": to,
         }),
         OpSummary::DeleteNode { path } => serde_json::json!({
             "op": "delete_node",

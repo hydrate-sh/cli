@@ -557,6 +557,56 @@ impl Changeset {
         })
     }
 
+    /// Stage the removal of the edge between two ports (addressed by their dotted
+    /// `node.port` paths). If the edge was staged this session (not yet
+    /// committed), drop that staged `add_edge` — it never reached the server. If
+    /// it's a committed edge (in the pulled index), emit a `DeleteEdge`. Fail
+    /// loud when there is no such edge.
+    pub fn remove_edge(&mut self, from: &str, to: &str) -> Result<EdgeRemoved, CliError> {
+        let source = self.resolve_port(from, Side::Out)?;
+        let target = self.resolve_port(to, Side::In)?;
+        let result = EdgeRemoved {
+            from: from.to_string(),
+            to: to.to_string(),
+        };
+
+        // 1) A staged-but-uncommitted edge: un-stage it (and its alias).
+        let key = edge_key(source, target);
+        if self.stage.aliases.remove(&key).is_some() {
+            let src = source.to_string();
+            let tgt = target.to_string();
+            self.stage.deltas.retain(|v| {
+                let is_this_edge = v.get("type").and_then(serde_json::Value::as_str)
+                    == Some("add_edge")
+                    && v.get("edge")
+                        .and_then(|e| e.get("sourceHandle"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(src.as_str())
+                    && v.get("edge")
+                        .and_then(|e| e.get("targetHandle"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(tgt.as_str());
+                !is_this_edge
+            });
+            return Ok(result);
+        }
+
+        // 2) A committed edge: resolve its id from the pulled index, emit delete.
+        let edge_id = self
+            .index
+            .as_ref()
+            .and_then(|i| i.edge_id(source, target))
+            .ok_or_else(|| {
+                CliError::InvalidArgument(format!(
+                    "no edge from '{from}' to '{to}' (staged or on the branch); run `hydrate pull` if it's committed"
+                ))
+            })?;
+        let delta =
+            models::DeleteEdgeDelta::new(edge_id, models::delete_edge_delta::Type::DeleteEdge);
+        self.push(&delta)?;
+        Ok(result)
+    }
+
     /// Resolve a `node.port` path to a staged port UUID on the given side.
     fn resolve_port(&self, path: &str, side: Side) -> Result<Uuid, CliError> {
         let (node_path, port) = path.rsplit_once('.').ok_or_else(|| {
@@ -598,6 +648,13 @@ impl Changeset {
 /// What `add_edge` recorded, for the caller to render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeAdded {
+    pub from: String,
+    pub to: String,
+}
+
+/// What `remove_edge` recorded, for the caller to render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeRemoved {
     pub from: String,
     pub to: String,
 }
@@ -718,6 +775,7 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
             "update_node_data" => {
                 updates.push(Inner::UpdateNodeData(Box::new(parse_delta(value)?)))
             }
+            "delete_edge" => deletes.push(Inner::DeleteEdge(Box::new(parse_delta(value)?))),
             "delete_node" => deletes.push(Inner::DeleteNode(Box::new(parse_delta(value)?))),
             other => {
                 return Err(CliError::State(format!(
@@ -925,6 +983,11 @@ pub enum OpSummary {
         inputs: Option<Vec<NamedType>>,
         outputs: Option<Vec<NamedType>>,
     },
+    /// A staged edge deletion, rendered by its two port paths.
+    DeleteEdge {
+        from: String,
+        to: String,
+    },
     /// A staged node deletion (cascades the subtree server-side).
     DeleteNode {
         path: String,
@@ -977,6 +1040,19 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
     // otherwise it reads as "references a port that is not staged".
     let node_paths = reverse_paths(stage, index, "node:", render_node_path);
     let port_paths = reverse_paths(stage, index, "port:", render_port_path);
+    // edge id → (source_handle, target_handle), inverted from the index's edge
+    // map, so a `delete_edge` (which carries only the edge id) renders by ports.
+    let edge_handles: std::collections::HashMap<Uuid, (Uuid, Uuid)> = index
+        .map(|i| {
+            i.edges
+                .iter()
+                .filter_map(|(k, eid)| {
+                    let (s, t) = k.split_once(':')?;
+                    Some((*eid, (Uuid::parse_str(s).ok()?, Uuid::parse_str(t).ok()?)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut summary = StageSummary::default();
     for value in &stage.deltas {
@@ -1031,6 +1107,30 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     constraints: d.after.constraints,
                     inputs: d.after.inputs.map(|p| named_types(Some(&p))),
                     outputs: d.after.outputs.map(|p| named_types(Some(&p))),
+                });
+            }
+            "delete_edge" => {
+                let d: models::DeleteEdgeDelta = parse_delta(value)?;
+                // Reverse the edge id to its two ports, then to their paths —
+                // never a UUID. An id absent from the pulled edge map, or ports
+                // absent from the path map, is corruption (surfaced loudly).
+                let (src, tgt) = edge_handles.get(&d.edge_id).ok_or_else(|| {
+                    CliError::State(
+                        "a staged edge deletion targets an edge that isn't in the pulled index"
+                            .to_string(),
+                    )
+                })?;
+                let resolve = |id: &Uuid| {
+                    port_paths.get(id).cloned().ok_or_else(|| {
+                        CliError::State(
+                            "a staged edge deletion references a port not in the index".to_string(),
+                        )
+                    })
+                };
+                summary.deletes += 1;
+                summary.ops.push(OpSummary::DeleteEdge {
+                    from: resolve(src)?,
+                    to: resolve(tgt)?,
                 });
             }
             "delete_node" => {
@@ -1564,6 +1664,108 @@ mod tests {
         let err = cs.add_edge("Maker.dog", "Rater.raw").unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
         assert!(err.to_string().contains("already staged"), "{err}");
+    }
+
+    // ---- edge rm ----
+
+    /// A pulled graph with a committed edge `A.o → B.i` (id `eid`) and a
+    /// dangling input `C.x` (no edge). Returns (changeset, index, eid).
+    fn committed_edge() -> (Changeset, Index, Uuid) {
+        let (ao, bi, cx, eid) = (
+            Uuid::from_u128(0x40),
+            Uuid::from_u128(0x42),
+            Uuid::from_u128(0x43),
+            Uuid::from_u128(0xED),
+        );
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 2 },
+            "project_id": Uuid::from_u128(0xA), "version": "2",
+            "nodes": [
+                { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "outputs":[{"id":ao,"name":"o","type":"T"}]} },
+                { "id": Uuid::from_u128(2), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"B","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "inputs":[{"id":bi,"name":"i","type":"T"}]} },
+                { "id": Uuid::from_u128(3), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"C","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "inputs":[{"id":cx,"name":"x","type":"T"}]} },
+            ],
+            "edges": [ { "id": eid, "source": Uuid::from_u128(1), "target": Uuid::from_u128(2),
+                         "sourceHandle": ao, "targetHandle": bi } ],
+        })).unwrap();
+        let index = index_from_graph(&graph).unwrap();
+        (
+            Changeset::with_index(Stage::empty(), Some(index.clone())),
+            index,
+            eid,
+        )
+    }
+
+    #[test]
+    fn remove_edge_emits_delete_for_a_committed_edge() {
+        let (mut cs, _index, eid) = committed_edge();
+        cs.remove_edge("A.o", "B.i").unwrap();
+        let d: models::DeleteEdgeDelta = serde_json::from_value(
+            cs.into_stage()
+                .deltas
+                .into_iter()
+                .find(|v| v["type"] == "delete_edge")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(d.edge_id, eid);
+    }
+
+    #[test]
+    fn remove_edge_unstages_a_staged_edge_without_a_delete() {
+        let mut cs = graph_with_two_ports(); // Maker.dog (out), Rater.raw (in)
+        cs.add_edge("Maker.dog", "Rater.raw").unwrap();
+        cs.remove_edge("Maker.dog", "Rater.raw").unwrap();
+        let stage = cs.into_stage();
+        // The staged add_edge is gone; no delete_edge was emitted (it never
+        // reached the server), and the edge alias is cleared.
+        assert!(stage
+            .deltas
+            .iter()
+            .all(|v| v["type"] != "add_edge" && v["type"] != "delete_edge"));
+        assert!(stage.aliases.keys().all(|k| !k.starts_with("edge:")));
+    }
+
+    #[test]
+    fn remove_edge_fails_loud_when_no_such_edge() {
+        let (mut cs, _i, _e) = committed_edge();
+        // A.o and C.x both exist, but there is no edge between them.
+        let err = cs.remove_edge("A.o", "C.x").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("no edge from"), "{err}");
+    }
+
+    #[test]
+    fn lower_orders_delete_edge_after_adds() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        let (mut cs, _i, _e) = committed_edge();
+        cs.add_node(&behavior("New", None)).unwrap();
+        cs.remove_edge("A.o", "B.i").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        assert!(matches!(lowered[0], Inner::AddNode(_)));
+        assert!(matches!(lowered[1], Inner::DeleteEdge(_)), "delete last");
+    }
+
+    #[test]
+    fn summarize_renders_an_edge_deletion_by_ports_not_uuid() {
+        let (mut cs, index, eid) = committed_edge();
+        cs.remove_edge("A.o", "B.i").unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        let found = summary.ops.iter().find_map(|op| match op {
+            OpSummary::DeleteEdge { from, to } => Some((from.clone(), to.clone())),
+            _ => None,
+        });
+        assert_eq!(found, Some(("A.o".to_string(), "B.i".to_string())));
+        assert!(!format!("{summary:?}").contains(&eid.to_string()));
     }
 
     // ---- summarize ----

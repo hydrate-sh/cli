@@ -197,6 +197,20 @@ pub struct NodeAddArgs {
 pub enum EdgeAction {
     /// Add an edge to the staged changeset.
     Add(EdgeAddArgs),
+
+    /// Stage the removal of the edge between two ports.
+    Rm(EdgeRmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EdgeRmArgs {
+    /// Source port of the edge to remove (`node.port`).
+    #[arg(long)]
+    pub from: String,
+
+    /// Target port of the edge to remove (`node.port`).
+    #[arg(long)]
+    pub to: String,
 }
 
 #[derive(Debug, Args)]
