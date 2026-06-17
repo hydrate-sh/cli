@@ -98,6 +98,7 @@ fn op_line(op: &OpSummary) -> String {
             }
             line
         }
+        OpSummary::DeleteEdge { from, to } => format!("- edge {from} -> {to}"),
         OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
     }
@@ -149,6 +150,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "constraints": constraints,
             "inputs": inputs.as_ref().map(|p| ports_json(p)),
             "outputs": outputs.as_ref().map(|p| ports_json(p)),
+        }),
+        OpSummary::DeleteEdge { from, to } => serde_json::json!({
+            "op": "delete_edge",
+            "from": from,
+            "to": to,
         }),
         OpSummary::DeleteNode { path } => serde_json::json!({
             "op": "delete_node",
@@ -282,6 +288,21 @@ mod tests {
     fn human_renders_edge_by_paths() {
         let out = render(&summary(vec![edge_op()]), OutputMode::Human);
         assert_eq!(out, "+ edge Maker.dog -> Api.Rater.raw");
+    }
+
+    #[test]
+    fn human_and_json_render_an_edge_deletion_by_ports() {
+        let op = OpSummary::DeleteEdge {
+            from: "Maker.dog".to_string(),
+            to: "Api.Rater.raw".to_string(),
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert_eq!(human, "- edge Maker.dog -> Api.Rater.raw");
+        let out = render(&summary(vec![op]), OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ops"][0]["op"], "delete_edge");
+        assert_eq!(v["ops"][0]["from"], "Maker.dog");
+        assert_eq!(v["ops"][0]["to"], "Api.Rater.raw");
     }
 
     #[test]

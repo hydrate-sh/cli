@@ -2,10 +2,10 @@
 //! dotted `node.port` paths. Nothing hits the server.
 
 use super::context::require_workdir;
-use crate::cli::EdgeAddArgs;
+use crate::cli::{EdgeAddArgs, EdgeRmArgs};
 use crate::error::CliError;
 use crate::output::OutputMode;
-use crate::staging::{Changeset, EdgeAdded};
+use crate::staging::{Changeset, EdgeAdded, EdgeRemoved};
 use crate::state::{Index, Stage};
 
 pub fn add(args: EdgeAddArgs, mode: OutputMode) -> Result<(), CliError> {
@@ -16,6 +16,29 @@ pub fn add(args: EdgeAddArgs, mode: OutputMode) -> Result<(), CliError> {
 
     println!("{}", render(&added, mode));
     Ok(())
+}
+
+pub fn rm(args: EdgeRmArgs, mode: OutputMode) -> Result<(), CliError> {
+    let base = require_workdir()?;
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
+    let removed = changeset.remove_edge(&args.from, &args.to)?;
+    changeset.into_stage().save(&base)?;
+
+    println!("{}", render_removed(&removed, mode));
+    Ok(())
+}
+
+fn render_removed(removed: &EdgeRemoved, mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({
+            "staged": { "remove_edge": { "from": removed.from, "to": removed.to } }
+        })
+        .to_string(),
+        OutputMode::Human => format!(
+            "Staged removal of edge '{}' -> '{}'.",
+            removed.from, removed.to
+        ),
+    }
 }
 
 fn render(added: &EdgeAdded, mode: OutputMode) -> String {

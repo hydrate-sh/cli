@@ -39,6 +39,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         Command::Clear => finish(clear::run(mode), mode),
         Command::Edge { action } => match action {
             EdgeAction::Add(args) => finish(edge::add(args, mode), mode),
+            EdgeAction::Rm(args) => finish(edge::rm(args, mode), mode),
         },
         Command::Status => finish(status::run(mode), mode),
         Command::Diff => finish(diff::run(mode), mode),
