@@ -331,6 +331,20 @@ impl Changeset {
             .collect()
     }
 
+    /// Edge ids already staged for deletion (the `edgeId` of every staged
+    /// `delete_edge`). Mirrors `staged_deletions` so a committed edge can't be
+    /// queued for deletion twice — the index isn't mutated, so without this a
+    /// second `edge rm` would silently push a duplicate `delete_edge`.
+    fn staged_edge_deletions(&self) -> std::collections::HashSet<Uuid> {
+        self.stage
+            .deltas
+            .iter()
+            .filter(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("delete_edge"))
+            .filter_map(|v| v.get("edgeId").and_then(serde_json::Value::as_str))
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect()
+    }
+
     /// Stage a partial edit of the node at `path` (resolved against the
     /// stage ∪ pulled index). `UpdateNodeData` is key-presence partial: only the
     /// fields present in `after` change, the rest are left untouched — so we send
@@ -601,6 +615,11 @@ impl Changeset {
                     "no edge from '{from}' to '{to}' (staged or on the branch); run `hydrate pull` if it's committed"
                 ))
             })?;
+        if self.staged_edge_deletions().contains(&edge_id) {
+            return Err(CliError::InvalidArgument(format!(
+                "edge from '{from}' to '{to}' is already staged for deletion"
+            )));
+        }
         let delta =
             models::DeleteEdgeDelta::new(edge_id, models::delete_edge_delta::Type::DeleteEdge);
         self.push(&delta)?;
@@ -1766,6 +1785,50 @@ mod tests {
         });
         assert_eq!(found, Some(("A.o".to_string(), "B.i".to_string())));
         assert!(!format!("{summary:?}").contains(&eid.to_string()));
+    }
+
+    #[test]
+    fn remove_edge_twice_fails_loud() {
+        // The index isn't mutated, so a second remove of a committed edge must be
+        // rejected, not silently stage a duplicate delete (parity with node rm).
+        let (mut cs, _i, _e) = committed_edge();
+        cs.remove_edge("A.o", "B.i").unwrap();
+        let err = cs.remove_edge("A.o", "B.i").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("already staged for deletion"),
+            "{err}"
+        );
+        // Exactly one delete_edge was staged.
+        let count = cs
+            .into_stage()
+            .deltas
+            .iter()
+            .filter(|v| v["type"] == "delete_edge")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn remove_edge_reversed_direction_fails_loud() {
+        // Giving the input as --from (B.i) must fail with the directional hint,
+        // never silently match the A.o -> B.i edge.
+        let (mut cs, _i, _e) = committed_edge();
+        let err = cs.remove_edge("B.i", "A.o").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(
+            err.to_string()
+                .contains("an edge runs from an output (--from) to an input (--to)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn remove_edge_bad_port_path_fails_loud() {
+        let (mut cs, _i, _e) = committed_edge();
+        let err = cs.remove_edge("Aooo", "B.i").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("not a port path"), "{err}");
     }
 
     // ---- summarize ----
