@@ -331,6 +331,59 @@ impl Changeset {
             .collect()
     }
 
+    /// The most recent full port list staged for `node_id` on `side`, if any
+    /// `update_node_data` delta in the batch set that side. Each port edit
+    /// resends the WHOLE side, so a later edit must build on the prior staged
+    /// list — not the pulled snapshot — or it silently drops ports added/retyped
+    /// by an earlier staged edit. Returns `None` if no staged edit touched the
+    /// side (caller then falls back to the pulled snapshot). Carries `(name, id,
+    /// type)`; an unnamed port keeps its id with an empty name.
+    fn staged_side_ports(&self, node_id: Uuid, side: Side) -> Option<Vec<(String, Uuid, String)>> {
+        let wire_key = match side {
+            Side::In => "inputs",
+            Side::Out => "outputs",
+        };
+        let mut latest = None;
+        for v in &self.stage.deltas {
+            if v.get("type").and_then(serde_json::Value::as_str) != Some("update_node_data") {
+                continue;
+            }
+            if v.get("nodeId").and_then(serde_json::Value::as_str)
+                != Some(node_id.to_string().as_str())
+            {
+                continue;
+            }
+            // Key-presence: only a delta that actually set this side replaces the
+            // baseline; one that edited the *other* side leaves it untouched.
+            let Some(arr) = v
+                .get("after")
+                .and_then(|a| a.get(wire_key))
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+            let ports = arr
+                .iter()
+                .filter_map(|p| {
+                    let id = Uuid::parse_str(p.get("id")?.as_str()?).ok()?;
+                    let name = p
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let r#type = p
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    Some((name, id, r#type))
+                })
+                .collect();
+            latest = Some(ports);
+        }
+        latest
+    }
+
     /// Stage a partial edit of the node at `path` (resolved against the
     /// stage ∪ pulled index). `UpdateNodeData` is key-presence partial: only the
     /// fields present in `after` change, the rest are left untouched — so we send
@@ -406,23 +459,33 @@ impl Changeset {
         if add.is_empty() && rm.is_empty() && retype.is_empty() {
             return Ok((None, Vec::new()));
         }
-        let info = self
-            .index
-            .as_ref()
-            .and_then(|i| i.node_info(&node_id))
-            .ok_or_else(|| {
-                CliError::InvalidArgument(format!(
-                    "can't edit ports of '{path}' — its current ports aren't pulled; run `hydrate pull`"
-                ))
-            })?;
-        let current = match side {
-            Side::In => &info.inputs,
-            Side::Out => &info.outputs,
+        // Baseline = the most recent staged full list for this side (so a second
+        // edit in the same working copy builds on the first), else the pulled
+        // snapshot. Without the staged fold, a later same-side edit would resend
+        // the pulled list and silently drop ports an earlier staged edit added.
+        let mut ports: Vec<(String, Uuid, String)> = if let Some(staged) =
+            self.staged_side_ports(node_id, side)
+        {
+            staged
+        } else {
+            let info = self
+                    .index
+                    .as_ref()
+                    .and_then(|i| i.node_info(&node_id))
+                    .ok_or_else(|| {
+                        CliError::InvalidArgument(format!(
+                            "can't edit ports of '{path}' — its current ports aren't pulled; run `hydrate pull`"
+                        ))
+                    })?;
+            let current = match side {
+                Side::In => &info.inputs,
+                Side::Out => &info.outputs,
+            };
+            current
+                .iter()
+                .map(|p| (p.name.clone(), p.id, p.r#type.clone()))
+                .collect()
         };
-        let mut ports: Vec<(String, Uuid, String)> = current
-            .iter()
-            .map(|p| (p.name.clone(), p.id, p.r#type.clone()))
-            .collect();
 
         for name in rm {
             let before = ports.len();
@@ -865,8 +928,8 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
             node.id,
             crate::state::NodeInfo {
                 kind: node_kind_str(node.kind).to_string(),
-                inputs: port_infos(node.data.inputs.as_deref()),
-                outputs: port_infos(node.data.outputs.as_deref()),
+                inputs: port_infos(node.data.inputs.as_deref())?,
+                outputs: port_infos(node.data.outputs.as_deref())?,
             },
         );
     }
@@ -908,18 +971,27 @@ fn node_kind_str(kind: models::wire_node::Kind) -> &'static str {
     }
 }
 
-/// Project a wire port list into the index's [`PortInfo`]. Unnamed ports are
-/// skipped (not path-addressable, so `node set` can't target them; the server
-/// keeps them as-is when the surrounding node is updated).
-fn port_infos(ports: Option<&[models::WirePort]>) -> Vec<crate::state::PortInfo> {
+/// Project a wire port list into the index's [`PortInfo`] — ALL ports, including
+/// unnamed ones (recorded with an empty name). `node set` resends the full port
+/// list to preserve UUIDs, so dropping a port here would delete it (and its
+/// edges) on the next update. A port with no type is loud corruption: it can't
+/// be faithfully resent, so fail rather than fabricate `""` and clobber the
+/// server's type.
+fn port_infos(ports: Option<&[models::WirePort]>) -> Result<Vec<crate::state::PortInfo>, CliError> {
     ports
         .unwrap_or_default()
         .iter()
-        .filter_map(|p| {
-            Some(crate::state::PortInfo {
+        .map(|p| {
+            let r#type = p.r#type.clone().ok_or_else(|| {
+                CliError::State(format!(
+                    "the branch graph has a port (id {}) with no type",
+                    p.id
+                ))
+            })?;
+            Ok(crate::state::PortInfo {
                 id: p.id,
-                name: p.name.clone()?,
-                r#type: p.r#type.clone().unwrap_or_default(),
+                name: p.name.clone().unwrap_or_default(),
+                r#type,
             })
         })
         .collect()
@@ -1628,6 +1700,42 @@ mod tests {
         assert_eq!(cons, vec!["c1".to_string(), "c2".to_string()]);
     }
 
+    #[test]
+    fn summarize_update_node_carries_rename_and_ports() {
+        // The preview must reflect a rename and the resent port lists, by path.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                name: Some("Scorer".to_string()),
+                add_out: vec![port("extra", "Blob")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        let (path, name, outputs) = summary
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                OpSummary::UpdateNode {
+                    path,
+                    name,
+                    outputs,
+                    ..
+                } => Some((path.clone(), name.clone(), outputs.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(path, "Api.Rater"); // by path, never the UUID
+        assert_eq!(name.as_deref(), Some("Scorer"));
+        let outs = outputs.expect("the resent output list is present");
+        assert!(outs.iter().any(|(n, t)| n == "extra" && t == "Blob"));
+        assert!(outs.iter().any(|(n, _)| n == "score"));
+    }
+
     // The on-disk surface `commit` depends on: a staged node must survive a real
     // save → Stage::load → reconstruct-the-delta round trip, not just live in
     // memory.
@@ -2205,6 +2313,79 @@ mod tests {
             (score, "score", "Rating")
         );
         assert_eq!(rater_info.inputs[0].name, "raw");
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_a_typeless_port() {
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA), "version": "1",
+            "edges": [],
+            "nodes": [ { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
+                "position": {"x":0.0,"y":0.0},
+                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                         "outputs":[{"id":Uuid::from_u128(7),"name":"o"}]} } ],
+        }))
+        .unwrap();
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("with no type"), "{err}");
+    }
+
+    #[test]
+    fn index_from_graph_keeps_an_unnamed_port_in_node_info() {
+        // Unnamed ports aren't path-addressable (excluded from `entries`), but
+        // node_info MUST keep them (id + type) so `node set` can resend the full
+        // list without dropping them.
+        let node = Uuid::from_u128(1);
+        let unnamed = Uuid::from_u128(0x99);
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA), "version": "1",
+            "edges": [],
+            "nodes": [ { "id": node, "kind": "behavior", "parent_id": null,
+                "position": {"x":0.0,"y":0.0},
+                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                         "outputs":[{"id":unnamed,"type":"T"}]} } ],
+        }))
+        .unwrap();
+        let index = index_from_graph(&graph).unwrap();
+        // Not path-addressable...
+        assert!(index.entries.keys().all(|k| !k.starts_with("port:")));
+        // ...but preserved in node_info (id kept, empty name).
+        let outs = &index.node_info(&node).unwrap().outputs;
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].id, unnamed);
+        assert_eq!(outs[0].name, "");
+    }
+
+    #[test]
+    fn index_from_graph_fails_loud_on_two_edges_between_the_same_ports() {
+        let (src, tgt) = (Uuid::from_u128(0x50), Uuid::from_u128(0x70));
+        let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
+            "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
+            "project_id": Uuid::from_u128(0xA), "version": "1",
+            "nodes": [
+                { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "outputs":[{"id":src,"name":"o","type":"T"}]} },
+                { "id": Uuid::from_u128(2), "kind": "behavior", "parent_id": null,
+                  "position": {"x":0.0,"y":0.0},
+                  "data": {"name":"B","description":"","status":"idle","isTestNode":false,"is_external":false,
+                           "inputs":[{"id":tgt,"name":"i","type":"T"}]} },
+            ],
+            "edges": [
+                { "id": Uuid::from_u128(0xE1), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "sourceHandle": src, "targetHandle": tgt },
+                { "id": Uuid::from_u128(0xE2), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "sourceHandle": src, "targetHandle": tgt },
+            ],
+        }))
+        .unwrap();
+        let err = index_from_graph(&graph).unwrap_err();
+        assert!(
+            err.to_string().contains("two edges between the same ports"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2887,6 +3068,115 @@ mod tests {
         )
         .unwrap();
         assert_eq!(update_delta(cs).after.name.as_deref(), Some("Scorer"));
+    }
+
+    #[test]
+    fn update_node_second_same_side_edit_builds_on_the_first_staged_list() {
+        // Two port edits on the same side in one working copy: the second must
+        // build on the first's staged list, not re-derive from the pulled
+        // snapshot — else it silently drops the port the first edit added.
+        let (mut cs, _raw, score) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_out: vec![port("extra", "Blob")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_out: vec![port("extra2", "Blob")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Inspect the LAST update_node_data delta — the one that commits last.
+        let last = cs
+            .into_stage()
+            .deltas
+            .into_iter()
+            .rfind(|v| v["type"] == "update_node_data")
+            .unwrap();
+        let d: models::UpdateNodeDataDelta = serde_json::from_value(last).unwrap();
+        let outs = d.after.outputs.unwrap();
+        let names: Vec<&str> = outs.iter().filter_map(|p| p.name.as_deref()).collect();
+        assert!(names.contains(&"score"), "original survives: {names:?}");
+        assert!(
+            names.contains(&"extra"),
+            "first staged edit's port must NOT be dropped: {names:?}"
+        );
+        assert!(names.contains(&"extra2"), "second edit's port: {names:?}");
+        // The surviving original keeps its pulled id (edges stay intact).
+        assert!(outs.iter().any(|p| p.id == score));
+    }
+
+    #[test]
+    fn update_node_retype_missing_port_fails_loud() {
+        let (mut cs, _r, _s) = rater_changeset();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    retype_out: vec![port("nope", "X")],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no out port 'nope' to retype"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_node_rename_to_an_invalid_slug_fails_loud() {
+        let (mut cs, _r, _s) = rater_changeset();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    name: Some("has space".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn update_node_empty_name_fails_loud() {
+        // A blank rename is garbage (no "clear name" semantics) — surface it.
+        let (mut cs, _r, _s) = rater_changeset();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    name: Some("   ".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn update_node_in_side_add_records_a_wireable_alias() {
+        // The Side::In alias-record path is symmetric to Out but exercised here.
+        let (mut cs, _raw, _score) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_in: vec![port("extra", "Blob")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(cs
+            .into_stage()
+            .aliases
+            .contains_key("port:Api.Rater:in:extra"));
     }
 
     #[test]
