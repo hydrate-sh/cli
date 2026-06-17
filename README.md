@@ -46,7 +46,7 @@ alias) on your `PATH`:
 
 ```sh
 # Linux x86_64 — adjust the version and target for your platform.
-tag=v0.1.4
+tag=v0.1.5
 target=x86_64-unknown-linux-gnu
 curl -fsSLO "https://github.com/hydrate-sh/cli/releases/download/${tag}/hydrate-${tag}-${target}.tar.gz"
 curl -fsSLO "https://github.com/hydrate-sh/cli/releases/download/${tag}/hydrate-${tag}-${target}.tar.gz.sha256"
