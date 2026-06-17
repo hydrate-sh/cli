@@ -104,6 +104,7 @@ fn op_line(op: &OpSummary) -> String {
                 new_parent.as_deref().unwrap_or("(top level)")
             )
         }
+        OpSummary::Flatten { path } => format!("~ flatten {path}"),
         OpSummary::DeleteEdge { from, to } => format!("- edge {from} -> {to}"),
         OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
@@ -161,6 +162,10 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "op": "reparent_node",
             "node": path,
             "parent": new_parent,
+        }),
+        OpSummary::Flatten { path } => serde_json::json!({
+            "op": "flatten_boundary",
+            "node": path,
         }),
         OpSummary::DeleteEdge { from, to } => serde_json::json!({
             "op": "delete_edge",
