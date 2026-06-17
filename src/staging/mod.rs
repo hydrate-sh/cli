@@ -509,7 +509,8 @@ impl Changeset {
             return Err(CliError::InvalidArgument(
                 "nothing to set — pass a field flag (--description, --constraint, \
                  --name, --user-kind, --path-prefix, --external/--no-external, \
-                 --external-kind, --verification) or a port flag"
+                 --external-kind, --protocol, --doc-url, --test-node/--no-test-node, \
+                 --verification, or a --clear-* flag) or a port flag"
                     .to_string(),
             ));
         }
@@ -3706,6 +3707,82 @@ mod tests {
     }
 
     #[test]
+    fn update_node_accepts_each_lone_clear_or_class_b_flag() {
+        // Each clear flag and each new scalar, alone, must satisfy is_empty (not
+        // be rejected as "nothing to set"). Pins every new is_empty clause.
+        let lone: Vec<(&str, NodeEdit)> = vec![
+            (
+                "clear_description",
+                NodeEdit {
+                    clear_description: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "clear_user_kind",
+                NodeEdit {
+                    clear_user_kind: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "clear_path_prefix",
+                NodeEdit {
+                    clear_path_prefix: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "clear_external_kind",
+                NodeEdit {
+                    clear_external_kind: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "clear_protocol",
+                NodeEdit {
+                    clear_protocol: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "clear_doc_url",
+                NodeEdit {
+                    clear_doc_url: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "protocol",
+                NodeEdit {
+                    protocol: Some("gRPC".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "doc_url",
+                NodeEdit {
+                    doc_url: Some("https://x".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "is_test_node",
+                NodeEdit {
+                    is_test_node: Some(true),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (label, edit) in lone {
+            let (mut cs, _r, _s) = rater_changeset();
+            cs.update_node("Api.Rater", &edit)
+                .unwrap_or_else(|e| panic!("lone {label} rejected: {e}"));
+        }
+    }
+
+    #[test]
     fn update_node_clears_a_scalar_to_null() {
         // `--clear-user-kind` → wire Some(None) (explicit null), distinct from
         // untouched (None) and set (Some(Some(v))).
@@ -3721,6 +3798,22 @@ mod tests {
         let d = update_delta(cs);
         assert_eq!(d.after.user_kind, Some(None), "cleared to null");
         assert_eq!(d.after.path_prefix, None, "others untouched");
+    }
+
+    #[test]
+    fn update_node_clear_description_sets_empty() {
+        // description has no null on the wire — clear means empty string, which is
+        // distinct from untouched (None).
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                clear_description: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(update_delta(cs).after.description, Some(String::new()));
     }
 
     #[test]

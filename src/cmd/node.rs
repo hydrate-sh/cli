@@ -176,24 +176,40 @@ fn scalar_label(field: &Option<Option<String>>, name: &str) -> Option<String> {
 
 fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
     match mode {
-        OutputMode::Json => serde_json::json!({
-            "staged": {
+        OutputMode::Json => {
+            let mut staged = serde_json::json!({
                 "set": u.path,
                 "name": u.name,
                 "description": u.description,
                 "constraints": u.constraints,
-                "user_kind": u.user_kind,
-                "path_prefix": u.path_prefix,
                 "external": u.is_external,
-                "external_kind": u.external_kind,
-                "protocol": u.protocol,
-                "doc_url": u.doc_url,
                 "test_node": u.is_test_node,
                 "verifications": u.verifications,
                 "ports_changed": u.ports_changed,
+            });
+            // Double-option scalars: untouched → key omitted; cleared → null; set
+            // → value — so JSON carries the same three states the human output
+            // does (serde alone would render cleared and untouched both as null).
+            let map = staged.as_object_mut().expect("json object");
+            for (key, field) in [
+                ("user_kind", &u.user_kind),
+                ("path_prefix", &u.path_prefix),
+                ("external_kind", &u.external_kind),
+                ("protocol", &u.protocol),
+                ("doc_url", &u.doc_url),
+            ] {
+                if let Some(inner) = field {
+                    map.insert(
+                        key.to_string(),
+                        match inner {
+                            Some(v) => serde_json::Value::String(v.clone()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                }
             }
-        })
-        .to_string(),
+            serde_json::json!({ "staged": staged }).to_string()
+        }
         OutputMode::Human => {
             let mut fields = Vec::new();
             if u.name.is_some() {
@@ -567,6 +583,44 @@ mod tests {
         assert_eq!(v["staged"]["external"], true);
         assert_eq!(v["staged"]["external_kind"], "rest-api");
         assert_eq!(v["staged"]["verifications"][0], "responds in 50ms");
+    }
+
+    #[test]
+    fn render_updated_distinguishes_cleared_set_and_untouched_scalars() {
+        let u = NodeUpdated {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: Some(String::new()), // cleared
+            constraints: None,
+            user_kind: Some(None), // cleared
+            path_prefix: None,     // untouched
+            is_external: None,
+            external_kind: None,
+            protocol: Some(Some("gRPC".to_string())), // set
+            doc_url: Some(Some("https://x".to_string())), // set
+            is_test_node: Some(true),
+            verifications: None,
+            ports_changed: false,
+        };
+        let human = render_updated(&u, OutputMode::Human);
+        assert!(human.contains("description cleared"), "{human}");
+        assert!(human.contains("user-kind cleared"), "{human}");
+        assert!(human.contains("protocol"), "{human}");
+        assert!(human.contains("doc-url"), "{human}");
+        assert!(human.contains("test-node"), "{human}");
+        assert!(!human.contains("path-prefix"), "untouched omitted: {human}");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render_updated(&u, OutputMode::Json)).unwrap();
+        // cleared → key present + null; set → value; untouched → key absent.
+        assert!(v["staged"].get("user_kind").is_some() && v["staged"]["user_kind"].is_null());
+        assert!(
+            v["staged"].get("path_prefix").is_none(),
+            "untouched key absent"
+        );
+        assert_eq!(v["staged"]["protocol"], "gRPC");
+        assert_eq!(v["staged"]["test_node"], true);
+        assert_eq!(v["staged"]["description"], ""); // cleared description = empty
     }
 
     #[test]

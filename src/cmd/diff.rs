@@ -105,8 +105,11 @@ fn op_line(op: &OpSummary) -> String {
             if let Some(n) = name {
                 line.push_str(&format!("\n    rename -> {n}"));
             }
-            if let Some(d) = description {
-                line.push_str(&format!("\n    description: {d}"));
+            // description: Some("") = cleared, Some(v) = set, None = untouched.
+            match description {
+                Some(d) if d.is_empty() => line.push_str("\n    description: (cleared)"),
+                Some(d) => line.push_str(&format!("\n    description: {d}")),
+                None => {}
             }
             // Distinguish cleared (Some([])) from untouched (None).
             match constraints {
