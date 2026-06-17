@@ -85,15 +85,8 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         // Scalars: a blank value is "untouched", mirroring `--description ""`.
         user_kind: blank_to_none(args.user_kind.as_deref()),
         path_prefix: blank_to_none(args.path_prefix.as_deref()),
-        // --external / --no-external toggle is_external; neither = untouched
-        // (clap conflicts_with rules out both).
-        is_external: if args.external {
-            Some(true)
-        } else if args.no_external {
-            Some(false)
-        } else {
-            None
-        },
+        // --external / --no-external toggle is_external; neither = untouched.
+        is_external: external_flag(args.external, args.no_external),
         external_kind: blank_to_none(args.external_kind.as_deref()),
         verifications: list_field(&args.verifications, args.clear_verifications),
     };
@@ -124,6 +117,19 @@ fn set_fields(
 /// `--description ""` is treated everywhere. Pure, so it's unit-testable.
 fn blank_to_none(value: Option<&str>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty()).map(str::to_string)
+}
+
+/// Map the `--external` / `--no-external` pair to `is_external`: `--external` →
+/// `Some(true)`, `--no-external` → `Some(false)`, neither → `None` (untouched).
+/// clap `conflicts_with` rules out both at once. Pure, so it's unit-testable.
+fn external_flag(external: bool, no_external: bool) -> Option<bool> {
+    if external {
+        Some(true)
+    } else if no_external {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Map a repeatable list flag + its `--clear-*` companion to key-presence intent:
@@ -465,6 +471,13 @@ mod tests {
             blank_to_none(Some("subsystem")),
             Some("subsystem".to_string())
         );
+    }
+
+    #[test]
+    fn external_flag_maps_the_toggle() {
+        assert_eq!(external_flag(false, false), None); // untouched
+        assert_eq!(external_flag(true, false), Some(true)); // --external
+        assert_eq!(external_flag(false, true), Some(false)); // --no-external
     }
 
     #[test]

@@ -2029,6 +2029,7 @@ mod tests {
             "Api.Rater",
             &NodeEdit {
                 user_kind: Some("subsystem".to_string()),
+                path_prefix: Some("src/api/".to_string()),
                 is_external: Some(true),
                 external_kind: Some("rest-api".to_string()),
                 verifications: Some(vec!["responds in 50ms".to_string()]),
@@ -2043,12 +2044,14 @@ mod tests {
             .find_map(|op| match op {
                 OpSummary::UpdateNode {
                     user_kind,
+                    path_prefix,
                     external,
                     external_kind,
                     verifications,
                     ..
                 } => Some((
                     user_kind.clone(),
+                    path_prefix.clone(),
                     *external,
                     external_kind.clone(),
                     verifications.clone(),
@@ -2057,9 +2060,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(found.0.as_deref(), Some("subsystem"));
-        assert_eq!(found.1, Some(true));
-        assert_eq!(found.2.as_deref(), Some("rest-api"));
-        assert_eq!(found.3, Some(vec!["responds in 50ms".to_string()]));
+        assert_eq!(found.1.as_deref(), Some("src/api/"));
+        assert_eq!(found.2, Some(true));
+        assert_eq!(found.3.as_deref(), Some("rest-api"));
+        assert_eq!(found.4, Some(vec!["responds in 50ms".to_string()]));
     }
 
     // The on-disk surface `commit` depends on: a staged node must survive a real
@@ -3560,6 +3564,50 @@ mod tests {
         // Untouched fields stay None (key-presence).
         assert_eq!(d.after.description, None);
         assert_eq!(d.after.verifications, None);
+    }
+
+    #[test]
+    fn update_node_accepts_a_lone_boundary_scalar() {
+        // Each new scalar alone must satisfy is_empty (not be rejected as
+        // "nothing to set") and land in the delta.
+        let cases: [(&str, NodeEdit, Option<Option<String>>); 3] = [
+            (
+                "user_kind",
+                NodeEdit {
+                    user_kind: Some("subsystem".to_string()),
+                    ..Default::default()
+                },
+                Some(Some("subsystem".to_string())),
+            ),
+            (
+                "path_prefix",
+                NodeEdit {
+                    path_prefix: Some("src/".to_string()),
+                    ..Default::default()
+                },
+                Some(Some("src/".to_string())),
+            ),
+            (
+                "external_kind",
+                NodeEdit {
+                    external_kind: Some("queue".to_string()),
+                    ..Default::default()
+                },
+                Some(Some("queue".to_string())),
+            ),
+        ];
+        for (label, edit, want) in cases {
+            let (mut cs, _r, _s) = rater_changeset();
+            cs.update_node("Api.Rater", &edit)
+                .unwrap_or_else(|e| panic!("{label} alone rejected: {e}"));
+            let d = update_delta(cs);
+            let got = match label {
+                "user_kind" => d.after.user_kind,
+                "path_prefix" => d.after.path_prefix,
+                _ => d.after.external_kind,
+            };
+            assert_eq!(got, want, "{label}");
+        }
     }
 
     #[test]

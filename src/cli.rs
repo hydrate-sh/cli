@@ -192,7 +192,8 @@ pub struct NodeSetArgs {
     #[arg(long = "no-external")]
     pub no_external: bool,
 
-    /// The external system's kind label (e.g. `rest-api`). Requires external.
+    /// The external system's kind label (e.g. `rest-api`). For external nodes;
+    /// the server validates it against the node's external state.
     #[arg(long)]
     pub external_kind: Option<String>,
 

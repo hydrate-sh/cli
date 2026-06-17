@@ -465,8 +465,49 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
         assert_eq!(v["ops"][0]["user_kind"], "subsystem");
+        assert_eq!(v["ops"][0]["path_prefix"], "src/api/");
         assert_eq!(v["ops"][0]["external"], true);
+        assert_eq!(v["ops"][0]["external_kind"], "rest-api");
         assert_eq!(v["ops"][0]["verifications"][0], "responds in 50ms");
+    }
+
+    #[test]
+    fn json_distinguishes_cleared_verifications_from_untouched() {
+        // Dual-output rule: the cleared-vs-untouched distinction must hold in JSON
+        // too — Some([]) -> [] (cleared), None -> null (untouched).
+        let cleared = OpSummary::UpdateNode {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            inputs: None,
+            outputs: None,
+            user_kind: None,
+            path_prefix: None,
+            external: None,
+            external_kind: None,
+            verifications: Some(vec![]),
+        };
+        let untouched = OpSummary::UpdateNode {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: None,
+            constraints: None,
+            inputs: None,
+            outputs: None,
+            user_kind: None,
+            path_prefix: None,
+            external: None,
+            external_kind: None,
+            verifications: None,
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![cleared]), OutputMode::Json)).unwrap();
+        assert!(v["ops"][0]["verifications"].is_array(), "cleared -> []");
+        assert_eq!(v["ops"][0]["verifications"].as_array().unwrap().len(), 0);
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![untouched]), OutputMode::Json)).unwrap();
+        assert!(v["ops"][0]["verifications"].is_null(), "untouched -> null");
     }
 
     #[test]
