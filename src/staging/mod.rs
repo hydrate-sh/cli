@@ -331,6 +331,22 @@ impl Changeset {
             .collect()
     }
 
+    /// Node ids already staged for flattening (the `nodeId` of every staged
+    /// `flatten_boundary`). Mirrors `staged_deletions` so a boundary can't be
+    /// flattened twice — the second flatten targets a node the first already
+    /// dissolved, so without this guard it would silently stage a duplicate.
+    fn staged_flattens(&self) -> std::collections::HashSet<Uuid> {
+        self.stage
+            .deltas
+            .iter()
+            .filter(|v| {
+                v.get("type").and_then(serde_json::Value::as_str) == Some("flatten_boundary")
+            })
+            .filter_map(|v| v.get("nodeId").and_then(serde_json::Value::as_str))
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect()
+    }
+
     /// Stage a partial edit of the node at `path` (resolved against the
     /// stage ∪ pulled index). `UpdateNodeData` is key-presence partial: only the
     /// fields present in `after` change, the rest are left untouched — so we send
@@ -575,6 +591,11 @@ impl Changeset {
             return Err(CliError::InvalidArgument(format!(
                 "'{path}' is a {}, not a boundary — only boundaries can be flattened",
                 info.kind
+            )));
+        }
+        if self.staged_flattens().contains(&id) {
+            return Err(CliError::InvalidArgument(format!(
+                "boundary '{path}' is already staged for flatten"
             )));
         }
         let delta = models::FlattenBoundaryDelta::new(
@@ -1840,6 +1861,47 @@ mod tests {
         });
         assert_eq!(found.as_deref(), Some("Api"));
         assert!(!format!("{summary:?}").contains(&api.to_string()));
+    }
+
+    #[test]
+    fn flatten_boundary_twice_fails_loud() {
+        // A second flatten targets a node the first already dissolved — reject it
+        // locally, parity with node rm / edge rm double-stage guards.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.flatten_boundary("Api").unwrap();
+        let err = cs.flatten_boundary("Api").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("already staged for flatten"),
+            "{err}"
+        );
+        let count = cs
+            .into_stage()
+            .deltas
+            .iter()
+            .filter(|v| v["type"] == "flatten_boundary")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn flatten_boundary_lowers_among_updates_after_adds_before_deletes() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.add_node(&behavior("New", None)).unwrap();
+        cs.flatten_boundary("Api").unwrap();
+        cs.remove_node("Api.Rater").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        assert!(matches!(lowered[0], Inner::AddNode(_)), "add first");
+        assert!(
+            matches!(lowered[1], Inner::FlattenBoundary(_)),
+            "flatten after adds, before deletes"
+        );
+        assert!(matches!(lowered[2], Inner::DeleteNode(_)), "delete last");
     }
 
     // ---- node mv (reparent) ----

@@ -278,6 +278,21 @@ mod tests {
     }
 
     #[test]
+    fn human_and_json_render_a_flatten_by_path() {
+        let op = OpSummary::Flatten {
+            path: "Api".to_string(),
+        };
+        assert_eq!(
+            render(&summary(vec![op.clone()]), OutputMode::Human),
+            "~ flatten Api"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["op"], "flatten_boundary");
+        assert_eq!(v["ops"][0]["node"], "Api");
+    }
+
+    #[test]
     fn human_reports_empty_stage() {
         assert_eq!(
             render(&summary(vec![]), OutputMode::Human),
