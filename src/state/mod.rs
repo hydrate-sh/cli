@@ -249,6 +249,10 @@ pub struct PortInfo {
     pub id: Uuid,
     pub name: String,
     pub r#type: String,
+    /// Port description; `#[serde(default)]` for back-compat with an index
+    /// pulled before this field existed.
+    #[serde(default)]
+    pub description: String,
 }
 
 /// The edge-map key for an edge between two resolved port UUIDs.
@@ -593,6 +597,7 @@ mod tests {
                     id: Uuid::from_u128(0x1),
                     name: "i".into(),
                     r#type: "T".into(),
+                    description: String::new(),
                 }],
                 outputs: vec![],
                 config: vec![],

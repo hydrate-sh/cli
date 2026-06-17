@@ -472,7 +472,12 @@ impl Changeset {
     /// by an earlier staged edit. Returns `None` if no staged edit touched the
     /// side (caller then falls back to the pulled snapshot). Carries `(name, id,
     /// type)`; an unnamed port keeps its id with an empty name.
-    fn staged_side_ports(&self, node_id: Uuid, side: Side) -> Option<Vec<(String, Uuid, String)>> {
+    #[allow(clippy::type_complexity)]
+    fn staged_side_ports(
+        &self,
+        node_id: Uuid,
+        side: Side,
+    ) -> Option<Vec<(String, Uuid, String, Option<String>)>> {
         let wire_key = match side {
             Side::In => "inputs",
             Side::Out => "outputs",
@@ -511,7 +516,12 @@ impl Changeset {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    Some((name, id, r#type))
+                    let description = p
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|d| !d.is_empty())
+                        .map(str::to_string);
+                    Some((name, id, r#type, description))
                 })
                 .collect();
             latest = Some(ports);
@@ -648,7 +658,7 @@ impl Changeset {
         // edit in the same working copy builds on the first), else the pulled
         // snapshot. Without the staged fold, a later same-side edit would resend
         // the pulled list and silently drop ports an earlier staged edit added.
-        let mut ports: Vec<(String, Uuid, String)> = if let Some(staged) =
+        let mut ports: Vec<(String, Uuid, String, Option<String>)> = if let Some(staged) =
             self.staged_side_ports(node_id, side)
         {
             staged
@@ -669,13 +679,16 @@ impl Changeset {
             };
             current
                 .iter()
-                .map(|p| (p.name.clone(), p.id, p.r#type.clone()))
+                .map(|p| {
+                    let desc = (!p.description.is_empty()).then(|| p.description.clone());
+                    (p.name.clone(), p.id, p.r#type.clone(), desc)
+                })
                 .collect()
         };
 
         for name in rm {
             let before = ports.len();
-            ports.retain(|(n, _, _)| n != name);
+            ports.retain(|(n, _, _, _)| n != name);
             if ports.len() == before {
                 return Err(CliError::InvalidArgument(format!(
                     "'{path}' has no {} port '{name}' to remove",
@@ -686,7 +699,7 @@ impl Changeset {
         for spec in retype {
             let port = ports
                 .iter_mut()
-                .find(|(n, _, _)| n == &spec.name)
+                .find(|(n, _, _, _)| n == &spec.name)
                 .ok_or_else(|| {
                     CliError::InvalidArgument(format!(
                         "'{path}' has no {} port '{}' to retype",
@@ -694,11 +707,14 @@ impl Changeset {
                         spec.name
                     ))
                 })?;
-            port.2 = spec.r#type.clone(); // keep id + name, change only the type
+            // Keep id + name + description; change only the type. Preserving the
+            // existing description is the point — a retype must not wipe a description
+            // set elsewhere (there's no inline way to author one).
+            port.2 = spec.r#type.clone();
         }
         let mut added = Vec::new();
         for spec in add {
-            if ports.iter().any(|(n, _, _)| n == &spec.name) {
+            if ports.iter().any(|(n, _, _, _)| n == &spec.name) {
                 return Err(CliError::InvalidArgument(format!(
                     "'{path}' already has a {} port '{}'",
                     side.as_str(),
@@ -706,13 +722,14 @@ impl Changeset {
                 )));
             }
             let id = Uuid::new_v4();
-            ports.push((spec.name.clone(), id, spec.r#type.clone()));
+            // A newly-added port has no description (none can be authored inline).
+            ports.push((spec.name.clone(), id, spec.r#type.clone(), None));
             added.push((spec.name.clone(), id));
         }
         let wire = ports
             .into_iter()
-            .map(|(name, id, r#type)| models::Port {
-                description: None,
+            .map(|(name, id, r#type, description)| models::Port {
+                description,
                 id,
                 name: Some(name),
                 r#type: Some(r#type),
@@ -1255,6 +1272,7 @@ fn port_infos(ports: Option<&[models::WirePort]>) -> Result<Vec<crate::state::Po
                 id: p.id,
                 name: p.name.clone().unwrap_or_default(),
                 r#type,
+                description: p.description.clone().unwrap_or_default(),
             })
         })
         .collect()
@@ -3991,6 +4009,48 @@ mod tests {
             rater,
             cfg,
         )
+    }
+
+    #[test]
+    fn update_node_retype_preserves_a_ports_description() {
+        // A port can carry a description (set in the editor/elsewhere). A CLI
+        // retype resends the full list — it must NOT wipe that description (there
+        // is no inline way to re-author it), exactly like it preserves the UUID.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let raw_id = Uuid::from_u128(0x4ABC);
+        let mut graph = pulled_graph(api, rater, score, 5);
+        for n in graph.nodes.iter_mut() {
+            if n.id == rater {
+                for p in n.data.inputs.iter_mut().flatten() {
+                    if p.id == raw_id {
+                        p.description = Some("the raw upload".to_string());
+                    }
+                }
+            }
+        }
+        let index = index_from_graph(&graph).unwrap();
+        assert_eq!(
+            index.node_info(&rater).unwrap().inputs[0].description,
+            "the raw upload"
+        );
+
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                retype_in: vec![port("raw", "Cooked")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let inputs = update_delta(cs).after.inputs.unwrap();
+        let p = inputs.iter().find(|p| p.id == raw_id).unwrap();
+        assert_eq!(p.r#type.as_deref(), Some("Cooked"), "type changed");
+        assert_eq!(
+            p.description.as_deref(),
+            Some("the raw upload"),
+            "description preserved across the resend"
+        );
     }
 
     #[test]
