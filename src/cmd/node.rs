@@ -318,16 +318,24 @@ fn render(added: &NodeAdded, mode: OutputMode) -> String {
                 "kind": added.kind,
                 "inputs": added.inputs,
                 "outputs": added.outputs,
+                "config": added.config,
             }
         })
         .to_string(),
-        OutputMode::Human => format!(
-            "Staged {} node '{}' ({}, {}).",
-            added.kind,
-            added.path,
-            plural(added.inputs, "input"),
-            plural(added.outputs, "output"),
-        ),
+        OutputMode::Human => {
+            let mut line = format!(
+                "Staged {} node '{}' ({}, {}",
+                added.kind,
+                added.path,
+                plural(added.inputs, "input"),
+                plural(added.outputs, "output"),
+            );
+            if added.config > 0 {
+                line.push_str(&format!(", {}", plural(added.config, "config port")));
+            }
+            line.push_str(").");
+            line
+        }
     }
 }
 
@@ -365,6 +373,7 @@ mod tests {
                 kind: "behavior",
                 inputs: 1,
                 outputs: 2,
+                config: 0,
             },
             OutputMode::Human,
         );
@@ -679,6 +688,7 @@ mod tests {
                 kind: "boundary",
                 inputs: 1,
                 outputs: 0,
+                config: 0,
             },
             OutputMode::Json,
         );

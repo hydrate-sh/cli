@@ -192,6 +192,7 @@ pub struct NodeAdded {
     pub kind: &'static str,
     pub inputs: usize,
     pub outputs: usize,
+    pub config: usize,
 }
 
 /// The wire kind as its stable lowercase token (`behavior` / `boundary`).
@@ -391,6 +392,7 @@ impl Changeset {
             kind: kind_str(spec.kind),
             inputs: spec.inputs.len(),
             outputs: spec.outputs.len(),
+            config: spec.config.len(),
         })
     }
 
@@ -3965,6 +3967,152 @@ mod tests {
         // Inputs/outputs untouched (key-presence).
         assert_eq!(d.after.inputs, None);
         assert_eq!(d.after.outputs, None);
+    }
+
+    /// A changeset whose pulled Api.Rater has one committed config port
+    /// (`region:String`, id `cfg`). Returns (changeset, rater id, cfg id).
+    fn rater_with_config() -> (Changeset, Uuid, Uuid) {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let cfg = Uuid::from_u128(0xC0);
+        let mut graph = pulled_graph(api, rater, score, 5);
+        for n in graph.nodes.iter_mut() {
+            if n.id == rater {
+                n.data.config = Some(vec![models::WirePort {
+                    description: None,
+                    id: cfg,
+                    name: Some("region".to_string()),
+                    r#type: Some("String".to_string()),
+                }]);
+            }
+        }
+        let index = index_from_graph(&graph).unwrap();
+        (
+            Changeset::with_index(Stage::empty(), Some(index)),
+            rater,
+            cfg,
+        )
+    }
+
+    #[test]
+    fn update_node_retype_config_keeps_id_changes_type() {
+        let (mut cs, _r, cfg) = rater_with_config();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                retype_config: vec![port("region", "Region")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = update_delta(cs).after.config.unwrap();
+        let p = c
+            .iter()
+            .find(|p| p.name.as_deref() == Some("region"))
+            .unwrap();
+        assert_eq!(p.id, cfg, "retype keeps the config port id");
+        assert_eq!(p.r#type.as_deref(), Some("Region"));
+    }
+
+    #[test]
+    fn update_node_rm_config_drops_it() {
+        let (mut cs, _r, _cfg) = rater_with_config();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                rm_config: vec!["region".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The only config port was removed → config is present-but-empty.
+        assert_eq!(update_delta(cs).after.config.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn update_node_config_edits_fail_loud() {
+        // rm a config port that isn't there
+        let (mut cs, _r, _c) = rater_with_config();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    rm_config: vec!["nope".to_string()],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("no config port 'nope'"), "{err}");
+
+        // add a config port that already exists
+        let (mut cs, _r, _c) = rater_with_config();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    add_config: vec![port("region", "X")],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("already has a config port 'region'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_node_second_config_edit_builds_on_the_first() {
+        // Two config edits in one working copy: the second must build on the
+        // first's staged list (the "config" staged fold), not the pulled snapshot.
+        let (mut cs, _r, _c) = rater_with_config();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_config: vec![port("retries", "Int")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_config: vec![port("timeout", "Int")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let last = cs
+            .into_stage()
+            .deltas
+            .into_iter()
+            .rfind(|v| v["type"] == "update_node_data")
+            .unwrap();
+        let d: models::UpdateNodeDataDelta = serde_json::from_value(last).unwrap();
+        let cfg = d.after.config.unwrap();
+        let names: Vec<&str> = cfg.iter().filter_map(|p| p.name.as_deref()).collect();
+        assert!(names.contains(&"region"), "pulled survives: {names:?}");
+        assert!(
+            names.contains(&"retries"),
+            "first edit not dropped: {names:?}"
+        );
+        assert!(names.contains(&"timeout"), "second edit: {names:?}");
+    }
+
+    #[test]
+    fn edge_to_a_config_port_fails_loud() {
+        // Config ports are NOT edge endpoints — an edge naming one can't resolve.
+        let mut cs = rater_with_config().0;
+        // Add a behavior with an output to wire FROM, then try to wire TO the
+        // config port `Api.Rater.region` (a config port, not an input).
+        cs.add_node(&NodeSpec {
+            outputs: vec![port("o", "String")],
+            ..behavior("Src", None)
+        })
+        .unwrap();
+        let err = cs.add_edge("Src.o", "Api.Rater.region").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("region"), "{err}");
     }
 
     #[test]
