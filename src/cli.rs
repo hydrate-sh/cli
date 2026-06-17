@@ -205,6 +205,46 @@ pub struct NodeSetArgs {
     /// Remove all verifications (mutually exclusive with --verification).
     #[arg(long, conflicts_with = "verifications")]
     pub clear_verifications: bool,
+
+    /// External-only: the system's protocol (e.g. `gRPC`).
+    #[arg(long)]
+    pub protocol: Option<String>,
+
+    /// A documentation URL for the node (http/https).
+    #[arg(long = "doc-url")]
+    pub doc_url: Option<String>,
+
+    /// Mark the node a test node.
+    #[arg(long = "test-node", conflicts_with = "no_test_node")]
+    pub test_node: bool,
+
+    /// Unmark the node a test node.
+    #[arg(long = "no-test-node")]
+    pub no_test_node: bool,
+
+    /// Clear the description (set it empty).
+    #[arg(long, conflicts_with = "description")]
+    pub clear_description: bool,
+
+    /// Clear the boundary classifier (set it null).
+    #[arg(long, conflicts_with = "user_kind")]
+    pub clear_user_kind: bool,
+
+    /// Clear the boundary path prefix (set it null).
+    #[arg(long, conflicts_with = "path_prefix")]
+    pub clear_path_prefix: bool,
+
+    /// Clear the external kind label (set it null).
+    #[arg(long, conflicts_with = "external_kind")]
+    pub clear_external_kind: bool,
+
+    /// Clear the protocol (set it null).
+    #[arg(long, conflicts_with = "protocol")]
+    pub clear_protocol: bool,
+
+    /// Clear the documentation URL (set it null).
+    #[arg(long = "clear-doc-url", conflicts_with = "doc_url")]
+    pub clear_doc_url: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -262,6 +302,18 @@ pub struct NodeAddArgs {
     /// Boundary-only: the path prefix the boundary owns.
     #[arg(long)]
     pub path_prefix: Option<String>,
+
+    /// External-only: the system's protocol (e.g. `gRPC`, `HTTPS REST`).
+    #[arg(long)]
+    pub protocol: Option<String>,
+
+    /// A documentation URL for the node (http/https).
+    #[arg(long = "doc-url")]
+    pub doc_url: Option<String>,
+
+    /// Mark the node a test node.
+    #[arg(long = "test-node")]
+    pub test_node: bool,
 }
 
 #[derive(Debug, Subcommand)]

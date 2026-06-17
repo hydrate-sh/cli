@@ -35,6 +35,9 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
         is_external: args.external,
         external_kind: args.external_kind.as_deref(),
         verifications: args.verifications.clone(),
+        protocol: args.protocol.as_deref(),
+        doc_url: args.doc_url.as_deref(),
+        is_test_node: args.test_node,
     })?;
     changeset.into_stage().save(&base)?;
 
@@ -86,9 +89,18 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         user_kind: blank_to_none(args.user_kind.as_deref()),
         path_prefix: blank_to_none(args.path_prefix.as_deref()),
         // --external / --no-external toggle is_external; neither = untouched.
-        is_external: external_flag(args.external, args.no_external),
+        is_external: toggle_flag(args.external, args.no_external),
         external_kind: blank_to_none(args.external_kind.as_deref()),
         verifications: list_field(&args.verifications, args.clear_verifications),
+        protocol: blank_to_none(args.protocol.as_deref()),
+        doc_url: blank_to_none(args.doc_url.as_deref()),
+        is_test_node: toggle_flag(args.test_node, args.no_test_node),
+        clear_description: args.clear_description,
+        clear_user_kind: args.clear_user_kind,
+        clear_path_prefix: args.clear_path_prefix,
+        clear_external_kind: args.clear_external_kind,
+        clear_protocol: args.clear_protocol,
+        clear_doc_url: args.clear_doc_url,
     };
     let updated = changeset.update_node(&args.path, &edit)?;
     changeset.into_stage().save(&base)?;
@@ -119,13 +131,14 @@ fn blank_to_none(value: Option<&str>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty()).map(str::to_string)
 }
 
-/// Map the `--external` / `--no-external` pair to `is_external`: `--external` →
-/// `Some(true)`, `--no-external` → `Some(false)`, neither → `None` (untouched).
-/// clap `conflicts_with` rules out both at once. Pure, so it's unit-testable.
-fn external_flag(external: bool, no_external: bool) -> Option<bool> {
-    if external {
+/// Map a `--flag` / `--no-flag` boolean pair to a tri-state: `on` → `Some(true)`,
+/// `off` → `Some(false)`, neither → `None` (untouched). clap `conflicts_with`
+/// rules out both at once. Shared by `is_external` and `is_test_node`. Pure, so
+/// it's unit-testable.
+fn toggle_flag(on: bool, off: bool) -> Option<bool> {
+    if on {
         Some(true)
-    } else if no_external {
+    } else if off {
         Some(false)
     } else {
         None
@@ -151,30 +164,62 @@ fn list_field(values: &[String], clear: bool) -> Option<Vec<String>> {
     }
 }
 
+/// Label a double-option scalar edit: cleared (`Some(None)`) reads distinctly
+/// from set (`Some(Some)`); untouched (`None`) contributes nothing.
+fn scalar_label(field: &Option<Option<String>>, name: &str) -> Option<String> {
+    match field {
+        Some(None) => Some(format!("{name} cleared")),
+        Some(Some(_)) => Some(name.to_string()),
+        None => None,
+    }
+}
+
 fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
     match mode {
-        OutputMode::Json => serde_json::json!({
-            "staged": {
+        OutputMode::Json => {
+            let mut staged = serde_json::json!({
                 "set": u.path,
                 "name": u.name,
                 "description": u.description,
                 "constraints": u.constraints,
-                "user_kind": u.user_kind,
-                "path_prefix": u.path_prefix,
                 "external": u.is_external,
-                "external_kind": u.external_kind,
+                "test_node": u.is_test_node,
                 "verifications": u.verifications,
                 "ports_changed": u.ports_changed,
+            });
+            // Double-option scalars: untouched → key omitted; cleared → null; set
+            // → value — so JSON carries the same three states the human output
+            // does (serde alone would render cleared and untouched both as null).
+            let map = staged.as_object_mut().expect("json object");
+            for (key, field) in [
+                ("user_kind", &u.user_kind),
+                ("path_prefix", &u.path_prefix),
+                ("external_kind", &u.external_kind),
+                ("protocol", &u.protocol),
+                ("doc_url", &u.doc_url),
+            ] {
+                if let Some(inner) = field {
+                    map.insert(
+                        key.to_string(),
+                        match inner {
+                            Some(v) => serde_json::Value::String(v.clone()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                }
             }
-        })
-        .to_string(),
+            serde_json::json!({ "staged": staged }).to_string()
+        }
         OutputMode::Human => {
             let mut fields = Vec::new();
             if u.name.is_some() {
                 fields.push("name".to_string());
             }
-            if u.description.is_some() {
-                fields.push("description".to_string());
+            // description: Some("") = cleared, Some(v) = set, None = untouched.
+            match &u.description {
+                Some(d) if d.is_empty() => fields.push("description cleared".to_string()),
+                Some(_) => fields.push("description".to_string()),
+                None => {}
             }
             match &u.constraints {
                 Some(cs) if cs.is_empty() => fields.push("constraints cleared".to_string()),
@@ -186,17 +231,16 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
                 Some(_) => fields.push("verifications".to_string()),
                 None => {}
             }
-            if u.user_kind.is_some() {
-                fields.push("user-kind".to_string());
-            }
-            if u.path_prefix.is_some() {
-                fields.push("path-prefix".to_string());
-            }
+            fields.extend(scalar_label(&u.user_kind, "user-kind"));
+            fields.extend(scalar_label(&u.path_prefix, "path-prefix"));
+            fields.extend(scalar_label(&u.external_kind, "external-kind"));
+            fields.extend(scalar_label(&u.protocol, "protocol"));
+            fields.extend(scalar_label(&u.doc_url, "doc-url"));
             if u.is_external.is_some() {
                 fields.push("external".to_string());
             }
-            if u.external_kind.is_some() {
-                fields.push("external-kind".to_string());
+            if u.is_test_node.is_some() {
+                fields.push("test-node".to_string());
             }
             if u.ports_changed {
                 fields.push("ports".to_string());
@@ -376,6 +420,9 @@ mod tests {
                 path_prefix: None,
                 is_external: None,
                 external_kind: None,
+                protocol: None,
+                doc_url: None,
+                is_test_node: None,
                 verifications: None,
                 ports_changed: true,
             },
@@ -393,6 +440,9 @@ mod tests {
                 path_prefix: None,
                 is_external: None,
                 external_kind: None,
+                protocol: None,
+                doc_url: None,
+                is_test_node: None,
                 verifications: None,
                 ports_changed: true,
             },
@@ -415,6 +465,9 @@ mod tests {
                 path_prefix: None,
                 is_external: None,
                 external_kind: None,
+                protocol: None,
+                doc_url: None,
+                is_test_node: None,
                 verifications: None,
                 ports_changed: false,
             },
@@ -434,6 +487,9 @@ mod tests {
                 path_prefix: None,
                 is_external: None,
                 external_kind: None,
+                protocol: None,
+                doc_url: None,
+                is_test_node: None,
                 verifications: None,
                 ports_changed: false,
             },
@@ -452,6 +508,9 @@ mod tests {
                 path_prefix: None,
                 is_external: None,
                 external_kind: None,
+                protocol: None,
+                doc_url: None,
+                is_test_node: None,
                 verifications: None,
                 ports_changed: false,
             },
@@ -474,10 +533,10 @@ mod tests {
     }
 
     #[test]
-    fn external_flag_maps_the_toggle() {
-        assert_eq!(external_flag(false, false), None); // untouched
-        assert_eq!(external_flag(true, false), Some(true)); // --external
-        assert_eq!(external_flag(false, true), Some(false)); // --no-external
+    fn toggle_flag_maps_the_toggle() {
+        assert_eq!(toggle_flag(false, false), None); // untouched
+        assert_eq!(toggle_flag(true, false), Some(true)); // --external
+        assert_eq!(toggle_flag(false, true), Some(false)); // --no-external
     }
 
     #[test]
@@ -497,10 +556,13 @@ mod tests {
             name: None,
             description: None,
             constraints: None,
-            user_kind: Some("subsystem".to_string()),
-            path_prefix: Some("src/api/".to_string()),
+            user_kind: Some(Some("subsystem".to_string())),
+            path_prefix: Some(Some("src/api/".to_string())),
             is_external: Some(true),
-            external_kind: Some("rest-api".to_string()),
+            external_kind: Some(Some("rest-api".to_string())),
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
             verifications: Some(vec!["responds in 50ms".to_string()]),
             ports_changed: false,
         };
@@ -524,6 +586,44 @@ mod tests {
     }
 
     #[test]
+    fn render_updated_distinguishes_cleared_set_and_untouched_scalars() {
+        let u = NodeUpdated {
+            path: "Api.Rater".to_string(),
+            name: None,
+            description: Some(String::new()), // cleared
+            constraints: None,
+            user_kind: Some(None), // cleared
+            path_prefix: None,     // untouched
+            is_external: None,
+            external_kind: None,
+            protocol: Some(Some("gRPC".to_string())), // set
+            doc_url: Some(Some("https://x".to_string())), // set
+            is_test_node: Some(true),
+            verifications: None,
+            ports_changed: false,
+        };
+        let human = render_updated(&u, OutputMode::Human);
+        assert!(human.contains("description cleared"), "{human}");
+        assert!(human.contains("user-kind cleared"), "{human}");
+        assert!(human.contains("protocol"), "{human}");
+        assert!(human.contains("doc-url"), "{human}");
+        assert!(human.contains("test-node"), "{human}");
+        assert!(!human.contains("path-prefix"), "untouched omitted: {human}");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render_updated(&u, OutputMode::Json)).unwrap();
+        // cleared → key present + null; set → value; untouched → key absent.
+        assert!(v["staged"].get("user_kind").is_some() && v["staged"]["user_kind"].is_null());
+        assert!(
+            v["staged"].get("path_prefix").is_none(),
+            "untouched key absent"
+        );
+        assert_eq!(v["staged"]["protocol"], "gRPC");
+        assert_eq!(v["staged"]["test_node"], true);
+        assert_eq!(v["staged"]["description"], ""); // cleared description = empty
+    }
+
+    #[test]
     fn render_updated_distinguishes_cleared_verifications() {
         let u = NodeUpdated {
             path: "Api.Rater".to_string(),
@@ -534,6 +634,9 @@ mod tests {
             path_prefix: None,
             is_external: None,
             external_kind: None,
+            protocol: None,
+            doc_url: None,
+            is_test_node: None,
             verifications: Some(vec![]),
             ports_changed: false,
         };
