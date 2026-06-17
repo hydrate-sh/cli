@@ -98,6 +98,12 @@ fn op_line(op: &OpSummary) -> String {
             }
             line
         }
+        OpSummary::Reparent { path, new_parent } => {
+            format!(
+                "~ move {path} -> {}",
+                new_parent.as_deref().unwrap_or("(top level)")
+            )
+        }
         OpSummary::DeleteEdge { from, to } => format!("- edge {from} -> {to}"),
         OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
@@ -150,6 +156,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "constraints": constraints,
             "inputs": inputs.as_ref().map(|p| ports_json(p)),
             "outputs": outputs.as_ref().map(|p| ports_json(p)),
+        }),
+        OpSummary::Reparent { path, new_parent } => serde_json::json!({
+            "op": "reparent_node",
+            "node": path,
+            "parent": new_parent,
         }),
         OpSummary::DeleteEdge { from, to } => serde_json::json!({
             "op": "delete_edge",
@@ -288,6 +299,36 @@ mod tests {
     fn human_renders_edge_by_paths() {
         let out = render(&summary(vec![edge_op()]), OutputMode::Human);
         assert_eq!(out, "+ edge Maker.dog -> Api.Rater.raw");
+    }
+
+    #[test]
+    fn human_and_json_render_a_reparent_by_path() {
+        let to_core = OpSummary::Reparent {
+            path: "Api.Rater".to_string(),
+            new_parent: Some("Core".to_string()),
+        };
+        assert_eq!(
+            render(&summary(vec![to_core.clone()]), OutputMode::Human),
+            "~ move Api.Rater -> Core"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![to_core]), OutputMode::Json)).unwrap();
+        assert_eq!(v["ops"][0]["op"], "reparent_node");
+        assert_eq!(v["ops"][0]["node"], "Api.Rater");
+        assert_eq!(v["ops"][0]["parent"], "Core");
+
+        // Top level renders distinctly (human label + JSON null).
+        let to_top = OpSummary::Reparent {
+            path: "Api.Rater".to_string(),
+            new_parent: None,
+        };
+        assert_eq!(
+            render(&summary(vec![to_top.clone()]), OutputMode::Human),
+            "~ move Api.Rater -> (top level)"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&summary(vec![to_top]), OutputMode::Json)).unwrap();
+        assert!(v["ops"][0]["parent"].is_null(), "{v}");
     }
 
     #[test]

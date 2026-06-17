@@ -634,6 +634,38 @@ impl Changeset {
         })
     }
 
+    /// Stage a reparent of the node at `path` under `new_parent` (a dotted path,
+    /// or `None` = top level). Rejects moving a node under itself or one of its
+    /// own descendants (a cycle) — the server enforces this too.
+    pub fn reparent_node(
+        &mut self,
+        path: &str,
+        new_parent: Option<&str>,
+    ) -> Result<NodeReparented, CliError> {
+        let id = self.resolve_node(path)?;
+        let parent_id = match new_parent {
+            None => None,
+            Some(parent) => {
+                if parent == path || parent.starts_with(&format!("{path}.")) {
+                    return Err(CliError::InvalidArgument(format!(
+                        "can't move '{path}' under '{parent}' — that's itself or a descendant"
+                    )));
+                }
+                Some(self.resolve_node(parent)?)
+            }
+        };
+        let delta = models::ReparentNodeDelta::new(
+            id,
+            parent_id,
+            models::reparent_node_delta::Type::ReparentNode,
+        );
+        self.push(&delta)?;
+        Ok(NodeReparented {
+            path: path.to_string(),
+            new_parent: new_parent.map(str::to_string),
+        })
+    }
+
     /// Stage the removal of the edge between two ports (addressed by their dotted
     /// `node.port` paths). If the edge was staged this session (not yet
     /// committed), drop that staged `add_edge` — it never reached the server. If
@@ -747,6 +779,14 @@ pub struct NodeRemoved {
     pub path: String,
 }
 
+/// What `reparent_node` recorded, for the caller to render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeReparented {
+    pub path: String,
+    /// The new parent path, or `None` for the top level.
+    pub new_parent: Option<String>,
+}
+
 /// What `update_node` recorded, for the caller to render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeUpdated {
@@ -857,6 +897,7 @@ pub fn lower(stage: &Stage) -> Result<Vec<models::V1DeltasBodyDeltasInner>, CliE
             "update_node_data" => {
                 updates.push(Inner::UpdateNodeData(Box::new(parse_delta(value)?)))
             }
+            "reparent_node" => updates.push(Inner::ReparentNode(Box::new(parse_delta(value)?))),
             "delete_edge" => deletes.push(Inner::DeleteEdge(Box::new(parse_delta(value)?))),
             "delete_node" => deletes.push(Inner::DeleteNode(Box::new(parse_delta(value)?))),
             other => {
@@ -1074,6 +1115,11 @@ pub enum OpSummary {
         inputs: Option<Vec<NamedType>>,
         outputs: Option<Vec<NamedType>>,
     },
+    /// A staged reparent: `new_parent` is `None` for the top level.
+    Reparent {
+        path: String,
+        new_parent: Option<String>,
+    },
     /// A staged edge deletion, rendered by its two port paths.
     DeleteEdge {
         from: String,
@@ -1199,6 +1245,26 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     inputs: d.after.inputs.map(|p| named_types(Some(&p))),
                     outputs: d.after.outputs.map(|p| named_types(Some(&p))),
                 });
+            }
+            "reparent_node" => {
+                let d: models::ReparentNodeDelta = parse_delta(value)?;
+                let path = node_paths.get(&d.node_id).cloned().ok_or_else(|| {
+                    CliError::State(
+                        "a staged reparent targets a node that is neither staged nor pulled"
+                            .to_string(),
+                    )
+                })?;
+                let new_parent = match d.parent_id {
+                    None => None,
+                    Some(pid) => Some(node_paths.get(&pid).cloned().ok_or_else(|| {
+                        CliError::State(
+                            "a staged reparent targets a parent that is neither staged nor pulled"
+                                .to_string(),
+                        )
+                    })?),
+                };
+                summary.updates += 1;
+                summary.ops.push(OpSummary::Reparent { path, new_parent });
             }
             "delete_edge" => {
                 let d: models::DeleteEdgeDelta = parse_delta(value)?;
@@ -1793,6 +1859,158 @@ mod tests {
         assert!(err.to_string().contains("already staged"), "{err}");
     }
 
+    // ---- node mv (reparent) ----
+
+    #[test]
+    fn reparent_node_to_a_committed_boundary() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        // Add a second top-level boundary, then move Api.Rater under it.
+        cs.add_node(&NodeSpec {
+            kind: Kind::Boundary,
+            ..behavior("Core", None)
+        })
+        .unwrap();
+        let core = cs.lookup(&node_key("Core")).unwrap();
+        cs.reparent_node("Api.Rater", Some("Core")).unwrap();
+        let d: models::ReparentNodeDelta = serde_json::from_value(
+            cs.into_stage()
+                .deltas
+                .into_iter()
+                .find(|v| v["type"] == "reparent_node")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(d.node_id, rater);
+        // The load-bearing field: the new parent resolves to Core's id, not None.
+        assert_eq!(d.parent_id, Some(core));
+    }
+
+    #[test]
+    fn reparent_node_to_top_level_sets_no_parent() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.reparent_node("Api.Rater", None).unwrap();
+        let d: models::ReparentNodeDelta = serde_json::from_value(
+            cs.into_stage()
+                .deltas
+                .into_iter()
+                .find(|v| v["type"] == "reparent_node")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(d.parent_id, None);
+    }
+
+    #[test]
+    fn reparent_node_rejects_moving_under_itself_or_a_descendant() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        // Move Api under Api.Rater (its own descendant) → cycle, rejected.
+        let err = cs.reparent_node("Api", Some("Api.Rater")).unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("itself or a descendant"), "{err}");
+    }
+
+    #[test]
+    fn summarize_renders_a_reparent_by_path() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        cs.reparent_node("Api.Rater", None).unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        let found = summary.ops.iter().find_map(|op| match op {
+            OpSummary::Reparent { path, new_parent } => Some((path.clone(), new_parent.clone())),
+            _ => None,
+        });
+        assert_eq!(found, Some(("Api.Rater".to_string(), None)));
+        assert!(!format!("{summary:?}").contains(&rater.to_string()));
+    }
+
+    #[test]
+    fn reparent_node_rejects_moving_under_itself() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        let err = cs.reparent_node("Api", Some("Api")).unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("itself or a descendant"), "{err}");
+    }
+
+    #[test]
+    fn reparent_node_lowers_among_updates_after_adds_before_deletes() {
+        use models::V1DeltasBodyDeltasInner as Inner;
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.add_node(&behavior("New", None)).unwrap();
+        cs.reparent_node("Api.Rater", None).unwrap();
+        cs.remove_node("Api").unwrap();
+        let lowered = lower(&cs.into_stage()).unwrap();
+        assert!(matches!(lowered[0], Inner::AddNode(_)), "add first");
+        assert!(
+            matches!(lowered[1], Inner::ReparentNode(_)),
+            "reparent after adds, before deletes"
+        );
+        assert!(matches!(lowered[2], Inner::DeleteNode(_)), "delete last");
+    }
+
+    #[test]
+    fn summarize_renders_a_reparent_with_a_named_parent() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index.clone()));
+        // Add a boundary, then move Api.Rater under it; the Some(parent) path must
+        // reverse-resolve to that boundary's dotted path.
+        cs.add_node(&NodeSpec {
+            kind: Kind::Boundary,
+            ..behavior("Core", None)
+        })
+        .unwrap();
+        cs.reparent_node("Api.Rater", Some("Core")).unwrap();
+        let summary = summarize(&cs.into_stage(), Some(&index)).unwrap();
+        let found = summary.ops.iter().find_map(|op| match op {
+            OpSummary::Reparent { path, new_parent } => Some((path.clone(), new_parent.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            found,
+            Some(("Api.Rater".to_string(), Some("Core".to_string())))
+        );
+    }
+
+    #[test]
+    fn summarize_flags_a_reparent_to_an_unresolvable_node() {
+        let mut stage = Stage::empty();
+        stage.deltas.push(serde_json::json!({
+            "type": "reparent_node", "nodeId": Uuid::from_u128(0xDEAD), "parent_id": null
+        }));
+        let err = summarize(&stage, None).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("reparent targets a node"), "{err}");
+    }
+
+    #[test]
+    fn summarize_flags_a_reparent_to_an_unresolvable_parent() {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let index = index_from_graph(&pulled_graph(api, rater, score, 5)).unwrap();
+        let mut stage = Stage::empty();
+        // Node resolves (Api == id 1), but the parent id is dangling.
+        stage.deltas.push(serde_json::json!({
+            "type": "reparent_node", "nodeId": api, "parent_id": Uuid::from_u128(0xDEAD)
+        }));
+        let _ = (rater, score);
+        let err = summarize(&stage, Some(&index)).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("reparent targets a parent"),
+            "{err}"
+        );
+    }
+
     // ---- edge rm ----
 
     /// A pulled graph with a committed edge `A.o → B.i` (id `eid`) and a
@@ -2008,13 +2226,12 @@ mod tests {
 
     #[test]
     fn summarize_counts_unknown_delta_types_as_other() {
-        // `reparent_node` is a real delta kind this version doesn't itemize yet —
-        // a good stand-in for "forward-compat unknown" (delete_node is now
-        // itemized, so it would no longer land in `other`).
+        // `flatten_boundary` is a real delta kind this version doesn't itemize
+        // yet — a good stand-in for "forward-compat unknown".
         let mut stage = Stage::empty();
         stage
             .deltas
-            .push(serde_json::json!({"type": "reparent_node", "nodeId": Uuid::new_v4()}));
+            .push(serde_json::json!({"type": "flatten_boundary", "nodeId": Uuid::new_v4()}));
         let summary = summarize(&stage, None).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.other), (0, 0, 1));
         assert_eq!(summary.total(), 1);

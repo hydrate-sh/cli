@@ -4,11 +4,12 @@
 use hydrate_wire::models::node::Kind;
 
 use super::context::require_workdir;
-use crate::cli::{NodeAddArgs, NodeKind, NodeRmArgs, NodeSetArgs};
+use crate::cli::{NodeAddArgs, NodeKind, NodeMvArgs, NodeRmArgs, NodeSetArgs};
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::{
-    parse_port_spec, Changeset, NodeAdded, NodeEdit, NodeSpec, NodeUpdated, PortSpec,
+    parse_port_spec, Changeset, NodeAdded, NodeEdit, NodeReparented, NodeSpec, NodeUpdated,
+    PortSpec,
 };
 use crate::state::{Index, Stage};
 
@@ -147,6 +148,41 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
     }
 }
 
+pub fn mv(args: NodeMvArgs, mode: OutputMode) -> Result<(), CliError> {
+    let base = require_workdir()?;
+    // Exactly one destination: a parent path, or --top.
+    let new_parent = match (args.parent.as_deref(), args.top) {
+        (Some(p), false) => Some(p),
+        (None, true) => None,
+        (None, false) => {
+            return Err(CliError::InvalidArgument(
+                "specify a destination: --parent <path> or --top".to_string(),
+            ))
+        }
+        (Some(_), true) => unreachable!("clap conflicts_with prevents both"),
+    };
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
+    let moved = changeset.reparent_node(&args.path, new_parent)?;
+    changeset.into_stage().save(&base)?;
+
+    println!("{}", render_moved(&moved, mode));
+    Ok(())
+}
+
+fn render_moved(m: &NodeReparented, mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({
+            "staged": { "move": m.path, "parent": m.new_parent }
+        })
+        .to_string(),
+        OutputMode::Human => format!(
+            "Staged move of '{}' to {}.",
+            m.path,
+            m.new_parent.as_deref().unwrap_or("the top level")
+        ),
+    }
+}
+
 fn render_removed(paths: &[String], mode: OutputMode) -> String {
     match mode {
         OutputMode::Json => serde_json::json!({ "staged": { "removed": paths } }).to_string(),
@@ -229,6 +265,34 @@ mod tests {
         assert!(one.contains("behavior node 'Rater'"), "{one}");
         // Singular "1 input" must not be the prefix of a stray "1 inputs".
         assert!(one.contains("(1 input, 2 outputs)"), "{one}");
+    }
+
+    #[test]
+    fn render_moved_human_and_json_for_parent_and_top_level() {
+        let to_core = NodeReparented {
+            path: "Api.Rater".to_string(),
+            new_parent: Some("Core".to_string()),
+        };
+        assert_eq!(
+            render_moved(&to_core, OutputMode::Human),
+            "Staged move of 'Api.Rater' to Core."
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render_moved(&to_core, OutputMode::Json)).unwrap();
+        assert_eq!(v["staged"]["move"], "Api.Rater");
+        assert_eq!(v["staged"]["parent"], "Core");
+
+        let to_top = NodeReparented {
+            path: "Api.Rater".to_string(),
+            new_parent: None,
+        };
+        assert_eq!(
+            render_moved(&to_top, OutputMode::Human),
+            "Staged move of 'Api.Rater' to the top level."
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render_moved(&to_top, OutputMode::Json)).unwrap();
+        assert!(v["staged"]["parent"].is_null(), "{v}");
     }
 
     #[test]
