@@ -4,11 +4,12 @@
 use hydrate_wire::models::node::Kind;
 
 use super::context::require_workdir;
-use crate::cli::{NodeAddArgs, NodeKind, NodeRmArgs, NodeSetArgs};
+use crate::cli::{NodeAddArgs, NodeKind, NodeMvArgs, NodeRmArgs, NodeSetArgs};
 use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::staging::{
-    parse_port_spec, Changeset, NodeAdded, NodeEdit, NodeSpec, NodeUpdated, PortSpec,
+    parse_port_spec, Changeset, NodeAdded, NodeEdit, NodeReparented, NodeSpec, NodeUpdated,
+    PortSpec,
 };
 use crate::state::{Index, Stage};
 
@@ -145,6 +146,41 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
             }
             format!("Staged edit of '{}' ({}).", u.path, fields.join(" + "))
         }
+    }
+}
+
+pub fn mv(args: NodeMvArgs, mode: OutputMode) -> Result<(), CliError> {
+    let base = require_workdir()?;
+    // Exactly one destination: a parent path, or --top.
+    let new_parent = match (args.parent.as_deref(), args.top) {
+        (Some(p), false) => Some(p),
+        (None, true) => None,
+        (None, false) => {
+            return Err(CliError::InvalidArgument(
+                "specify a destination: --parent <path> or --top".to_string(),
+            ))
+        }
+        (Some(_), true) => unreachable!("clap conflicts_with prevents both"),
+    };
+    let mut changeset = Changeset::with_index(Stage::load(&base)?, Index::load(&base)?);
+    let moved = changeset.reparent_node(&args.path, new_parent)?;
+    changeset.into_stage().save(&base)?;
+
+    println!("{}", render_moved(&moved, mode));
+    Ok(())
+}
+
+fn render_moved(m: &NodeReparented, mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({
+            "staged": { "move": m.path, "parent": m.new_parent }
+        })
+        .to_string(),
+        OutputMode::Human => format!(
+            "Staged move of '{}' to {}.",
+            m.path,
+            m.new_parent.as_deref().unwrap_or("the top level")
+        ),
     }
 }
 

@@ -98,6 +98,12 @@ fn op_line(op: &OpSummary) -> String {
             }
             line
         }
+        OpSummary::Reparent { path, new_parent } => {
+            format!(
+                "~ move {path} -> {}",
+                new_parent.as_deref().unwrap_or("(top level)")
+            )
+        }
         OpSummary::DeleteEdge { from, to } => format!("- edge {from} -> {to}"),
         OpSummary::DeleteNode { path } => format!("- node {path}"),
         OpSummary::Other { kind } => format!("+ {kind}"),
@@ -150,6 +156,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "constraints": constraints,
             "inputs": inputs.as_ref().map(|p| ports_json(p)),
             "outputs": outputs.as_ref().map(|p| ports_json(p)),
+        }),
+        OpSummary::Reparent { path, new_parent } => serde_json::json!({
+            "op": "reparent_node",
+            "node": path,
+            "parent": new_parent,
         }),
         OpSummary::DeleteEdge { from, to } => serde_json::json!({
             "op": "delete_edge",

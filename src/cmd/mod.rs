@@ -35,6 +35,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
             NodeAction::Add(args) => finish(node::add(args, mode), mode),
             NodeAction::Rm(args) => finish(node::rm(args, mode), mode),
             NodeAction::Set(args) => finish(node::set(args, mode), mode),
+            NodeAction::Mv(args) => finish(node::mv(args, mode), mode),
         },
         Command::Clear => finish(clear::run(mode), mode),
         Command::Edge { action } => match action {

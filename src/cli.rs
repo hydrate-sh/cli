@@ -92,6 +92,24 @@ pub enum NodeAction {
 
     /// Stage an edit to an existing node's spec (description / constraints).
     Set(NodeSetArgs),
+
+    /// Stage a reparent of a node under a new boundary (or to the top level).
+    Mv(NodeMvArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct NodeMvArgs {
+    /// Node to move, by dotted path (e.g. `Api.Rater`).
+    #[arg(value_name = "PATH")]
+    pub path: String,
+
+    /// New parent boundary, by dotted path. Omit with --top for the top level.
+    #[arg(long, conflicts_with = "top")]
+    pub parent: Option<String>,
+
+    /// Move the node to the top level (no parent).
+    #[arg(long)]
+    pub top: bool,
 }
 
 #[derive(Debug, Args)]
