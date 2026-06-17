@@ -332,6 +332,21 @@ mod tests {
     }
 
     #[test]
+    fn human_and_json_render_an_edge_deletion_by_ports() {
+        let op = OpSummary::DeleteEdge {
+            from: "Maker.dog".to_string(),
+            to: "Api.Rater.raw".to_string(),
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        assert_eq!(human, "- edge Maker.dog -> Api.Rater.raw");
+        let out = render(&summary(vec![op]), OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ops"][0]["op"], "delete_edge");
+        assert_eq!(v["ops"][0]["from"], "Maker.dog");
+        assert_eq!(v["ops"][0]["to"], "Api.Rater.raw");
+    }
+
+    #[test]
     fn human_reports_empty_stage() {
         assert_eq!(
             render(&summary(vec![]), OutputMode::Human),
