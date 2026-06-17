@@ -176,6 +176,18 @@ pub struct NodeSetArgs {
     #[arg(long = "retype-out", value_name = "NAME:TYPE")]
     pub retype_out: Vec<String>,
 
+    /// Add a config port `name:type` (repeatable).
+    #[arg(long = "add-config", value_name = "NAME:TYPE")]
+    pub add_config: Vec<String>,
+
+    /// Remove a config port by name (repeatable).
+    #[arg(long = "rm-config", value_name = "NAME")]
+    pub rm_config: Vec<String>,
+
+    /// Change a config port's type, keeping its identity: `name:newtype` (repeatable).
+    #[arg(long = "retype-config", value_name = "NAME:TYPE")]
+    pub retype_config: Vec<String>,
+
     /// Boundary classifier (e.g. `subsystem`). Boundary nodes only.
     #[arg(long)]
     pub user_kind: Option<String>,
@@ -294,6 +306,11 @@ pub struct NodeAddArgs {
     /// Output port as `name:type` (repeatable). Type is required.
     #[arg(long = "out", value_name = "NAME:TYPE")]
     pub outputs: Vec<String>,
+
+    /// Config port as `name:type` (repeatable). A third channel for
+    /// configuration inputs; not wired by edges.
+    #[arg(long = "config", value_name = "NAME:TYPE")]
+    pub config: Vec<String>,
 
     /// Boundary-only: the user-facing kind label.
     #[arg(long)]

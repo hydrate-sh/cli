@@ -25,6 +25,9 @@ use crate::state::{Index, Stage};
 pub enum Side {
     In,
     Out,
+    /// A third port channel (configuration), alongside inputs/outputs. Config
+    /// ports are NOT edge endpoints — edge resolution only ever uses In/Out.
+    Config,
 }
 
 impl Side {
@@ -32,13 +35,17 @@ impl Side {
         match self {
             Side::In => "in",
             Side::Out => "out",
+            Side::Config => "config",
         }
     }
 
+    /// The opposite edge endpoint. Only meaningful for In/Out (the edge sides);
+    /// `Config` never reaches edge resolution, so calling this on it is a bug.
     fn opposite(self) -> Side {
         match self {
             Side::In => Side::Out,
             Side::Out => Side::In,
+            Side::Config => unreachable!("config ports are not edge endpoints"),
         }
     }
 }
@@ -63,6 +70,8 @@ pub struct NodeSpec<'a> {
     pub parent: Option<&'a str>,
     pub inputs: Vec<PortSpec>,
     pub outputs: Vec<PortSpec>,
+    /// Config ports (third channel; not edge endpoints).
+    pub config: Vec<PortSpec>,
     pub user_kind: Option<&'a str>,
     pub path_prefix: Option<&'a str>,
     /// The node's description (the spec/prompt). `None` omits it (server default).
@@ -99,6 +108,9 @@ pub struct NodeEdit {
     pub rm_out: Vec<String>,
     pub retype_in: Vec<PortSpec>,
     pub retype_out: Vec<PortSpec>,
+    pub add_config: Vec<PortSpec>,
+    pub rm_config: Vec<String>,
+    pub retype_config: Vec<PortSpec>,
     /// Boundary classifier (`--user-kind`). `None` = untouched.
     pub user_kind: Option<String>,
     /// Boundary path prefix (`--path-prefix`). `None` = untouched.
@@ -145,7 +157,10 @@ impl NodeEdit {
             && self.rm_in.is_empty()
             && self.rm_out.is_empty()
             && self.retype_in.is_empty()
-            && self.retype_out.is_empty())
+            && self.retype_out.is_empty()
+            && self.add_config.is_empty()
+            && self.rm_config.is_empty()
+            && self.retype_config.is_empty())
     }
 
     fn is_empty(&self) -> bool {
@@ -177,6 +192,7 @@ pub struct NodeAdded {
     pub kind: &'static str,
     pub inputs: usize,
     pub outputs: usize,
+    pub config: usize,
 }
 
 /// The wire kind as its stable lowercase token (`behavior` / `boundary`).
@@ -292,12 +308,14 @@ impl Changeset {
 
         let inputs = self.mint_ports(&path, Side::In, &spec.inputs)?;
         let outputs = self.mint_ports(&path, Side::Out, &spec.outputs)?;
+        let config = self.mint_ports(&path, Side::Config, &spec.config)?;
 
         let node_id = Uuid::new_v4();
         let data = models::NodeData {
             name: Some(spec.name.to_string()),
             inputs: Some(inputs.deltas),
             outputs: Some(outputs.deltas),
+            config: Some(config.deltas),
             user_kind: spec.user_kind.map(|k| Some(k.to_string())),
             path_prefix: spec.path_prefix.map(|p| Some(p.to_string())),
             // Description (the prompt) and constraints: omit when absent OR empty
@@ -374,6 +392,7 @@ impl Changeset {
             kind: kind_str(spec.kind),
             inputs: spec.inputs.len(),
             outputs: spec.outputs.len(),
+            config: spec.config.len(),
         })
     }
 
@@ -457,6 +476,7 @@ impl Changeset {
         let wire_key = match side {
             Side::In => "inputs",
             Side::Out => "outputs",
+            Side::Config => "config",
         };
         let mut latest = None;
         for v in &self.stage.deltas {
@@ -523,6 +543,9 @@ impl Changeset {
         // their UUIDs — change a port id and you orphan every edge on it.
         let (inputs, in_added) = self.edited_side(id, path, Side::In, edit)?;
         let (outputs, out_added) = self.edited_side(id, path, Side::Out, edit)?;
+        // Config ports are a third channel; they're not edge endpoints, so the
+        // added-alias list is ignored (nothing wires to a config port).
+        let (config, _config_added) = self.edited_side(id, path, Side::Config, edit)?;
 
         let after = models::NodeData {
             name: edit.name.clone(),
@@ -536,6 +559,7 @@ impl Changeset {
             constraints: edit.constraints.clone(),
             inputs,
             outputs,
+            config,
             // Boundary/external/doc scalars are key-presence double-option fields:
             // a value → Some(Some(v)); a `--clear-*` → Some(None) (null);
             // untouched → None.
@@ -615,6 +639,7 @@ impl Changeset {
         let (add, rm, retype) = match side {
             Side::In => (&edit.add_in, &edit.rm_in, &edit.retype_in),
             Side::Out => (&edit.add_out, &edit.rm_out, &edit.retype_out),
+            Side::Config => (&edit.add_config, &edit.rm_config, &edit.retype_config),
         };
         if add.is_empty() && rm.is_empty() && retype.is_empty() {
             return Ok((None, Vec::new()));
@@ -640,6 +665,7 @@ impl Changeset {
             let current = match side {
                 Side::In => &info.inputs,
                 Side::Out => &info.outputs,
+                Side::Config => &info.config,
             };
             current
                 .iter()
@@ -1166,6 +1192,7 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
                 kind: node_kind_str(node.kind).to_string(),
                 inputs: port_infos(node.data.inputs.as_deref())?,
                 outputs: port_infos(node.data.outputs.as_deref())?,
+                config: port_infos(node.data.config.as_deref())?,
             },
         );
     }
@@ -1312,6 +1339,7 @@ pub enum OpSummary {
         path: String,
         inputs: Vec<NamedType>,
         outputs: Vec<NamedType>,
+        config: Vec<NamedType>,
         /// The node's description (the spec/prompt), if one was staged.
         description: Option<String>,
         /// Plain-text constraints staged on the node.
@@ -1341,6 +1369,7 @@ pub enum OpSummary {
         constraints: Option<Vec<String>>,
         inputs: Option<Vec<NamedType>>,
         outputs: Option<Vec<NamedType>>,
+        config: Option<Vec<NamedType>>,
         /// Double-option scalars: `None` = untouched, `Some(None)` = cleared,
         /// `Some(Some(v))` = set.
         user_kind: Option<Option<String>>,
@@ -1455,6 +1484,7 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     path,
                     inputs: named_types(data.inputs.as_deref()),
                     outputs: named_types(data.outputs.as_deref()),
+                    config: named_types(data.config.as_deref()),
                     description: data.description.filter(|s| !s.is_empty()),
                     constraints: data.constraints.unwrap_or_default(),
                     verifications: data
@@ -1495,6 +1525,7 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     constraints: d.after.constraints,
                     inputs: d.after.inputs.map(|p| named_types(Some(&p))),
                     outputs: d.after.outputs.map(|p| named_types(Some(&p))),
+                    config: d.after.config.map(|p| named_types(Some(&p))),
                     // Keep the double-option so the preview distinguishes cleared
                     // (Some(None)) from untouched (None) from set (Some(Some(v))).
                     user_kind: d.after.user_kind,
@@ -1677,6 +1708,7 @@ mod tests {
             parent,
             inputs: vec![],
             outputs: vec![],
+            config: vec![],
             user_kind: None,
             path_prefix: None,
             description: None,
@@ -3875,6 +3907,212 @@ mod tests {
             Some(Some("https://x/api".to_string()))
         );
         assert_eq!(data.is_test_node, Some(true));
+    }
+
+    #[test]
+    fn add_node_mints_config_ports() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            config: vec![port("region", "String"), port("retries", "Int")],
+            ..behavior("Worker", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let config = d.node.data.unwrap().config.unwrap();
+        let names: Vec<&str> = config.iter().filter_map(|p| p.name.as_deref()).collect();
+        assert_eq!(names, vec!["region", "retries"]);
+        // Each config port gets a minted id + the given type.
+        assert_eq!(config[0].r#type.as_deref(), Some("String"));
+    }
+
+    #[test]
+    fn update_node_adds_a_config_port_resending_full_list() {
+        // A node with a pulled config port; --add-config resends the full config
+        // list (existing kept with its id) and leaves inputs/outputs untouched.
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let cfg_id = Uuid::from_u128(0xC0);
+        let mut graph = pulled_graph(api, rater, score, 5);
+        // Give Api.Rater a committed config port.
+        for n in graph.nodes.iter_mut() {
+            if n.id == rater {
+                n.data.config = Some(vec![models::WirePort {
+                    description: None,
+                    id: cfg_id,
+                    name: Some("region".to_string()),
+                    r#type: Some("String".to_string()),
+                }]);
+            }
+        }
+        let index = index_from_graph(&graph).unwrap();
+        // index_from_graph populated the config channel.
+        assert_eq!(index.node_info(&rater).unwrap().config.len(), 1);
+
+        let mut cs = Changeset::with_index(Stage::empty(), Some(index));
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_config: vec![port("retries", "Int")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        let config = d.after.config.unwrap();
+        // Existing config port kept (same id), new one appended.
+        assert!(config
+            .iter()
+            .any(|p| p.id == cfg_id && p.name.as_deref() == Some("region")));
+        assert!(config.iter().any(|p| p.name.as_deref() == Some("retries")));
+        // Inputs/outputs untouched (key-presence).
+        assert_eq!(d.after.inputs, None);
+        assert_eq!(d.after.outputs, None);
+    }
+
+    /// A changeset whose pulled Api.Rater has one committed config port
+    /// (`region:String`, id `cfg`). Returns (changeset, rater id, cfg id).
+    fn rater_with_config() -> (Changeset, Uuid, Uuid) {
+        let (api, rater, score) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let cfg = Uuid::from_u128(0xC0);
+        let mut graph = pulled_graph(api, rater, score, 5);
+        for n in graph.nodes.iter_mut() {
+            if n.id == rater {
+                n.data.config = Some(vec![models::WirePort {
+                    description: None,
+                    id: cfg,
+                    name: Some("region".to_string()),
+                    r#type: Some("String".to_string()),
+                }]);
+            }
+        }
+        let index = index_from_graph(&graph).unwrap();
+        (
+            Changeset::with_index(Stage::empty(), Some(index)),
+            rater,
+            cfg,
+        )
+    }
+
+    #[test]
+    fn update_node_retype_config_keeps_id_changes_type() {
+        let (mut cs, _r, cfg) = rater_with_config();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                retype_config: vec![port("region", "Region")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = update_delta(cs).after.config.unwrap();
+        let p = c
+            .iter()
+            .find(|p| p.name.as_deref() == Some("region"))
+            .unwrap();
+        assert_eq!(p.id, cfg, "retype keeps the config port id");
+        assert_eq!(p.r#type.as_deref(), Some("Region"));
+    }
+
+    #[test]
+    fn update_node_rm_config_drops_it() {
+        let (mut cs, _r, _cfg) = rater_with_config();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                rm_config: vec!["region".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The only config port was removed → config is present-but-empty.
+        assert_eq!(update_delta(cs).after.config.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn update_node_config_edits_fail_loud() {
+        // rm a config port that isn't there
+        let (mut cs, _r, _c) = rater_with_config();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    rm_config: vec!["nope".to_string()],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("no config port 'nope'"), "{err}");
+
+        // add a config port that already exists
+        let (mut cs, _r, _c) = rater_with_config();
+        let err = cs
+            .update_node(
+                "Api.Rater",
+                &NodeEdit {
+                    add_config: vec![port("region", "X")],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("already has a config port 'region'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_node_second_config_edit_builds_on_the_first() {
+        // Two config edits in one working copy: the second must build on the
+        // first's staged list (the "config" staged fold), not the pulled snapshot.
+        let (mut cs, _r, _c) = rater_with_config();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_config: vec![port("retries", "Int")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                add_config: vec![port("timeout", "Int")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let last = cs
+            .into_stage()
+            .deltas
+            .into_iter()
+            .rfind(|v| v["type"] == "update_node_data")
+            .unwrap();
+        let d: models::UpdateNodeDataDelta = serde_json::from_value(last).unwrap();
+        let cfg = d.after.config.unwrap();
+        let names: Vec<&str> = cfg.iter().filter_map(|p| p.name.as_deref()).collect();
+        assert!(names.contains(&"region"), "pulled survives: {names:?}");
+        assert!(
+            names.contains(&"retries"),
+            "first edit not dropped: {names:?}"
+        );
+        assert!(names.contains(&"timeout"), "second edit: {names:?}");
+    }
+
+    #[test]
+    fn edge_to_a_config_port_fails_loud() {
+        // Config ports are NOT edge endpoints — an edge naming one can't resolve.
+        let mut cs = rater_with_config().0;
+        // Add a behavior with an output to wire FROM, then try to wire TO the
+        // config port `Api.Rater.region` (a config port, not an input).
+        cs.add_node(&NodeSpec {
+            outputs: vec![port("o", "String")],
+            ..behavior("Src", None)
+        })
+        .unwrap();
+        let err = cs.add_edge("Src.o", "Api.Rater.region").unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("region"), "{err}");
     }
 
     #[test]

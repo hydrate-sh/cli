@@ -28,6 +28,7 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
         parent: args.parent.as_deref(),
         inputs,
         outputs,
+        config: parse_ports(&args.config)?,
         user_kind: args.user_kind.as_deref(),
         path_prefix: args.path_prefix.as_deref(),
         description: args.description.as_deref(),
@@ -85,6 +86,9 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         rm_out: args.rm_out.clone(),
         retype_in: parse_ports(&args.retype_in)?,
         retype_out: parse_ports(&args.retype_out)?,
+        add_config: parse_ports(&args.add_config)?,
+        rm_config: args.rm_config.clone(),
+        retype_config: parse_ports(&args.retype_config)?,
         // Scalars: a blank value is "untouched", mirroring `--description ""`.
         user_kind: blank_to_none(args.user_kind.as_deref()),
         path_prefix: blank_to_none(args.path_prefix.as_deref()),
@@ -314,16 +318,24 @@ fn render(added: &NodeAdded, mode: OutputMode) -> String {
                 "kind": added.kind,
                 "inputs": added.inputs,
                 "outputs": added.outputs,
+                "config": added.config,
             }
         })
         .to_string(),
-        OutputMode::Human => format!(
-            "Staged {} node '{}' ({}, {}).",
-            added.kind,
-            added.path,
-            plural(added.inputs, "input"),
-            plural(added.outputs, "output"),
-        ),
+        OutputMode::Human => {
+            let mut line = format!(
+                "Staged {} node '{}' ({}, {}",
+                added.kind,
+                added.path,
+                plural(added.inputs, "input"),
+                plural(added.outputs, "output"),
+            );
+            if added.config > 0 {
+                line.push_str(&format!(", {}", plural(added.config, "config port")));
+            }
+            line.push_str(").");
+            line
+        }
     }
 }
 
@@ -361,6 +373,7 @@ mod tests {
                 kind: "behavior",
                 inputs: 1,
                 outputs: 2,
+                config: 0,
             },
             OutputMode::Human,
         );
@@ -675,6 +688,7 @@ mod tests {
                 kind: "boundary",
                 inputs: 1,
                 outputs: 0,
+                config: 0,
             },
             OutputMode::Json,
         );
