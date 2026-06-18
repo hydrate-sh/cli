@@ -74,7 +74,7 @@ pub struct NodeSpec<'a> {
     pub config: Vec<PortSpec>,
     pub user_kind: Option<&'a str>,
     pub path_prefix: Option<&'a str>,
-    /// The node's description (the spec/prompt). `None` omits it (server default).
+    /// The node's description (free text). `None` omits it (server default).
     pub description: Option<&'a str>,
     /// Plain-text constraints; empty omits the field.
     pub constraints: Vec<String>,
@@ -318,7 +318,7 @@ impl Changeset {
             config: Some(config.deltas),
             user_kind: spec.user_kind.map(|k| Some(k.to_string())),
             path_prefix: spec.path_prefix.map(|p| Some(p.to_string())),
-            // Description (the prompt) and constraints: omit when absent OR empty
+            // Description and constraints: omit when absent OR empty
             // so the server applies its own defaults rather than us forcing "".
             // Filtering here (not just in the diff preview) keeps the staged
             // delta, the `diff` preview, and the committed value identical — an
@@ -1358,7 +1358,7 @@ pub enum OpSummary {
         inputs: Vec<NamedType>,
         outputs: Vec<NamedType>,
         config: Vec<NamedType>,
-        /// The node's description (the spec/prompt), if one was staged.
+        /// The node's description (free text), if one was staged.
         description: Option<String>,
         /// Plain-text constraints staged on the node.
         constraints: Vec<String>,

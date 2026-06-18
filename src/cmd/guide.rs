@@ -11,34 +11,33 @@ use crate::output::OutputMode;
 /// it documents how to author a typed graph, never any server-side behavior, and
 /// it never prints a credential.
 const GUIDE: &str = "\
-hydrate — author a typed system graph from the terminal.
+hydrate — author a typed graph from the terminal.
 
-You build a graph of decisions: BOUNDARIES (groupings / subsystems) and
-BEHAVIORS (units of work), wired together through TYPED PORTS. The graph is the
-source of truth, and a node's DESCRIPTION is its full specification — the prompt
-that drives what the component does. Strong typing on the connections is how the
-system checks that it makes sense.
+A project is a graph of nodes. There are two kinds: boundaries, which contain
+other nodes, and behaviors, which do not. Nodes connect through typed ports, and
+each node has a free-text description. An edge runs from an output port to an
+input port of the same type.
 
 The authoring loop
   1. hydrate fork <name>     create a working branch and bind this directory to it
-  2. hydrate pull            sync a local view of the branch's live graph
-  3. hydrate node add ...    stage behaviors and boundaries (with --description)
-     hydrate edge add ...    wire one output port to a matching-typed input port
-  4. hydrate diff            review what is staged — nothing has hit the server yet
+  2. hydrate pull            sync a local view of the branch's graph
+  3. hydrate node add ...    stage nodes (with --description)
+     hydrate edge add ...    connect an output port to a matching-typed input port
+  4. hydrate diff            review what is staged; nothing has hit the server yet
   5. hydrate commit          apply the staged changeset to the branch
 
 Editing in place
-  hydrate node set <path> ...  edit a node's spec (description / constraints)
+  hydrate node set <path> ...  edit a node's description, constraints, or ports
   hydrate node rm <path>...    remove nodes (cascades the subtree)
-  hydrate clear                wipe the branch to rebuild in place, then commit
+  hydrate clear                stage removal of every top-level node, then commit
 
 Conventions
   - Paths are dotted: `Api.Rater` is node Rater inside boundary Api;
     `Api.Rater.score` is its port `score`.
   - Ports are `name:type`, type required: `--in raw:HotDog --out score:Rating`.
     An edge runs from an output to an input of the SAME type.
-  - --description is the component's full spec — behavior, inputs/outputs, errors,
-    edge cases — not a one-liner. --constraint adds an invariant (repeatable).
+  - --description is a free-text field on the node. --constraint adds a free-text
+    constraint (repeatable).
   - Output is human on a terminal, JSON when piped (force with --json / --human).
 
 Worked example
@@ -57,7 +56,7 @@ Auth
   Set HYD_API_KEY in your environment (or a .env file). It is never written to
   disk or printed.
 
-Full reference and concepts: https://docs.hydrate.sh\
+Full reference: https://docs.hydrate.sh\
 ";
 
 pub fn run(mode: OutputMode) -> Result<(), CliError> {
@@ -82,7 +81,7 @@ mod tests {
     #[test]
     fn guide_covers_the_loop_concepts_and_docs_pointer() {
         // The orientation must actually orient: the loop verbs, the typed-port
-        // and description-is-the-spec concepts, and the docs reference.
+        // and node-description concepts, and the docs reference.
         for needle in [
             "hydrate fork",
             "hydrate pull",
@@ -90,8 +89,8 @@ mod tests {
             "hydrate edge add",
             "hydrate commit",
             "node set",
-            "TYPED PORTS",
-            "full specification",
+            "typed ports",
+            "--description",
             "name:type",
             "https://docs.hydrate.sh",
         ] {

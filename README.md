@@ -1,18 +1,14 @@
 # hydrate CLI
 
-Command-line client for [hydrate.sh](https://hydrate.sh) — author your system
-graph from the terminal.
-
-> **Status: early scaffold.** The command surface is in place; the verbs are
-> stubs while transport and authoring land. Not yet usable for real work.
+Command-line client for [hydrate.sh](https://hydrate.sh) — author your graph
+from the terminal.
 
 ## What it is
 
-`hydrate` is a thin client over the hydrate.sh `/v1` API. The graph is the source
-of truth and the **server is the sole authority for validation** — the CLI stages
-edits locally and commits them as one typed delta batch under optimistic
-concurrency control. It does not mirror the server's rules; a bad batch is
-rejected by the server, loudly.
+`hydrate` is a thin client over the hydrate.sh `/v1` API. The CLI stages edits
+locally and commits them as one typed delta batch under optimistic concurrency
+control; the **server is the sole authority for validation**. It does not mirror
+the server's rules; a bad batch is rejected by the server.
 
 The binary is `hydrate`, with a short alias `hyd`.
 
@@ -21,12 +17,22 @@ The binary is `hydrate`, with a short alias `hyd`.
 ```
 hydrate fork <name>          Fork a working branch from main, bind this directory to it
 hydrate branches             List your working branches
+hydrate pull                 Refresh the local view of the branch's graph
 hydrate node add ...         Stage a node (behavior or boundary)
+hydrate node set <path> ...  Stage an edit to a node (description, ports, ...)
+hydrate node mv <path> ...   Stage a reparent of a node
+hydrate node rm <path>...    Stage removal of nodes (cascades the subtree)
 hydrate edge add ...         Stage an edge between two typed ports
+hydrate edge rm ...          Stage removal of an edge
+hydrate boundary flatten ... Promote a boundary's children and remove it
+hydrate clear                Stage removal of every top-level node
 hydrate status               Show the bound branch + staged-operation summary
 hydrate diff                 Show staged operations in detail
 hydrate commit               Commit the staged changeset to the bound branch
 ```
+
+Run `hydrate guide` for an orientation, or see the full reference at
+[docs.hydrate.sh](https://docs.hydrate.sh).
 
 Authoring is flag-driven and explicit, so a command reads the same in a script
 as on the terminal:

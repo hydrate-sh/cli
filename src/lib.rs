@@ -1,9 +1,9 @@
 //! `hydrate` — command-line client for hydrate.sh.
 //!
-//! The graph is the source of truth and the server is the sole authority for
-//! validation; this client stages edits locally and commits them as one typed
-//! delta batch under optimistic-concurrency control. It never mirrors the
-//! server's validation rules — a bad batch is rejected by the server, loudly.
+//! This client stages edits locally and commits them as one typed delta batch
+//! under optimistic-concurrency control. The server is the sole authority for
+//! validation; the client never mirrors the server's validation rules, so a bad
+//! batch is rejected by the server.
 //!
 //! Module layout:
 //!   - [`cli`]    — the clap verb tree (the command surface).
