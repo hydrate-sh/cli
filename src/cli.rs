@@ -140,7 +140,7 @@ pub struct NodeSetArgs {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// New description (the spec/prompt). Only the fields you pass change.
+    /// New description (free text). Only the fields you pass change.
     #[arg(long)]
     pub description: Option<String>,
 
@@ -275,7 +275,7 @@ pub struct NodeAddArgs {
     #[arg(long)]
     pub name: String,
 
-    /// The node's description — the spec/prompt that drives what it does.
+    /// The node's description (free text).
     #[arg(long)]
     pub description: Option<String>,
 
