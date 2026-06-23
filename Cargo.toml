@@ -34,7 +34,7 @@ url = "2"
 # from the same reqwest already in the tree (rustls, no OpenSSL).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # SHA-256 of the staged batch -> the Idempotency-Key (at-most-once apply).
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 # Isolated temp dirs for the .hydrate workdir-state tests.
