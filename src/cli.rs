@@ -188,9 +188,9 @@ pub struct NodeSetArgs {
     #[arg(long = "retype-config", value_name = "NAME:TYPE")]
     pub retype_config: Vec<String>,
 
-    /// The user-facing kind label. On a boundary it classifies the boundary
-    /// (e.g. `subsystem`); on a state node it carries the state kind (e.g.
-    /// `postgres-db`). Not valid on behavior nodes.
+    /// The user-facing kind label. On a boundary it classifies the boundary;
+    /// on a state node it carries the state kind (e.g. `postgres-db`). Behavior
+    /// nodes don't carry it.
     #[arg(long)]
     pub user_kind: Option<String>,
 
@@ -318,7 +318,8 @@ pub struct NodeAddArgs {
     pub config: Vec<String>,
 
     /// The user-facing kind label. On a boundary it classifies the boundary;
-    /// on a state node it carries the state kind (e.g. `postgres-db`).
+    /// on a state node it carries the state kind (e.g. `postgres-db`). Behavior
+    /// nodes don't carry it.
     #[arg(long)]
     pub user_kind: Option<String>,
 
