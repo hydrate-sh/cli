@@ -188,7 +188,9 @@ pub struct NodeSetArgs {
     #[arg(long = "retype-config", value_name = "NAME:TYPE")]
     pub retype_config: Vec<String>,
 
-    /// Boundary classifier (e.g. `subsystem`). Boundary nodes only.
+    /// The user-facing kind label. On a boundary it classifies the boundary
+    /// (e.g. `subsystem`); on a state node it carries the state kind (e.g.
+    /// `postgres-db`). Not valid on behavior nodes.
     #[arg(long)]
     pub user_kind: Option<String>,
 
@@ -238,7 +240,7 @@ pub struct NodeSetArgs {
     #[arg(long, conflicts_with = "description")]
     pub clear_description: bool,
 
-    /// Clear the boundary classifier (set it null).
+    /// Clear the user-kind label / state kind (set it null).
     #[arg(long, conflicts_with = "user_kind")]
     pub clear_user_kind: bool,
 
