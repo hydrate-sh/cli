@@ -307,6 +307,7 @@ fn map_kind(kind: NodeKind) -> Kind {
     match kind {
         NodeKind::Behavior => Kind::Behavior,
         NodeKind::Boundary => Kind::Boundary,
+        NodeKind::State => Kind::State,
     }
 }
 
