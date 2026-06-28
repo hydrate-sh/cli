@@ -195,11 +195,13 @@ pub struct NodeAdded {
     pub config: usize,
 }
 
-/// The wire kind as its stable lowercase token (`behavior` / `boundary`).
+/// The wire kind as its stable lowercase token (`behavior` / `boundary` /
+/// `state`).
 fn kind_str(kind: models::node::Kind) -> &'static str {
     match kind {
         models::node::Kind::Behavior => "behavior",
         models::node::Kind::Boundary => "boundary",
+        models::node::Kind::State => "state",
     }
 }
 
@@ -268,14 +270,28 @@ impl Changeset {
     pub fn add_node(&mut self, spec: &NodeSpec) -> Result<NodeAdded, CliError> {
         validate_slug(spec.name, "node name")?;
 
-        // Boundary-only flags must not appear on a behavior node — that is a
-        // command-grammar mistake we can catch locally and clearly.
-        if spec.kind == models::node::Kind::Behavior
-            && (spec.user_kind.is_some() || spec.path_prefix.is_some())
-        {
-            return Err(CliError::InvalidArgument(
-                "--user-kind/--path-prefix apply only to --kind boundary".to_string(),
-            ));
+        // Classifier/ownership flags must only appear on the kinds that accept
+        // them — a command-grammar mistake we can catch locally and clearly.
+        // - boundary: both --user-kind and --path-prefix are allowed.
+        // - state:    --user-kind carries the state kind; --path-prefix is forbidden.
+        // - behavior: neither is allowed.
+        match spec.kind {
+            models::node::Kind::Boundary => {}
+            models::node::Kind::State => {
+                if spec.path_prefix.is_some() {
+                    return Err(CliError::InvalidArgument(
+                        "--path-prefix applies only to --kind boundary, not --kind state"
+                            .to_string(),
+                    ));
+                }
+            }
+            models::node::Kind::Behavior => {
+                if spec.user_kind.is_some() || spec.path_prefix.is_some() {
+                    return Err(CliError::InvalidArgument(
+                        "--user-kind/--path-prefix apply only to --kind boundary".to_string(),
+                    ));
+                }
+            }
         }
 
         // Resolve the parent (if any) within the staged set, and compute this
@@ -1243,11 +1259,12 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
     })
 }
 
-/// A wire node kind as its stable token (`behavior` / `boundary`).
+/// A wire node kind as its stable token (`behavior` / `boundary` / `state`).
 fn node_kind_str(kind: models::wire_node::Kind) -> &'static str {
     match kind {
         models::wire_node::Kind::Behavior => "behavior",
         models::wire_node::Kind::Boundary => "boundary",
+        models::wire_node::Kind::State => "state",
     }
 }
 
@@ -1964,6 +1981,52 @@ mod tests {
         assert_eq!(d.node.kind, Kind::Boundary);
         assert_eq!(data.user_kind, Some(Some("service".to_string())));
         assert_eq!(data.path_prefix, Some(Some("/api".to_string())));
+    }
+
+    #[test]
+    fn state_node_delta_carries_kind_and_user_kind() {
+        // A state node reuses --user-kind to carry its state kind, and stages an
+        // add_node delta with kind=state.
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            kind: Kind::State,
+            user_kind: Some("postgres-db"),
+            // --out is a read port, --in is a write port on a state node; these
+            // stage as ordinary output/input ports the server validates.
+            outputs: vec![port("snapshot", "Account")],
+            inputs: vec![port("apply", "AccountChange")],
+            ..behavior("Ledger", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        assert_eq!(d.node.kind, Kind::State);
+        let data = d.node.data.unwrap();
+        assert_eq!(data.user_kind, Some(Some("postgres-db".to_string())));
+        // No path prefix was set on the state node.
+        assert_eq!(data.path_prefix, None);
+    }
+
+    #[test]
+    fn path_prefix_on_state_is_rejected() {
+        let mut cs = empty();
+        let err = cs
+            .add_node(&NodeSpec {
+                kind: Kind::State,
+                path_prefix: Some("/api"),
+                ..behavior("Ledger", None)
+            })
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("path-prefix"), "{err}");
+        // The rejected node staged nothing.
+        assert!(cs.deltas().is_empty());
+    }
+
+    #[test]
+    fn kind_str_renders_state_token() {
+        assert_eq!(kind_str(models::node::Kind::State), "state");
+        assert_eq!(node_kind_str(models::wire_node::Kind::State), "state");
     }
 
     #[test]

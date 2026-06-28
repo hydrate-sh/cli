@@ -263,6 +263,7 @@ pub struct NodeSetArgs {
 pub enum NodeKind {
     Behavior,
     Boundary,
+    State,
 }
 
 #[derive(Debug, Args)]
@@ -299,11 +300,13 @@ pub struct NodeAddArgs {
     #[arg(long)]
     pub parent: Option<String>,
 
-    /// Input port as `name:type` (repeatable). Type is required.
+    /// Input port as `name:type` (repeatable). Type is required. On a state
+    /// node, `--in` declares a write port.
     #[arg(long = "in", value_name = "NAME:TYPE")]
     pub inputs: Vec<String>,
 
-    /// Output port as `name:type` (repeatable). Type is required.
+    /// Output port as `name:type` (repeatable). Type is required. On a state
+    /// node, `--out` declares a read port.
     #[arg(long = "out", value_name = "NAME:TYPE")]
     pub outputs: Vec<String>,
 
@@ -312,7 +315,8 @@ pub struct NodeAddArgs {
     #[arg(long = "config", value_name = "NAME:TYPE")]
     pub config: Vec<String>,
 
-    /// Boundary-only: the user-facing kind label.
+    /// The user-facing kind label. On a boundary it classifies the boundary;
+    /// on a state node it carries the state kind (e.g. `postgres-db`).
     #[arg(long)]
     pub user_kind: Option<String>,
 
