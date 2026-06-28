@@ -288,7 +288,9 @@ impl Changeset {
             models::node::Kind::Behavior => {
                 if spec.user_kind.is_some() || spec.path_prefix.is_some() {
                     return Err(CliError::InvalidArgument(
-                        "--user-kind/--path-prefix apply only to --kind boundary".to_string(),
+                        "--user-kind applies to --kind boundary or state; \
+                         --path-prefix applies only to --kind boundary"
+                            .to_string(),
                     ));
                 }
             }
