@@ -196,12 +196,13 @@ pub struct NodeAdded {
 }
 
 /// The wire kind as its stable lowercase token (`behavior` / `boundary` /
-/// `state`).
+/// `state` / `io`).
 fn kind_str(kind: models::node::Kind) -> &'static str {
     match kind {
         models::node::Kind::Behavior => "behavior",
         models::node::Kind::Boundary => "boundary",
         models::node::Kind::State => "state",
+        models::node::Kind::Io => "io",
     }
 }
 
@@ -275,6 +276,8 @@ impl Changeset {
         // - boundary: both --user-kind and --path-prefix are allowed.
         // - state:    --user-kind carries the state kind; --path-prefix is forbidden.
         // - behavior: neither is allowed.
+        // - io:       neither is allowed (an io node is defined by its
+        //             description and its single typed port — no kind label).
         match spec.kind {
             models::node::Kind::Boundary => {}
             models::node::Kind::State => {
@@ -285,7 +288,7 @@ impl Changeset {
                     ));
                 }
             }
-            models::node::Kind::Behavior => {
+            models::node::Kind::Behavior | models::node::Kind::Io => {
                 if spec.user_kind.is_some() || spec.path_prefix.is_some() {
                     return Err(CliError::InvalidArgument(
                         "--user-kind applies to --kind boundary or state; \
@@ -1261,12 +1264,14 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
     })
 }
 
-/// A wire node kind as its stable token (`behavior` / `boundary` / `state`).
+/// A wire node kind as its stable token (`behavior` / `boundary` / `state` /
+/// `io`).
 fn node_kind_str(kind: models::wire_node::Kind) -> &'static str {
     match kind {
         models::wire_node::Kind::Behavior => "behavior",
         models::wire_node::Kind::Boundary => "boundary",
         models::wire_node::Kind::State => "state",
+        models::wire_node::Kind::Io => "io",
     }
 }
 
@@ -2029,6 +2034,65 @@ mod tests {
     fn kind_str_renders_state_token() {
         assert_eq!(kind_str(models::node::Kind::State), "state");
         assert_eq!(node_kind_str(models::wire_node::Kind::State), "state");
+    }
+
+    #[test]
+    fn io_node_delta_carries_kind_with_single_port() {
+        // An io node marks the program's edge with its environment: a single
+        // typed port (source XOR sink), no kind label. A `--out` port makes it
+        // a source (data flows into the program, e.g. stdin).
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            kind: Kind::Io,
+            outputs: vec![port("stdin", "Line")],
+            ..behavior("Stdin", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        assert_eq!(d.node.kind, Kind::Io);
+        let data = d.node.data.unwrap();
+        // io carries no classifier/ownership labels.
+        assert_eq!(data.user_kind, None);
+        assert_eq!(data.path_prefix, None);
+        assert_eq!(data.outputs.as_deref().map(<[_]>::len), Some(1));
+    }
+
+    #[test]
+    fn user_kind_on_io_is_rejected() {
+        // io has no kind field — --user-kind is a grammar mistake we catch.
+        let mut cs = empty();
+        let err = cs
+            .add_node(&NodeSpec {
+                kind: Kind::Io,
+                user_kind: Some("stdin"),
+                ..behavior("Stdin", None)
+            })
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("user-kind"), "{err}");
+        assert!(cs.deltas().is_empty());
+    }
+
+    #[test]
+    fn path_prefix_on_io_is_rejected() {
+        let mut cs = empty();
+        let err = cs
+            .add_node(&NodeSpec {
+                kind: Kind::Io,
+                path_prefix: Some("/api"),
+                ..behavior("Stdin", None)
+            })
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("path-prefix"), "{err}");
+        assert!(cs.deltas().is_empty());
+    }
+
+    #[test]
+    fn kind_str_renders_io_token() {
+        assert_eq!(kind_str(models::node::Kind::Io), "io");
+        assert_eq!(node_kind_str(models::wire_node::Kind::Io), "io");
     }
 
     #[test]

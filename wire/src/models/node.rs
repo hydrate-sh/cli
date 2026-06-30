@@ -44,6 +44,8 @@ pub enum Kind {
     Boundary,
     #[serde(rename = "state")]
     State,
+    #[serde(rename = "io")]
+    Io,
 }
 
 impl Default for Kind {
