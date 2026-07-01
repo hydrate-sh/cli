@@ -266,6 +266,7 @@ pub enum NodeKind {
     Behavior,
     Boundary,
     State,
+    Io,
 }
 
 #[derive(Debug, Args)]
@@ -303,12 +304,16 @@ pub struct NodeAddArgs {
     pub parent: Option<String>,
 
     /// Input port as `name:type` (repeatable). Type is required. On a state
-    /// node, `--in` declares a write port.
+    /// node, `--in` declares a write port. An io node carries a single port
+    /// on exactly one side: its `--in` makes it a sink (output of the
+    /// program, e.g. stdout).
     #[arg(long = "in", value_name = "NAME:TYPE")]
     pub inputs: Vec<String>,
 
     /// Output port as `name:type` (repeatable). Type is required. On a state
-    /// node, `--out` declares a read port.
+    /// node, `--out` declares a read port. An io node carries a single port
+    /// on exactly one side: its `--out` makes it a source (input to the
+    /// program, e.g. stdin).
     #[arg(long = "out", value_name = "NAME:TYPE")]
     pub outputs: Vec<String>,
 
