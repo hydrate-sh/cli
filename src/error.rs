@@ -109,7 +109,8 @@ impl fmt::Display for CliError {
             CliError::AmbiguousProject { count } => write!(
                 f,
                 "found {count} active projects; this command needs exactly one — \
-                 archive the projects you are not working on at https://hydrate.sh"
+                 pick one with `--project <name|id>` or the HYD_PROJECT environment \
+                 variable (run `hydrate projects` to see the names and ids)"
             ),
             CliError::Other(detail) => write!(f, "{detail}"),
         }
@@ -319,6 +320,12 @@ mod tests {
         }
         .to_string()
         .contains("why"));
+        // The ambiguous-project error names every escape hatch, so it is
+        // self-recovering: the user can resolve it with only what it says.
+        let ambiguous = CliError::AmbiguousProject { count: 3 }.to_string();
+        assert!(ambiguous.contains("--project"), "{ambiguous}");
+        assert!(ambiguous.contains("HYD_PROJECT"), "{ambiguous}");
+        assert!(ambiguous.contains("hydrate projects"), "{ambiguous}");
     }
 
     #[test]

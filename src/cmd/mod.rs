@@ -21,16 +21,23 @@ mod edge;
 mod fork;
 mod guide;
 mod node;
+mod projects;
 mod pull;
+mod show;
 mod status;
 
 /// Route a parsed command to its handler.
 pub fn dispatch(cli: Cli) -> ExitCode {
     let mode = OutputMode::from_flags(cli.json, cli.human);
+    // The global `--project` selector applies to the project/branch verbs; it is
+    // resolved (against env + binding) inside each handler that needs it.
+    let project = cli.project;
     match cli.command {
         Command::Guide => finish(guide::run(mode), mode),
-        Command::Fork(args) => finish(fork::run(args, mode), mode),
-        Command::Branches => finish(branches::run(mode), mode),
+        Command::Projects => finish(projects::run(mode), mode),
+        Command::Fork(args) => finish(fork::run(args, project, mode), mode),
+        Command::Branches => finish(branches::run(project, mode), mode),
+        Command::Show(args) => finish(show::run(args, project, mode), mode),
         Command::Pull => finish(pull::run(mode), mode),
         Command::Node { action } => match action {
             NodeAction::Add(args) => finish(node::add(args, mode), mode),

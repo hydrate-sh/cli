@@ -4,8 +4,8 @@
 
 use std::process::Command;
 
-const VERBS: [&str; 7] = [
-    "fork", "branches", "node", "edge", "status", "diff", "commit",
+const VERBS: [&str; 9] = [
+    "projects", "fork", "branches", "show", "node", "edge", "status", "diff", "commit",
 ];
 
 // `CARGO_BIN_EXE_<name>` is provided to integration tests at COMPILE time, so it
@@ -43,6 +43,17 @@ fn hyd_alias_lists_all_verbs() {
             "hyd --help missing verb {verb:?}\n{text}"
         );
     }
+}
+
+#[test]
+fn help_advertises_the_global_project_selector() {
+    // The `--project` selector is global; it must show in the top-level help so
+    // users discover it (it's the escape hatch the ambiguous-project error names).
+    let text = help_text(HYDRATE_EXE);
+    assert!(
+        text.contains("--project"),
+        "top-level help missing --project\n{text}"
+    );
 }
 
 #[test]
