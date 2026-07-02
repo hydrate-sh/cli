@@ -15,8 +15,10 @@ The binary is `hydrate`, with a short alias `hyd`.
 ## Command surface
 
 ```
+hydrate projects             List the projects on your account (ids for --project)
 hydrate fork <name>          Fork a working branch from main, bind this directory to it
 hydrate branches             List your working branches
+hydrate show [path]          Print a read-only view of a branch's graph
 hydrate pull                 Refresh the local view of the branch's graph
 hydrate node add ...         Stage a node (behavior or boundary)
 hydrate node set <path> ...  Stage an edit to a node (description, ports, ...)
@@ -33,6 +35,14 @@ hydrate commit               Commit the staged changeset to the bound branch
 
 Run `hydrate guide` for an orientation, or see the full reference at
 [docs.hydrate.sh](https://docs.hydrate.sh).
+
+### Choosing a project
+
+Commands that act on a project resolve it in this order: the `--project
+<name|id>` flag, the `HYD_PROJECT` environment variable, this directory's
+binding, and finally — if you have exactly one active project — that project.
+With more than one project and no selection, the command stops and tells you how
+to disambiguate. Run `hydrate projects` to list the names and ids.
 
 Authoring is flag-driven and explicit, so a command reads the same in a script
 as on the terminal:
@@ -52,7 +62,7 @@ alias) on your `PATH`:
 
 ```sh
 # Linux x86_64 — adjust the version and target for your platform.
-tag=v0.1.7
+tag=v0.1.8
 target=x86_64-unknown-linux-gnu
 curl -fsSLO "https://github.com/hydrate-sh/cli/releases/download/${tag}/hydrate-${tag}-${target}.tar.gz"
 curl -fsSLO "https://github.com/hydrate-sh/cli/releases/download/${tag}/hydrate-${tag}-${target}.tar.gz.sha256"
@@ -79,6 +89,8 @@ cargo test
 
 - `HYD_API_KEY` — your API key (read from the environment or a `.env` file).
 - `HYD_BASE_URL` — override the service URL (for local development).
+- `HYD_PROJECT` — the project (name or id) to act on when `--project` is not
+  given and the directory is not bound. See [Choosing a project](#choosing-a-project).
 
 ## License
 

@@ -26,10 +26,20 @@ The authoring loop
   4. hydrate diff            review what is staged; nothing has hit the server yet
   5. hydrate commit          apply the staged changeset to the branch
 
+Inspecting
+  hydrate projects             list your projects (and the ids for --project)
+  hydrate branches             list the working branches of the selected project
+  hydrate show [path]          read-only view of a branch's graph (optionally a subtree)
+
 Editing in place
   hydrate node set <path> ...  edit a node's description, constraints, or ports
   hydrate node rm <path>...    remove nodes (cascades the subtree)
   hydrate clear                stage removal of every top-level node, then commit
+
+Choosing a project
+  Commands resolve the project from --project <name|id>, else the HYD_PROJECT
+  environment variable, else this directory's binding, else your one active
+  project. With more than one and no selection, the command asks you to pick.
 
 Conventions
   - Paths are dotted: `Api.Rater` is node Rater inside boundary Api;
@@ -88,6 +98,10 @@ mod tests {
             "hydrate node add",
             "hydrate edge add",
             "hydrate commit",
+            "hydrate projects",
+            "hydrate show",
+            "--project",
+            "HYD_PROJECT",
             "node set",
             "typed ports",
             "--description",
