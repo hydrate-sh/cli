@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub struct UpdateNodeDataDelta {
     #[serde(rename = "after")]
     pub after: Box<models::NodeData>,
-    #[serde(rename = "nodeId")]
+    #[serde(rename = "node_id")]
     pub node_id: uuid::Uuid,
     #[serde(rename = "type")]
     pub r#type: Type,

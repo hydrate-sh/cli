@@ -11,23 +11,23 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-/// WireEdge : Read-path edge: `source`/`target` are server-derived NODE ids (absent from the client-authored `h2o.types.Edge`); `*Handle` are the PORT ids.
+/// WireEdge : Read-path edge: `source`/`target` are server-derived NODE ids (absent from the client-authored `h2o.types.Edge`); `*_handle` are the PORT ids.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireEdge {
     #[serde(rename = "id")]
     pub id: uuid::Uuid,
     #[serde(rename = "source")]
     pub source: uuid::Uuid,
-    #[serde(rename = "sourceHandle", deserialize_with = "Option::deserialize")]
+    #[serde(rename = "source_handle", deserialize_with = "Option::deserialize")]
     pub source_handle: Option<uuid::Uuid>,
     #[serde(rename = "target")]
     pub target: uuid::Uuid,
-    #[serde(rename = "targetHandle", deserialize_with = "Option::deserialize")]
+    #[serde(rename = "target_handle", deserialize_with = "Option::deserialize")]
     pub target_handle: Option<uuid::Uuid>,
 }
 
 impl WireEdge {
-    /// Read-path edge: `source`/`target` are server-derived NODE ids (absent from the client-authored `h2o.types.Edge`); `*Handle` are the PORT ids.
+    /// Read-path edge: `source`/`target` are server-derived NODE ids (absent from the client-authored `h2o.types.Edge`); `*_handle` are the PORT ids.
     pub fn new(id: uuid::Uuid, source: uuid::Uuid, source_handle: Option<uuid::Uuid>, target: uuid::Uuid, target_handle: Option<uuid::Uuid>) -> WireEdge {
         WireEdge {
             id,

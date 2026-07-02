@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// ReparentNodeDelta : Move a node to a new parent (or to top-level).  `parent_id` must be present on the wire (use null for top-level); an absent key is rejected, so a client bug surfaces as a clean parse error rather than an ambiguous no-op.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReparentNodeDelta {
-    #[serde(rename = "nodeId")]
+    #[serde(rename = "node_id")]
     pub node_id: uuid::Uuid,
     #[serde(rename = "parent_id", deserialize_with = "Option::deserialize")]
     pub parent_id: Option<uuid::Uuid>,

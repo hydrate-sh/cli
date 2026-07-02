@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// DeleteNodeDelta : Cascade-delete a node and its descendant subtree.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeleteNodeDelta {
-    #[serde(rename = "nodeId")]
+    #[serde(rename = "node_id")]
     pub node_id: uuid::Uuid,
     #[serde(rename = "type")]
     pub r#type: Type,

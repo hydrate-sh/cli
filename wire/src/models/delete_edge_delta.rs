@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// DeleteEdgeDelta : Remove an edge.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeleteEdgeDelta {
-    #[serde(rename = "edgeId")]
+    #[serde(rename = "edge_id")]
     pub edge_id: uuid::Uuid,
     #[serde(rename = "type")]
     pub r#type: Type,

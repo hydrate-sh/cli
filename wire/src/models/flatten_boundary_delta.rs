@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// FlattenBoundaryDelta : Flatten a boundary node: delete it and promote its children to its parent.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlattenBoundaryDelta {
-    #[serde(rename = "nodeId")]
+    #[serde(rename = "node_id")]
     pub node_id: uuid::Uuid,
     #[serde(rename = "type")]
     pub r#type: Type,
