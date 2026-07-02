@@ -26,10 +26,10 @@ pub struct NodeData {
     pub external_kind: Option<Option<String>>,
     #[serde(rename = "inputs", skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<models::Port>>,
-    #[serde(rename = "isTestNode", skip_serializing_if = "Option::is_none")]
-    pub is_test_node: Option<bool>,
     #[serde(rename = "is_external", skip_serializing_if = "Option::is_none")]
     pub is_external: Option<bool>,
+    #[serde(rename = "is_test_node", skip_serializing_if = "Option::is_none")]
+    pub is_test_node: Option<bool>,
     #[serde(rename = "kind", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
     pub kind: Option<Option<Kind>>,
     #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
@@ -62,8 +62,8 @@ impl NodeData {
             documentation_url: None,
             external_kind: None,
             inputs: None,
-            is_test_node: None,
             is_external: None,
+            is_test_node: None,
             kind: None,
             name: None,
             outputs: None,

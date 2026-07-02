@@ -11,19 +11,19 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-/// Edge : An edge connecting two nodes' ports.  Endpoints are given as `sourceHandle` / `targetHandle` (camelCase), each a port id. Other key casings (e.g. snake_case) are ignored rather than rejected.
+/// Edge : An edge connecting two nodes' ports.  Endpoints are given as `source_handle` / `target_handle`, each a port id. Unknown keys are ignored rather than rejected.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     #[serde(rename = "id")]
     pub id: uuid::Uuid,
-    #[serde(rename = "sourceHandle", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "source_handle", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
     pub source_handle: Option<Option<uuid::Uuid>>,
-    #[serde(rename = "targetHandle", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "target_handle", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
     pub target_handle: Option<Option<uuid::Uuid>>,
 }
 
 impl Edge {
-    /// An edge connecting two nodes' ports.  Endpoints are given as `sourceHandle` / `targetHandle` (camelCase), each a port id. Other key casings (e.g. snake_case) are ignored rather than rejected.
+    /// An edge connecting two nodes' ports.  Endpoints are given as `source_handle` / `target_handle`, each a port id. Unknown keys are ignored rather than rejected.
     pub fn new(id: uuid::Uuid) -> Edge {
         Edge {
             id,

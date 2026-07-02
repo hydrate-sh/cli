@@ -26,10 +26,10 @@ pub struct WireNodeData {
     pub external_kind: Option<Option<String>>,
     #[serde(rename = "inputs", skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<models::WirePort>>,
-    #[serde(rename = "isTestNode")]
-    pub is_test_node: bool,
     #[serde(rename = "is_external")]
     pub is_external: bool,
+    #[serde(rename = "is_test_node")]
+    pub is_test_node: bool,
     #[serde(rename = "name")]
     pub name: String,
     #[serde(rename = "outputs", skip_serializing_if = "Option::is_none")]
@@ -50,7 +50,7 @@ pub struct WireNodeData {
 
 impl WireNodeData {
     /// Read-path node `data`. NOT `h2o.NodeData`: the response omits `kind`/`parent_id` (those live on the wrapper) and emits the boundary/ external scalars matrix-conditionally — so the matrix fields are optional (absent = not-applicable-to-kind).
-    pub fn new(description: String, is_test_node: bool, is_external: bool, name: String, status: String) -> WireNodeData {
+    pub fn new(description: String, is_external: bool, is_test_node: bool, name: String, status: String) -> WireNodeData {
         WireNodeData {
             config: None,
             constraints: None,
@@ -58,8 +58,8 @@ impl WireNodeData {
             documentation_url: None,
             external_kind: None,
             inputs: None,
-            is_test_node,
             is_external,
+            is_test_node,
             name,
             outputs: None,
             path_prefix: None,

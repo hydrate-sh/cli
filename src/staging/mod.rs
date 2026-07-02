@@ -439,7 +439,7 @@ impl Changeset {
     /// from the staged `delete_node` deltas — no separate on-disk state, so the
     /// stage format is unchanged and a re-run can't double-stage a deletion.
     ///
-    /// The `nodeId` is always a well-formed UUID because we serialized it here
+    /// The `node_id` is always a well-formed UUID because we serialized it here
     /// (`remove_node`); the `.ok()` skip is only for a foreign/corrupt staged
     /// delta, which is independently caught loud at `summarize` and `lower`, so
     /// this never quietly hides a real deletion. Note: this tombstones NODES,
@@ -451,12 +451,12 @@ impl Changeset {
             .deltas
             .iter()
             .filter(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("delete_node"))
-            .filter_map(|v| v.get("nodeId").and_then(serde_json::Value::as_str))
+            .filter_map(|v| v.get("node_id").and_then(serde_json::Value::as_str))
             .filter_map(|s| Uuid::parse_str(s).ok())
             .collect()
     }
 
-    /// Node ids already staged for flattening (the `nodeId` of every staged
+    /// Node ids already staged for flattening (the `node_id` of every staged
     /// `flatten_boundary`). Mirrors `staged_deletions` so a boundary can't be
     /// flattened twice — the second flatten targets a node the first already
     /// dissolved, so without this guard it would silently stage a duplicate.
@@ -467,12 +467,12 @@ impl Changeset {
             .filter(|v| {
                 v.get("type").and_then(serde_json::Value::as_str) == Some("flatten_boundary")
             })
-            .filter_map(|v| v.get("nodeId").and_then(serde_json::Value::as_str))
+            .filter_map(|v| v.get("node_id").and_then(serde_json::Value::as_str))
             .filter_map(|s| Uuid::parse_str(s).ok())
             .collect()
     }
 
-    /// Edge ids already staged for deletion (the `edgeId` of every staged
+    /// Edge ids already staged for deletion (the `edge_id` of every staged
     /// `delete_edge`). Mirrors `staged_deletions` so a committed edge can't be
     /// queued for deletion twice — the index isn't mutated, so without this a
     /// second `edge rm` would silently push a duplicate `delete_edge`.
@@ -481,7 +481,7 @@ impl Changeset {
             .deltas
             .iter()
             .filter(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("delete_edge"))
-            .filter_map(|v| v.get("edgeId").and_then(serde_json::Value::as_str))
+            .filter_map(|v| v.get("edge_id").and_then(serde_json::Value::as_str))
             .filter_map(|s| Uuid::parse_str(s).ok())
             .collect()
     }
@@ -509,7 +509,7 @@ impl Changeset {
             if v.get("type").and_then(serde_json::Value::as_str) != Some("update_node_data") {
                 continue;
             }
-            if v.get("nodeId").and_then(serde_json::Value::as_str)
+            if v.get("node_id").and_then(serde_json::Value::as_str)
                 != Some(node_id.to_string().as_str())
             {
                 continue;
@@ -933,11 +933,11 @@ impl Changeset {
                 let is_this_edge = v.get("type").and_then(serde_json::Value::as_str)
                     == Some("add_edge")
                     && v.get("edge")
-                        .and_then(|e| e.get("sourceHandle"))
+                        .and_then(|e| e.get("source_handle"))
                         .and_then(serde_json::Value::as_str)
                         == Some(src.as_str())
                     && v.get("edge")
-                        .and_then(|e| e.get("targetHandle"))
+                        .and_then(|e| e.get("target_handle"))
                         .and_then(serde_json::Value::as_str)
                         == Some(tgt.as_str());
                 !is_this_edge
@@ -2669,7 +2669,7 @@ mod tests {
     fn summarize_flags_a_reparent_to_an_unresolvable_node() {
         let mut stage = Stage::empty();
         stage.deltas.push(serde_json::json!({
-            "type": "reparent_node", "nodeId": Uuid::from_u128(0xDEAD), "parent_id": null
+            "type": "reparent_node", "node_id": Uuid::from_u128(0xDEAD), "parent_id": null
         }));
         let err = summarize(&stage, None).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
@@ -2683,7 +2683,7 @@ mod tests {
         let mut stage = Stage::empty();
         // Node resolves (Api == id 1), but the parent id is dangling.
         stage.deltas.push(serde_json::json!({
-            "type": "reparent_node", "nodeId": api, "parent_id": Uuid::from_u128(0xDEAD)
+            "type": "reparent_node", "node_id": api, "parent_id": Uuid::from_u128(0xDEAD)
         }));
         let _ = (rater, score);
         let err = summarize(&stage, Some(&index)).unwrap_err();
@@ -2711,19 +2711,19 @@ mod tests {
             "nodes": [
                 { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                  "data": {"name":"A","description":"","status":"idle","is_test_node":false,"is_external":false,
                            "outputs":[{"id":ao,"name":"o","type":"T"}]} },
                 { "id": Uuid::from_u128(2), "kind": "behavior", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"B","description":"","status":"idle","isTestNode":false,"is_external":false,
+                  "data": {"name":"B","description":"","status":"idle","is_test_node":false,"is_external":false,
                            "inputs":[{"id":bi,"name":"i","type":"T"}]} },
                 { "id": Uuid::from_u128(3), "kind": "behavior", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"C","description":"","status":"idle","isTestNode":false,"is_external":false,
+                  "data": {"name":"C","description":"","status":"idle","is_test_node":false,"is_external":false,
                            "inputs":[{"id":cx,"name":"x","type":"T"}]} },
             ],
             "edges": [ { "id": eid, "source": Uuid::from_u128(1), "target": Uuid::from_u128(2),
-                         "sourceHandle": ao, "targetHandle": bi } ],
+                         "source_handle": ao, "target_handle": bi } ],
         })).unwrap();
         let index = index_from_graph(&graph).unwrap();
         (
@@ -2899,8 +2899,8 @@ mod tests {
             "type": "add_edge",
             "edge": {
                 "id": Uuid::new_v4(),
-                "sourceHandle": Uuid::new_v4(),
-                "targetHandle": Uuid::new_v4(),
+                "source_handle": Uuid::new_v4(),
+                "target_handle": Uuid::new_v4(),
             }
         }));
         let err = summarize(&stage, None).unwrap_err();
@@ -2914,7 +2914,7 @@ mod tests {
         let mut stage = Stage::empty();
         stage
             .deltas
-            .push(serde_json::json!({"type": "future_delta_kind", "nodeId": Uuid::new_v4()}));
+            .push(serde_json::json!({"type": "future_delta_kind", "node_id": Uuid::new_v4()}));
         let summary = summarize(&stage, None).unwrap();
         assert_eq!((summary.nodes, summary.edges, summary.other), (0, 0, 1));
         assert_eq!(summary.total(), 1);
@@ -2927,8 +2927,8 @@ mod tests {
             "type": "add_edge",
             "edge": {
                 "id": Uuid::new_v4(),
-                "sourceHandle": Uuid::new_v4(),
-                "targetHandle": Uuid::new_v4(),
+                "source_handle": Uuid::new_v4(),
+                "target_handle": Uuid::new_v4(),
             }
         })
     }
@@ -2984,13 +2984,13 @@ mod tests {
                     "id": api, "kind": "boundary", "parent_id": null,
                     "position": { "x": 0.0, "y": 0.0 },
                     "data": { "name": "Api", "description": "", "status": "idle",
-                              "isTestNode": false, "is_external": false }
+                              "is_test_node": false, "is_external": false }
                 },
                 {
                     "id": rater, "kind": "behavior", "parent_id": api,
                     "position": { "x": 0.0, "y": 0.0 },
                     "data": { "name": "Rater", "description": "", "status": "idle",
-                              "isTestNode": false, "is_external": false,
+                              "is_test_node": false, "is_external": false,
                               "inputs": [ { "id": Uuid::from_u128(0x4ABC), "name": "raw", "type": "Patty" } ],
                               "outputs": [ { "id": score, "name": "score", "type": "Rating" } ] }
                 }
@@ -3034,7 +3034,7 @@ mod tests {
             "position": { "x": 0.0, "y": 0.0 },
             "data": serde_json::json!({
                 "name": name, "description": "", "status": "idle",
-                "isTestNode": false, "is_external": false,
+                "is_test_node": false, "is_external": false,
             }).as_object().map(|o| {
                 let mut o = o.clone();
                 if !ports.is_null() { o.insert("outputs".to_string(), ports); }
@@ -3069,7 +3069,7 @@ mod tests {
             "edges": [],
             "nodes": [ { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
                 "position": {"x":0.0,"y":0.0},
-                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                "data": {"name":"A","description":"","status":"idle","is_test_node":false,"is_external":false,
                          "outputs":[{"id":Uuid::from_u128(7),"name":"o"}]} } ],
         }))
         .unwrap();
@@ -3091,7 +3091,7 @@ mod tests {
             "edges": [],
             "nodes": [ { "id": node, "kind": "behavior", "parent_id": null,
                 "position": {"x":0.0,"y":0.0},
-                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                "data": {"name":"A","description":"","status":"idle","is_test_node":false,"is_external":false,
                          "outputs":[{"id":unnamed,"type":"T"}]} } ],
         }))
         .unwrap();
@@ -3114,16 +3114,16 @@ mod tests {
             "nodes": [
                 { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                  "data": {"name":"A","description":"","status":"idle","is_test_node":false,"is_external":false,
                            "outputs":[{"id":src,"name":"o","type":"T"}]} },
                 { "id": Uuid::from_u128(2), "kind": "behavior", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"B","description":"","status":"idle","isTestNode":false,"is_external":false,
+                  "data": {"name":"B","description":"","status":"idle","is_test_node":false,"is_external":false,
                            "inputs":[{"id":tgt,"name":"i","type":"T"}]} },
             ],
             "edges": [
-                { "id": Uuid::from_u128(0xE1), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "sourceHandle": src, "targetHandle": tgt },
-                { "id": Uuid::from_u128(0xE2), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "sourceHandle": src, "targetHandle": tgt },
+                { "id": Uuid::from_u128(0xE1), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "source_handle": src, "target_handle": tgt },
+                { "id": Uuid::from_u128(0xE2), "source": Uuid::from_u128(1), "target": Uuid::from_u128(2), "source_handle": src, "target_handle": tgt },
             ],
         }))
         .unwrap();
@@ -3147,15 +3147,15 @@ mod tests {
             "nodes": [
                 { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false,
+                  "data": {"name":"A","description":"","status":"idle","is_test_node":false,"is_external":false,
                            "outputs":[{"id":src,"name":"o","type":"T"}]} },
                 { "id": Uuid::from_u128(2), "kind": "behavior", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"B","description":"","status":"idle","isTestNode":false,"is_external":false,
+                  "data": {"name":"B","description":"","status":"idle","is_test_node":false,"is_external":false,
                            "inputs":[{"id":tgt,"name":"i","type":"T"}]} },
             ],
             "edges": [ { "id": eid, "source": Uuid::from_u128(1), "target": Uuid::from_u128(2),
-                         "sourceHandle": src, "targetHandle": tgt } ],
+                         "source_handle": src, "target_handle": tgt } ],
         })).unwrap();
         let index = index_from_graph(&graph).unwrap();
         assert_eq!(index.edge_id(src, tgt), Some(eid));
@@ -3169,9 +3169,9 @@ mod tests {
             "project_id": Uuid::from_u128(0xA), "version": "1",
             "nodes": [ { "id": Uuid::from_u128(1), "kind": "behavior", "parent_id": null,
                 "position": {"x":0.0,"y":0.0},
-                "data": {"name":"A","description":"","status":"idle","isTestNode":false,"is_external":false} } ],
+                "data": {"name":"A","description":"","status":"idle","is_test_node":false,"is_external":false} } ],
             "edges": [ { "id": Uuid::from_u128(0xED), "source": Uuid::from_u128(1), "target": Uuid::from_u128(1),
-                         "sourceHandle": null, "targetHandle": null } ],
+                         "source_handle": null, "target_handle": null } ],
         })).unwrap();
         let err = index_from_graph(&graph).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
@@ -3279,7 +3279,7 @@ mod tests {
                 "parent_id": Uuid::from_u128(0xDEAD),
                 "position": { "x": 0.0, "y": 0.0 },
                 "data": { "name": "Orphan", "description": "", "status": "idle",
-                          "isTestNode": false, "is_external": false }
+                          "is_test_node": false, "is_external": false }
             } ]
         }))
         .unwrap();
@@ -3583,7 +3583,7 @@ mod tests {
         let mut stage = Stage::empty();
         stage.deltas.push(serde_json::json!({
             "type": "delete_node",
-            "nodeId": Uuid::new_v4(),
+            "node_id": Uuid::new_v4(),
         }));
         let err = summarize(&stage, None).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
@@ -3603,10 +3603,10 @@ mod tests {
             "nodes": [
                 { "id": api, "kind": "boundary", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"Api","description":"","status":"idle","isTestNode":false,"is_external":false} },
+                  "data": {"name":"Api","description":"","status":"idle","is_test_node":false,"is_external":false} },
                 { "id": store, "kind": "boundary", "parent_id": null,
                   "position": {"x":0.0,"y":0.0},
-                  "data": {"name":"Store","description":"","status":"idle","isTestNode":false,"is_external":false} },
+                  "data": {"name":"Store","description":"","status":"idle","is_test_node":false,"is_external":false} },
             ],
         }))
         .unwrap();
@@ -3620,7 +3620,7 @@ mod tests {
             .deltas
             .iter()
             .filter(|v| v["type"] == "delete_node")
-            .map(|v| Uuid::parse_str(v["nodeId"].as_str().unwrap()).unwrap())
+            .map(|v| Uuid::parse_str(v["node_id"].as_str().unwrap()).unwrap())
             .collect();
         assert_eq!(
             deleted,
@@ -4631,7 +4631,7 @@ mod tests {
         let mut stage = Stage::empty();
         stage.deltas.push(serde_json::json!({
             "type": "update_node_data",
-            "nodeId": Uuid::new_v4(),
+            "node_id": Uuid::new_v4(),
             "after": { "description": "x" },
         }));
         let err = summarize(&stage, None).unwrap_err();
