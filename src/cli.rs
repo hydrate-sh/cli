@@ -29,8 +29,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub human: bool,
 
-    /// Select the project to act on, by name or id. Overrides HYD_PROJECT and
-    /// this directory's binding. Run `hydrate projects` to see names and ids.
+    /// Select the project to act on, by name or id. Applies to the
+    /// project-scoped verbs (projects, fork, branches, show); binding-only verbs
+    /// (pull, status, commit, ...) act on the bound branch and ignore it.
+    /// Overrides HYD_PROJECT and this directory's binding. Run `hydrate projects`
+    /// to see names and ids.
     #[arg(long, global = true)]
     pub project: Option<String>,
 
@@ -412,4 +415,36 @@ pub struct EdgeAddArgs {
     /// Target port, addressed by dotted path (e.g. `Rater.raw`).
     #[arg(long)]
     pub to: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_project_flag_parses_and_routes() {
+        // The global `--project` selector is captured on the top-level parser and
+        // must reach `dispatch` regardless of the subcommand, and regardless of
+        // whether it appears before or after the verb.
+        let after = Cli::parse_from(["hyd", "branches", "--project", "x"]);
+        assert_eq!(after.project.as_deref(), Some("x"));
+        assert!(matches!(after.command, Command::Branches));
+
+        let before = Cli::parse_from(["hyd", "--project", "x", "branches"]);
+        assert_eq!(before.project.as_deref(), Some("x"));
+        assert!(matches!(before.command, Command::Branches));
+
+        // It reaches the other project-scoped verbs too (e.g. show), still both
+        // sides of the subcommand.
+        let show = Cli::parse_from(["hyd", "show", "--project", "y", "Api"]);
+        assert_eq!(show.project.as_deref(), Some("y"));
+        match show.command {
+            Command::Show(args) => assert_eq!(args.path.as_deref(), Some("Api")),
+            other => panic!("expected Show, got {other:?}"),
+        }
+
+        // Absent flag is None (falls through to env/binding/single-active).
+        let none = Cli::parse_from(["hyd", "branches"]);
+        assert_eq!(none.project, None);
+    }
 }

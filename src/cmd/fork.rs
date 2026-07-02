@@ -36,10 +36,10 @@ pub fn run(args: ForkArgs, project_flag: Option<String>, mode: OutputMode) -> Re
     let binding_project = Binding::load(&base)?.map(|b| b.project_id.to_string());
     let selection = choose_selection(
         project_flag.as_deref(),
-        env_project(),
+        env_project()?,
         binding_project.as_deref(),
     );
-    let project = resolve_project(selection.as_deref(), client.list_projects()?.projects)?;
+    let project = resolve_project(selection, client.list_projects()?.projects)?;
     // The server does not enforce branch-name uniqueness, so surface a collision
     // here instead of silently creating a second branch with the same name.
     ensure_name_available(&client, project.id, &args.name)?;

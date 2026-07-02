@@ -22,10 +22,10 @@ pub fn run(project_flag: Option<String>, mode: OutputMode) -> Result<(), CliErro
     let binding_project = binding.as_ref().map(|b| b.project_id.to_string());
     let selection = choose_selection(
         project_flag.as_deref(),
-        env_project(),
+        env_project()?,
         binding_project.as_deref(),
     );
-    let project = resolve_project(selection.as_deref(), client.list_projects()?.projects)?;
+    let project = resolve_project(selection, client.list_projects()?.projects)?;
 
     let bound = binding
         .as_ref()

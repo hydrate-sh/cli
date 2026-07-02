@@ -34,10 +34,10 @@ pub fn run(
     let binding_project = binding.as_ref().map(|b| b.project_id.to_string());
     let selection = choose_selection(
         project_flag.as_deref(),
-        env_project(),
+        env_project()?,
         binding_project.as_deref(),
     );
-    let project = resolve_project(selection.as_deref(), client.list_projects()?.projects)?;
+    let project = resolve_project(selection, client.list_projects()?.projects)?;
 
     // Pick the branch: --branch name, else the binding's branch (only when it
     // belongs to this project), else the project's main branch.
@@ -137,11 +137,14 @@ struct ShowEdge {
     to: String,
 }
 
-/// The whole rendered view (before mode selection), plus the per-edge endpoint
-/// node paths used for subtree filtering.
+/// The whole rendered view (before mode selection).
 struct View {
     nodes: Vec<ShowNode>,
     edges: Vec<ShowEdge>,
+    /// Edges with exactly one endpoint inside the filtered subtree — hidden from
+    /// `edges` (the other end is out of view), but surfaced as a loud count so a
+    /// filtered inspection never drops a wire without a word. Always 0 unfiltered.
+    cross_boundary: usize,
 }
 
 /// Render the branch graph in `mode`, optionally filtered to one node's subtree.
@@ -161,6 +164,7 @@ fn render(
             "branch": branch_name,
             "nodes": view.nodes,
             "edges": view.edges,
+            "cross_boundary_edges": view.cross_boundary,
         })
         .to_string(),
         OutputMode::Human => human(&view, project_name, branch_name),
@@ -225,8 +229,11 @@ fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliEr
     // Edges: translate each handle to a dotted port path. A handle that names no
     // known port is corruption in the server's response — surface it loudly
     // rather than drop the edge (which would hide a real connection). Keep only
-    // edges whose BOTH endpoints are in scope, so a filtered view is self-contained.
+    // edges whose BOTH endpoints are in scope, so a filtered view is
+    // self-contained; but COUNT the ones that cross out so the caller can report
+    // them (an inspection tool must not hide a wire silently).
     let mut edges = Vec::new();
+    let mut cross_boundary = 0usize;
     for edge in &graph.edges {
         let (Some(src), Some(tgt)) = (edge.source_handle, edge.target_handle) else {
             return Err(CliError::State(
@@ -235,13 +242,20 @@ fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliEr
         };
         let (from, from_node) = port_path(&port_owner, src)?;
         let (to, to_node) = port_path(&port_owner, tgt)?;
-        if in_scope(&from_node) && in_scope(&to_node) {
-            edges.push(ShowEdge { from, to });
+        match (in_scope(&from_node), in_scope(&to_node)) {
+            (true, true) => edges.push(ShowEdge { from, to }),
+            // Exactly one endpoint in the subtree: it crosses the boundary.
+            (true, false) | (false, true) => cross_boundary += 1,
+            (false, false) => {}
         }
     }
     edges.sort_by(|a, b| (a.from.as_str(), a.to.as_str()).cmp(&(b.from.as_str(), b.to.as_str())));
 
-    Ok(View { nodes, edges })
+    Ok(View {
+        nodes,
+        edges,
+        cross_boundary,
+    })
 }
 
 /// Translate a port handle to its dotted `node.port` path plus the owning node's
@@ -279,7 +293,13 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
     for node in &view.nodes {
         let depth = node.path.matches('.').count();
         let indent = "  ".repeat(depth + 1);
-        let leaf = node.path.rsplit('.').next().unwrap_or(&node.path);
+        // A dotted path always has at least one segment (names are non-empty), so
+        // `rsplit` yields the leaf; there is no fallback case to handle.
+        let leaf = node
+            .path
+            .rsplit('.')
+            .next()
+            .expect("a node path always has at least one segment");
         out.push_str(&format!("\n{indent}{leaf}  [{}]", node.kind));
         let ports = "  ".repeat(depth + 2);
         if !node.inputs.is_empty() {
@@ -297,6 +317,13 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
         for e in &view.edges {
             out.push_str(&format!("\n  {} -> {}", e.from, e.to));
         }
+    }
+    if view.cross_boundary > 0 {
+        let plural = if view.cross_boundary == 1 { "" } else { "s" };
+        out.push_str(&format!(
+            "\n{} edge{plural} cross out of this subtree — run `hydrate show` for the full graph",
+            view.cross_boundary
+        ));
     }
     out
 }
@@ -542,8 +569,30 @@ mod tests {
         // Only Rater is in the subtree; Maker and Api are excluded.
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0]["path"], "Api.Rater");
-        // The edge crosses out of the subtree (Maker is outside), so it's dropped.
+        // The edge crosses out of the subtree (Maker is outside), so it's not
+        // listed among the shown edges.
         assert!(v["edges"].as_array().unwrap().is_empty(), "{json}");
+    }
+
+    #[test]
+    fn subtree_filter_reports_edges_that_cross_out() {
+        // Filtering to Api.Rater hides the Maker.dog -> Rater.raw edge (Maker is
+        // out of scope). That must be counted and reported, never silently dropped.
+        let g = sample_graph();
+        // JSON: an explicit cross-boundary count.
+        let json = render(&g, "proj", "main", Some("Api.Rater"), OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["cross_boundary_edges"], 1, "{json}");
+        // Human: a loud footnote naming the escape hatch.
+        let human = render(&g, "proj", "main", Some("Api.Rater"), OutputMode::Human).unwrap();
+        assert!(human.contains("1 edge cross"), "{human}");
+        assert!(human.contains("hydrate show"), "{human}");
+        // The whole-graph view has nothing crossing out.
+        let full = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let fv: serde_json::Value = serde_json::from_str(&full).unwrap();
+        assert_eq!(fv["cross_boundary_edges"], 0, "{full}");
+        let full_human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        assert!(!full_human.contains("cross out"), "{full_human}");
     }
 
     #[test]
@@ -563,11 +612,44 @@ mod tests {
     }
 
     #[test]
-    fn show_uses_only_read_endpoints() {
-        // The render core takes a fetched GraphResponse and returns a String: no
-        // client, no branch id, no delta — a mutation call is not even reachable
-        // from here. Exercising it proves the read/mutation boundary holds.
+    fn edge_missing_a_port_handle_fails_loud() {
+        // A null handle (no port at all) is corruption too — surface it rather
+        // than skip the edge and under-report the graph's connections.
+        let mut g = sample_graph();
+        g.edges[0].source_handle = None;
+        let err = render(&g, "proj", "main", None, OutputMode::Json).unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "got {err:?}");
+        assert!(err.to_string().contains("missing a port handle"), "{err}");
+    }
+
+    #[test]
+    fn render_core_is_a_pure_transform_of_the_fetched_graph() {
+        // The read/mutation boundary: the render core takes a fetched
+        // GraphResponse and returns a String — no client, no branch id, no delta,
+        // so a mutation call is not even reachable from it. Prove it is a faithful,
+        // total transform of ONLY that input: every graph node appears, and
+        // nothing not derivable from the graph leaks in.
         let g = sample_graph();
-        assert!(render(&g, "p", "b", None, OutputMode::Json).is_ok());
+        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // Exactly the graph's nodes are rendered (a pure projection of the input).
+        assert_eq!(v["nodes"].as_array().unwrap().len(), g.nodes.len());
+        for node in &g.nodes {
+            let name = &node.data.name;
+            assert!(
+                v["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|n| n["path"].as_str().unwrap().ends_with(name.as_str())),
+                "graph node {name:?} missing from the rendered view: {json}"
+            );
+        }
+        // The projected identifiers stay OUT: no node/port UUIDs, no branch id.
+        assert!(!json.contains(&g.branch.id.to_string()), "leaked branch id");
+        assert!(
+            !json.contains(&g.nodes[0].id.to_string()),
+            "leaked node uuid"
+        );
     }
 }
