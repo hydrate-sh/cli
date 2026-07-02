@@ -6,7 +6,7 @@ use std::path::Path;
 use hydrate_wire::models::{BranchMeta, ProjectOut};
 use uuid::Uuid;
 
-use super::context::{cwd, select_project};
+use super::context::{choose_selection, cwd, env_project, resolve_project};
 use crate::cli::ForkArgs;
 use crate::client::Client;
 use crate::config::Config;
@@ -14,7 +14,7 @@ use crate::error::CliError;
 use crate::output::OutputMode;
 use crate::state::{self, Binding, Index, Stage};
 
-pub fn run(args: ForkArgs, mode: OutputMode) -> Result<(), CliError> {
+pub fn run(args: ForkArgs, project_flag: Option<String>, mode: OutputMode) -> Result<(), CliError> {
     // A cheap client-side shape check for fast, clear feedback. The server stays
     // the authority on naming — this only rejects input that could never be a
     // valid slug, never decides what the server would accept.
@@ -29,7 +29,17 @@ pub fn run(args: ForkArgs, mode: OutputMode) -> Result<(), CliError> {
     let config = Config::load()?;
     let client = Client::new(&config)?;
 
-    let project = select_project(client.list_projects()?.projects)?;
+    // Resolve which project to fork in: flag > env > this directory's existing
+    // binding (if any) > the single-active rule. Passing `--project` lets a fork
+    // succeed in a fresh, unbound directory even with more than one project — the
+    // alpha unblock.
+    let binding_project = Binding::load(&base)?.map(|b| b.project_id.to_string());
+    let selection = choose_selection(
+        project_flag.as_deref(),
+        env_project(),
+        binding_project.as_deref(),
+    );
+    let project = resolve_project(selection.as_deref(), client.list_projects()?.projects)?;
     // The server does not enforce branch-name uniqueness, so surface a collision
     // here instead of silently creating a second branch with the same name.
     ensure_name_available(&client, project.id, &args.name)?;

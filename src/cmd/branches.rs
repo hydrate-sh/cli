@@ -5,47 +5,44 @@ use hydrate_wire::models::BranchMeta;
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::context::{cwd, select_project};
+use super::context::{choose_selection, current_binding, env_project, resolve_project};
 use crate::client::Client;
 use crate::config::Config;
 use crate::error::CliError;
 use crate::output::OutputMode;
-use crate::state::{self, Binding};
 
-pub fn run(mode: OutputMode) -> Result<(), CliError> {
+pub fn run(project_flag: Option<String>, mode: OutputMode) -> Result<(), CliError> {
     let config = Config::load()?;
     let client = Client::new(&config)?;
 
-    // Prefer the workdir binding for the project + the branch to mark; fall back
-    // to the single-project rule when this directory is not bound to anything.
+    // Resolve the project via flag > env > binding > single-active rule. The
+    // binding also names the branch to mark, but only when it belongs to the
+    // project we resolved (a --project/HYD_PROJECT override may point elsewhere).
     let binding = current_binding()?;
-    let (project_id, project_name, bound) = match binding {
-        Some(b) => (b.project_id, b.project_name, Some(b.branch_id)),
-        None => {
-            let p = select_project(client.list_projects()?.projects)?;
-            (p.id, p.name, None)
-        }
-    };
+    let binding_project = binding.as_ref().map(|b| b.project_id.to_string());
+    let selection = choose_selection(
+        project_flag.as_deref(),
+        env_project(),
+        binding_project.as_deref(),
+    );
+    let project = resolve_project(selection.as_deref(), client.list_projects()?.projects)?;
 
-    let listed = client.list_branches(project_id)?;
+    let bound = binding
+        .as_ref()
+        .filter(|b| b.project_id == project.id)
+        .map(|b| b.branch_id);
+
+    let listed = client.list_branches(project.id)?;
     println!(
         "{}",
         render(
-            project_id,
-            &project_name,
+            project.id,
+            &project.name,
             &rows(&listed.branches, bound),
             mode
         )
     );
     Ok(())
-}
-
-/// Load the binding for the working copy this directory belongs to, if any.
-fn current_binding() -> Result<Option<Binding>, CliError> {
-    match state::find_root(&cwd()?) {
-        Some(root) => Binding::load(&root),
-        None => Ok(None),
-    }
 }
 
 #[derive(Debug, PartialEq, Serialize)]

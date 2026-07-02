@@ -29,6 +29,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub human: bool,
 
+    /// Select the project to act on, by name or id. Overrides HYD_PROJECT and
+    /// this directory's binding. Run `hydrate projects` to see names and ids.
+    #[arg(long, global = true)]
+    pub project: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -45,11 +50,18 @@ pub enum Command {
     /// worked example, and a pointer to the full docs. Start here.
     Guide,
 
+    /// List the projects on your account (archived ones are flagged).
+    Projects,
+
     /// Fork a working branch from main and bind this directory to it.
     Fork(ForkArgs),
 
     /// List your working branches.
     Branches,
+
+    /// Print a read-only view of a branch's graph (nodes, ports, and edges).
+    /// Never mutates: it creates no branch and stages nothing.
+    Show(ShowArgs),
 
     /// Refresh the local view of the bound branch's live graph, so you can
     /// reference already-committed nodes by their dotted path.
@@ -91,6 +103,19 @@ pub enum Command {
 pub struct ForkArgs {
     /// Name for the new working branch (a slug: letters, digits, '-', '_').
     pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ShowArgs {
+    /// Limit the view to one node and its subtree, by dotted path (e.g. `Api`
+    /// or `Api.Rater`). Omit to show the whole graph.
+    #[arg(value_name = "PATH")]
+    pub path: Option<String>,
+
+    /// Which branch to show, by name. Defaults to this directory's bound branch,
+    /// else the project's main branch.
+    #[arg(long)]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
