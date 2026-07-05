@@ -574,9 +574,10 @@ impl Changeset {
         if edit.is_empty() {
             return Err(CliError::InvalidArgument(
                 "nothing to set — pass a field flag (--description, --constraint, \
-                 --name, --user-kind, --path-prefix, --external/--no-external, \
-                 --external-kind, --protocol, --doc-url, --test-node/--no-test-node, \
-                 --verification, or a --clear-* flag) or a port flag"
+                 --name, --user-kind, --path-prefix, --language, \
+                 --external/--no-external, --external-kind, --protocol, --doc-url, \
+                 --test-node/--no-test-node, --verification, or a --clear-* flag) \
+                 or a port flag"
                     .to_string(),
             ));
         }
@@ -3945,7 +3946,7 @@ mod tests {
     fn update_node_accepts_a_lone_boundary_scalar() {
         // Each new scalar alone must satisfy is_empty (not be rejected as
         // "nothing to set") and land in the delta.
-        let cases: [(&str, NodeEdit, Option<Option<String>>); 3] = [
+        let cases: [(&str, NodeEdit, Option<Option<String>>); 4] = [
             (
                 "user_kind",
                 NodeEdit {
@@ -3961,6 +3962,14 @@ mod tests {
                     ..Default::default()
                 },
                 Some(Some("src/".to_string())),
+            ),
+            (
+                "language",
+                NodeEdit {
+                    language: Some("go".to_string()),
+                    ..Default::default()
+                },
+                Some(Some("go".to_string())),
             ),
             (
                 "external_kind",
@@ -3979,6 +3988,7 @@ mod tests {
             let got = match label {
                 "user_kind" => d.after.user_kind,
                 "path_prefix" => d.after.path_prefix,
+                "language" => d.after.language,
                 _ => d.after.external_kind,
             };
             assert_eq!(got, want, "{label}");
@@ -4008,6 +4018,13 @@ mod tests {
                 "clear_path_prefix",
                 NodeEdit {
                     clear_path_prefix: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "clear_language",
+                NodeEdit {
+                    clear_language: true,
                     ..Default::default()
                 },
             ),
