@@ -226,6 +226,10 @@ pub struct NodeSetArgs {
     #[arg(long)]
     pub path_prefix: Option<String>,
 
+    /// Codegen language for a boundary node (e.g. `go`, `python`). Boundary-only.
+    #[arg(long)]
+    pub language: Option<String>,
+
     /// Mark the node external (an outside system the graph depends on).
     #[arg(long, conflicts_with = "no_external")]
     pub external: bool,
@@ -275,6 +279,10 @@ pub struct NodeSetArgs {
     /// Clear the boundary path prefix (set it null).
     #[arg(long, conflicts_with = "path_prefix")]
     pub clear_path_prefix: bool,
+
+    /// Clear the boundary language (set it null).
+    #[arg(long, conflicts_with = "language")]
+    pub clear_language: bool,
 
     /// Clear the external kind label (set it null).
     #[arg(long, conflicts_with = "external_kind")]
@@ -359,6 +367,10 @@ pub struct NodeAddArgs {
     /// Boundary-only: the path prefix the boundary owns.
     #[arg(long)]
     pub path_prefix: Option<String>,
+
+    /// Codegen language for a boundary node (e.g. `go`, `python`). Boundary-only.
+    #[arg(long)]
+    pub language: Option<String>,
 
     /// External-only: the system's protocol (e.g. `gRPC`, `HTTPS REST`).
     #[arg(long)]

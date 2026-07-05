@@ -32,6 +32,8 @@ pub struct NodeData {
     pub is_test_node: Option<bool>,
     #[serde(rename = "kind", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
     pub kind: Option<Option<Kind>>,
+    #[serde(rename = "language", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
+    pub language: Option<Option<String>>,
     #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "outputs", skip_serializing_if = "Option::is_none")]
@@ -65,6 +67,7 @@ impl NodeData {
             is_external: None,
             is_test_node: None,
             kind: None,
+            language: None,
             name: None,
             outputs: None,
             parent_id: None,

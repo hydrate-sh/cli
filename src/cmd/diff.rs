@@ -98,6 +98,7 @@ fn op_line(op: &OpSummary) -> String {
             outputs,
             user_kind,
             path_prefix,
+            language,
             external,
             external_kind,
             protocol,
@@ -137,6 +138,7 @@ fn op_line(op: &OpSummary) -> String {
             }
             line.push_str(&scalar_line(user_kind, "user-kind"));
             line.push_str(&scalar_line(path_prefix, "path-prefix"));
+            line.push_str(&scalar_line(language, "language"));
             line.push_str(&scalar_line(external_kind, "external-kind"));
             line.push_str(&scalar_line(protocol, "protocol"));
             line.push_str(&scalar_line(doc_url, "doc-url"));
@@ -232,6 +234,7 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             outputs,
             user_kind,
             path_prefix,
+            language,
             external,
             external_kind,
             protocol,
@@ -259,6 +262,7 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             for (key, field) in [
                 ("user_kind", user_kind),
                 ("path_prefix", path_prefix),
+                ("language", language),
                 ("external_kind", external_kind),
                 ("protocol", protocol),
                 ("doc_url", doc_url),
@@ -454,6 +458,7 @@ mod tests {
             ]),
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -540,6 +545,7 @@ mod tests {
             outputs: None,
             user_kind: Some(Some("subsystem".to_string())),
             path_prefix: Some(Some("src/api/".to_string())),
+            language: Some(Some("go".to_string())),
             external: Some(true),
             external_kind: Some(Some("rest-api".to_string())),
             protocol: None,
@@ -551,6 +557,7 @@ mod tests {
         let human = render(&summary(vec![op.clone()]), OutputMode::Human);
         assert!(human.contains("user-kind: subsystem"), "{human}");
         assert!(human.contains("path-prefix: src/api/"), "{human}");
+        assert!(human.contains("language: go"), "{human}");
         assert!(human.contains("external: true"), "{human}");
         assert!(human.contains("external-kind: rest-api"), "{human}");
         assert!(human.contains("verification: responds in 50ms"), "{human}");
@@ -559,6 +566,7 @@ mod tests {
             serde_json::from_str(&render(&summary(vec![op]), OutputMode::Json)).unwrap();
         assert_eq!(v["ops"][0]["user_kind"], "subsystem");
         assert_eq!(v["ops"][0]["path_prefix"], "src/api/");
+        assert_eq!(v["ops"][0]["language"], "go");
         assert_eq!(v["ops"][0]["external"], true);
         assert_eq!(v["ops"][0]["external_kind"], "rest-api");
         assert_eq!(v["ops"][0]["verifications"][0], "responds in 50ms");
@@ -575,6 +583,7 @@ mod tests {
             outputs: None,
             user_kind: Some(None),
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: Some(Some("gRPC".to_string())),
@@ -636,6 +645,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -694,6 +704,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -711,6 +722,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -739,6 +751,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
