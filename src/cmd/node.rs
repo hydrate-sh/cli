@@ -31,6 +31,7 @@ pub fn add(args: NodeAddArgs, mode: OutputMode) -> Result<(), CliError> {
         config: parse_ports(&args.config)?,
         user_kind: args.user_kind.as_deref(),
         path_prefix: args.path_prefix.as_deref(),
+        language: args.language.as_deref(),
         description: args.description.as_deref(),
         constraints: args.constraints.clone(),
         is_external: args.external,
@@ -92,6 +93,7 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         // Scalars: a blank value is "untouched", mirroring `--description ""`.
         user_kind: blank_to_none(args.user_kind.as_deref()),
         path_prefix: blank_to_none(args.path_prefix.as_deref()),
+        language: blank_to_none(args.language.as_deref()),
         // --external / --no-external toggle is_external; neither = untouched.
         is_external: toggle_flag(args.external, args.no_external),
         external_kind: blank_to_none(args.external_kind.as_deref()),
@@ -102,6 +104,7 @@ pub fn set(args: NodeSetArgs, mode: OutputMode) -> Result<(), CliError> {
         clear_description: args.clear_description,
         clear_user_kind: args.clear_user_kind,
         clear_path_prefix: args.clear_path_prefix,
+        clear_language: args.clear_language,
         clear_external_kind: args.clear_external_kind,
         clear_protocol: args.clear_protocol,
         clear_doc_url: args.clear_doc_url,
@@ -198,6 +201,7 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
             for (key, field) in [
                 ("user_kind", &u.user_kind),
                 ("path_prefix", &u.path_prefix),
+                ("language", &u.language),
                 ("external_kind", &u.external_kind),
                 ("protocol", &u.protocol),
                 ("doc_url", &u.doc_url),
@@ -237,6 +241,7 @@ fn render_updated(u: &NodeUpdated, mode: OutputMode) -> String {
             }
             fields.extend(scalar_label(&u.user_kind, "user-kind"));
             fields.extend(scalar_label(&u.path_prefix, "path-prefix"));
+            fields.extend(scalar_label(&u.language, "language"));
             fields.extend(scalar_label(&u.external_kind, "external-kind"));
             fields.extend(scalar_label(&u.protocol, "protocol"));
             fields.extend(scalar_label(&u.doc_url, "doc-url"));
@@ -433,6 +438,7 @@ mod tests {
                 constraints: None,
                 user_kind: None,
                 path_prefix: None,
+                language: None,
                 is_external: None,
                 external_kind: None,
                 protocol: None,
@@ -453,6 +459,7 @@ mod tests {
                 constraints: None,
                 user_kind: None,
                 path_prefix: None,
+                language: None,
                 is_external: None,
                 external_kind: None,
                 protocol: None,
@@ -478,6 +485,7 @@ mod tests {
                 constraints: Some(vec!["c".to_string()]),
                 user_kind: None,
                 path_prefix: None,
+                language: None,
                 is_external: None,
                 external_kind: None,
                 protocol: None,
@@ -500,6 +508,7 @@ mod tests {
                 constraints: Some(vec![]),
                 user_kind: None,
                 path_prefix: None,
+                language: None,
                 is_external: None,
                 external_kind: None,
                 protocol: None,
@@ -521,6 +530,7 @@ mod tests {
                 constraints: None,
                 user_kind: None,
                 path_prefix: None,
+                language: None,
                 is_external: None,
                 external_kind: None,
                 protocol: None,
@@ -573,6 +583,7 @@ mod tests {
             constraints: None,
             user_kind: Some(Some("subsystem".to_string())),
             path_prefix: Some(Some("src/api/".to_string())),
+            language: None,
             is_external: Some(true),
             external_kind: Some(Some("rest-api".to_string())),
             protocol: None,
@@ -609,6 +620,7 @@ mod tests {
             constraints: None,
             user_kind: Some(None), // cleared
             path_prefix: None,     // untouched
+            language: None,
             is_external: None,
             external_kind: None,
             protocol: Some(Some("gRPC".to_string())), // set
@@ -647,6 +659,7 @@ mod tests {
             constraints: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             is_external: None,
             external_kind: None,
             protocol: None,

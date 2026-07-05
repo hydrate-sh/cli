@@ -98,6 +98,7 @@ fn op_line(op: &OpSummary) -> String {
             outputs,
             user_kind,
             path_prefix,
+            language,
             external,
             external_kind,
             protocol,
@@ -137,6 +138,7 @@ fn op_line(op: &OpSummary) -> String {
             }
             line.push_str(&scalar_line(user_kind, "user-kind"));
             line.push_str(&scalar_line(path_prefix, "path-prefix"));
+            line.push_str(&scalar_line(language, "language"));
             line.push_str(&scalar_line(external_kind, "external-kind"));
             line.push_str(&scalar_line(protocol, "protocol"));
             line.push_str(&scalar_line(doc_url, "doc-url"));
@@ -232,6 +234,7 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             outputs,
             user_kind,
             path_prefix,
+            language,
             external,
             external_kind,
             protocol,
@@ -259,6 +262,7 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             for (key, field) in [
                 ("user_kind", user_kind),
                 ("path_prefix", path_prefix),
+                ("language", language),
                 ("external_kind", external_kind),
                 ("protocol", protocol),
                 ("doc_url", doc_url),
@@ -454,6 +458,7 @@ mod tests {
             ]),
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -540,6 +545,7 @@ mod tests {
             outputs: None,
             user_kind: Some(Some("subsystem".to_string())),
             path_prefix: Some(Some("src/api/".to_string())),
+            language: None,
             external: Some(true),
             external_kind: Some(Some("rest-api".to_string())),
             protocol: None,
@@ -575,6 +581,7 @@ mod tests {
             outputs: None,
             user_kind: Some(None),
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: Some(Some("gRPC".to_string())),
@@ -636,6 +643,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -694,6 +702,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -711,6 +720,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,
@@ -739,6 +749,7 @@ mod tests {
             outputs: None,
             user_kind: None,
             path_prefix: None,
+            language: None,
             external: None,
             external_kind: None,
             protocol: None,

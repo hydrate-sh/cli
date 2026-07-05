@@ -74,6 +74,8 @@ pub struct NodeSpec<'a> {
     pub config: Vec<PortSpec>,
     pub user_kind: Option<&'a str>,
     pub path_prefix: Option<&'a str>,
+    /// Codegen language for a boundary node (e.g. `go`). Boundary-only.
+    pub language: Option<&'a str>,
     /// The node's description (free text). `None` omits it (server default).
     pub description: Option<&'a str>,
     /// Plain-text constraints; empty omits the field.
@@ -115,6 +117,8 @@ pub struct NodeEdit {
     pub user_kind: Option<String>,
     /// Boundary path prefix (`--path-prefix`). `None` = untouched.
     pub path_prefix: Option<String>,
+    /// Boundary codegen language (`--language`). `None` = untouched.
+    pub language: Option<String>,
     /// External marker toggle. `None` = untouched, `Some(true)` = `--external`,
     /// `Some(false)` = `--no-external`.
     pub is_external: Option<bool>,
@@ -134,6 +138,7 @@ pub struct NodeEdit {
     pub clear_description: bool,
     pub clear_user_kind: bool,
     pub clear_path_prefix: bool,
+    pub clear_language: bool,
     pub clear_external_kind: bool,
     pub clear_protocol: bool,
     pub clear_doc_url: bool,
@@ -169,6 +174,7 @@ impl NodeEdit {
             && self.name.is_none()
             && self.user_kind.is_none()
             && self.path_prefix.is_none()
+            && self.language.is_none()
             && self.is_external.is_none()
             && self.external_kind.is_none()
             && self.verifications.is_none()
@@ -178,6 +184,7 @@ impl NodeEdit {
             && !self.clear_description
             && !self.clear_user_kind
             && !self.clear_path_prefix
+            && !self.clear_language
             && !self.clear_external_kind
             && !self.clear_protocol
             && !self.clear_doc_url
@@ -273,10 +280,11 @@ impl Changeset {
 
         // Classifier/ownership flags must only appear on the kinds that accept
         // them — a command-grammar mistake we can catch locally and clearly.
-        // - boundary: both --user-kind and --path-prefix are allowed.
-        // - state:    --user-kind carries the state kind; --path-prefix is forbidden.
-        // - behavior: neither is allowed.
-        // - io:       neither is allowed (an io node is defined by its
+        // - boundary: --user-kind, --path-prefix, and --language are allowed.
+        // - state:    --user-kind carries the state kind; --path-prefix and
+        //             --language are forbidden.
+        // - behavior: none is allowed.
+        // - io:       none is allowed (an io node is defined by its
         //             description and its single typed port — no kind label).
         match spec.kind {
             models::node::Kind::Boundary => {}
@@ -287,12 +295,18 @@ impl Changeset {
                             .to_string(),
                     ));
                 }
+                if spec.language.is_some() {
+                    return Err(CliError::InvalidArgument(
+                        "--language applies only to --kind boundary, not --kind state".to_string(),
+                    ));
+                }
             }
             models::node::Kind::Behavior | models::node::Kind::Io => {
-                if spec.user_kind.is_some() || spec.path_prefix.is_some() {
+                if spec.user_kind.is_some() || spec.path_prefix.is_some() || spec.language.is_some()
+                {
                     return Err(CliError::InvalidArgument(
                         "--user-kind applies to --kind boundary or state; \
-                         --path-prefix applies only to --kind boundary"
+                         --path-prefix and --language apply only to --kind boundary"
                             .to_string(),
                     ));
                 }
@@ -339,6 +353,7 @@ impl Changeset {
             config: Some(config.deltas),
             user_kind: spec.user_kind.map(|k| Some(k.to_string())),
             path_prefix: spec.path_prefix.map(|p| Some(p.to_string())),
+            language: spec.language.map(|p| Some(p.to_string())),
             // Description and constraints: omit when absent OR empty
             // so the server applies its own defaults rather than us forcing "".
             // Filtering here (not just in the diff preview) keeps the staged
@@ -596,6 +611,7 @@ impl Changeset {
             // untouched → None.
             user_kind: scalar_or_clear(&edit.user_kind, edit.clear_user_kind),
             path_prefix: scalar_or_clear(&edit.path_prefix, edit.clear_path_prefix),
+            language: scalar_or_clear(&edit.language, edit.clear_language),
             is_external: edit.is_external,
             is_test_node: edit.is_test_node,
             external_kind: scalar_or_clear(&edit.external_kind, edit.clear_external_kind),
@@ -645,6 +661,7 @@ impl Changeset {
             constraints: edit.constraints.clone(),
             user_kind: scalar_or_clear(&edit.user_kind, edit.clear_user_kind),
             path_prefix: scalar_or_clear(&edit.path_prefix, edit.clear_path_prefix),
+            language: scalar_or_clear(&edit.language, edit.clear_language),
             is_external: edit.is_external,
             external_kind: scalar_or_clear(&edit.external_kind, edit.clear_external_kind),
             protocol: scalar_or_clear(&edit.protocol, edit.clear_protocol),
@@ -1051,6 +1068,7 @@ pub struct NodeUpdated {
     /// `Some(Some(v))` = set.
     pub user_kind: Option<Option<String>>,
     pub path_prefix: Option<Option<String>>,
+    pub language: Option<Option<String>>,
     pub is_external: Option<bool>,
     pub external_kind: Option<Option<String>>,
     pub protocol: Option<Option<String>>,
@@ -1416,6 +1434,7 @@ pub enum OpSummary {
         /// `Some(Some(v))` = set.
         user_kind: Option<Option<String>>,
         path_prefix: Option<Option<String>>,
+        language: Option<Option<String>>,
         external: Option<bool>,
         external_kind: Option<Option<String>>,
         protocol: Option<Option<String>>,
@@ -1572,6 +1591,7 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                     // (Some(None)) from untouched (None) from set (Some(Some(v))).
                     user_kind: d.after.user_kind,
                     path_prefix: d.after.path_prefix,
+                    language: d.after.language,
                     external: d.after.is_external,
                     external_kind: d.after.external_kind,
                     protocol: d.after.protocol,
@@ -1753,6 +1773,7 @@ mod tests {
             config: vec![],
             user_kind: None,
             path_prefix: None,
+            language: None,
             description: None,
             constraints: vec![],
             is_external: false,
@@ -1991,6 +2012,22 @@ mod tests {
     }
 
     #[test]
+    fn boundary_node_delta_carries_language() {
+        let mut cs = empty();
+        cs.add_node(&NodeSpec {
+            kind: Kind::Boundary,
+            language: Some("go"),
+            ..behavior("Api", None)
+        })
+        .unwrap();
+        let d: models::AddNodeDelta =
+            serde_json::from_value(cs.into_stage().deltas.remove(0)).unwrap();
+        let data = d.node.data.unwrap();
+        assert_eq!(d.node.kind, Kind::Boundary);
+        assert_eq!(data.language, Some(Some("go".to_string())));
+    }
+
+    #[test]
     fn state_node_delta_carries_kind_and_user_kind() {
         // A state node reuses --user-kind to carry its state kind, and stages an
         // add_node delta with kind=state.
@@ -2026,6 +2063,22 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
         assert!(err.to_string().contains("path-prefix"), "{err}");
+        // The rejected node staged nothing.
+        assert!(cs.deltas().is_empty());
+    }
+
+    #[test]
+    fn language_on_state_is_rejected() {
+        let mut cs = empty();
+        let err = cs
+            .add_node(&NodeSpec {
+                kind: Kind::State,
+                language: Some("go"),
+                ..behavior("Ledger", None)
+            })
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("language"), "{err}");
         // The rejected node staged nothing.
         assert!(cs.deltas().is_empty());
     }
@@ -2071,6 +2124,21 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
         assert!(err.to_string().contains("user-kind"), "{err}");
+        assert!(cs.deltas().is_empty());
+    }
+
+    #[test]
+    fn language_on_io_is_rejected() {
+        let mut cs = empty();
+        let err = cs
+            .add_node(&NodeSpec {
+                kind: Kind::Io,
+                language: Some("go"),
+                ..behavior("Stdin", None)
+            })
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(err.to_string().contains("language"), "{err}");
         assert!(cs.deltas().is_empty());
     }
 
@@ -3839,6 +3907,38 @@ mod tests {
         // Untouched fields stay None (key-presence).
         assert_eq!(d.after.description, None);
         assert_eq!(d.after.verifications, None);
+    }
+
+    #[test]
+    fn update_node_sets_and_clears_language() {
+        // `--language go` → Some(Some(v)) (set); `--clear-language` → Some(None)
+        // (explicit null); both distinct from untouched (None).
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                language: Some("go".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            update_delta(cs).after.language,
+            Some(Some("go".to_string()))
+        );
+
+        let (mut cs, _r, _s) = rater_changeset();
+        cs.update_node(
+            "Api.Rater",
+            &NodeEdit {
+                clear_language: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let d = update_delta(cs);
+        assert_eq!(d.after.language, Some(None), "cleared to null");
+        assert_eq!(d.after.path_prefix, None, "others untouched");
     }
 
     #[test]

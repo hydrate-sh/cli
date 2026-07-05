@@ -30,6 +30,8 @@ pub struct WireNodeData {
     pub is_external: bool,
     #[serde(rename = "is_test_node")]
     pub is_test_node: bool,
+    #[serde(rename = "language", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
+    pub language: Option<Option<String>>,
     #[serde(rename = "name")]
     pub name: String,
     #[serde(rename = "outputs", skip_serializing_if = "Option::is_none")]
@@ -60,6 +62,7 @@ impl WireNodeData {
             inputs: None,
             is_external,
             is_test_node,
+            language: None,
             name,
             outputs: None,
             path_prefix: None,
