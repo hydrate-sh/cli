@@ -122,8 +122,9 @@ impl ShowPort {
 struct ShowNode {
     path: String,
     kind: String,
-    /// Codegen language for a boundary node (`--language`). Omitted when unset so a
-    /// languageless node never emits a bogus or null value.
+    /// Codegen language carried by a node — set via `--language`, in practice on a
+    /// boundary. Surfaced for whichever node the server reports it on; omitted when
+    /// unset so a languageless node never emits a bogus or null value.
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -605,8 +606,11 @@ mod tests {
         assert!(!json.contains("language"), "{json}");
 
         let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        // The language annotation is the only `]  (` sequence show emits (it rides
+        // right after a node's `[kind]`); assert that exact signature is absent
+        // rather than any stray `(`, so unrelated future output can't false-trip.
         assert!(
-            !human.contains("("),
+            !human.contains("]  ("),
             "no language annotation expected: {human}"
         );
     }
