@@ -53,6 +53,15 @@ hydrate edge add --from Maker.dog --to Rater.raw
 hydrate commit
 ```
 
+A **boundary** can declare its target language — it flows to code generation and
+to the nodes nested under it. Set it with `--language` (on `node add` or
+`node set`), or drop it with `node set --clear-language`:
+
+```
+hydrate node add --kind boundary --name Core --language python
+hydrate node set Core --clear-language
+```
+
 ## Install
 
 Prebuilt binaries (no toolchain needed) ship with each tagged release. Download
@@ -62,7 +71,7 @@ alias) on your `PATH`:
 
 ```sh
 # Linux x86_64 — adjust the version and target for your platform.
-tag=v0.1.8
+tag=v0.1.9
 target=x86_64-unknown-linux-gnu
 curl -fsSLO "https://github.com/hydrate-sh/cli/releases/download/${tag}/hydrate-${tag}-${target}.tar.gz"
 curl -fsSLO "https://github.com/hydrate-sh/cli/releases/download/${tag}/hydrate-${tag}-${target}.tar.gz.sha256"
