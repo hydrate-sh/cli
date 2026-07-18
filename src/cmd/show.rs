@@ -122,6 +122,10 @@ impl ShowPort {
 struct ShowNode {
     path: String,
     kind: String,
+    /// Codegen language for a boundary node (`--language`). Omitted when unset so a
+    /// languageless node never emits a bogus or null value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     inputs: Vec<ShowPort>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -211,6 +215,9 @@ fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliEr
         .map(|n| ShowNode {
             path: paths[&n.id].clone(),
             kind: kind_str(n.kind).to_string(),
+            // `language` is a double option on the wire (present/null/absent);
+            // flatten so only a real value surfaces.
+            language: n.data.language.clone().flatten(),
             inputs: show_ports(n.data.inputs.as_deref()),
             outputs: show_ports(n.data.outputs.as_deref()),
             config: show_ports(n.data.config.as_deref()),
@@ -300,7 +307,12 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
             .rsplit('.')
             .next()
             .expect("a node path always has at least one segment");
-        out.push_str(&format!("\n{indent}{leaf}  [{}]", node.kind));
+        let language = node
+            .language
+            .as_deref()
+            .map(|l| format!("  ({l})"))
+            .unwrap_or_default();
+        out.push_str(&format!("\n{indent}{leaf}  [{}]{language}", node.kind));
         let ports = "  ".repeat(depth + 2);
         if !node.inputs.is_empty() {
             out.push_str(&format!("\n{ports}in:  {}", join_ports(&node.inputs)));
@@ -548,6 +560,55 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0]["from"], "Api.Maker.dog");
         assert_eq!(edges[0]["to"], "Api.Rater.raw");
+    }
+
+    #[test]
+    fn boundary_language_is_shown_in_both_modes() {
+        // A boundary with a codegen language surfaces it in show — otherwise the
+        // web UI is the only place to confirm what `--language` set. It rides on
+        // the boundary node line (human) and as a `language` field (JSON).
+        let mut g = sample_graph();
+        // Api is the boundary node (index 0 in sample_graph).
+        g.nodes[0].data.language = Some(Some("python".to_string()));
+
+        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        assert!(
+            human.contains("Api  [boundary]  (python)"),
+            "human view must annotate the boundary's language: {human}"
+        );
+
+        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let api = v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["path"] == "Api")
+            .unwrap();
+        assert_eq!(api["language"], "python", "{json}");
+    }
+
+    #[test]
+    fn node_without_language_emits_no_language_value() {
+        // A node with no language must not emit a bogus or "null"-string value in
+        // either mode. The sample graph carries no language on any node.
+        let g = sample_graph();
+
+        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for n in v["nodes"].as_array().unwrap() {
+            assert!(
+                n.get("language").is_none(),
+                "a languageless node must omit the field: {n}"
+            );
+        }
+        assert!(!json.contains("language"), "{json}");
+
+        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        assert!(
+            !human.contains("("),
+            "no language annotation expected: {human}"
+        );
     }
 
     #[test]
