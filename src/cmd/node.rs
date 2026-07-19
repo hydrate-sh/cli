@@ -314,6 +314,7 @@ fn map_kind(kind: NodeKind) -> Kind {
         NodeKind::Boundary => Kind::Boundary,
         NodeKind::State => Kind::State,
         NodeKind::Io => Kind::Io,
+        NodeKind::Interface => Kind::Interface,
     }
 }
 
@@ -357,6 +358,13 @@ fn plural(n: usize, noun: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_kind_accepts_interface() {
+        // `node add --kind interface` is accepted as an authoring choice and
+        // maps to the wire interface kind (additive — no client-side structural rule).
+        assert_eq!(map_kind(NodeKind::Interface), Kind::Interface);
+    }
 
     #[test]
     fn parse_ports_collects_each_spec() {

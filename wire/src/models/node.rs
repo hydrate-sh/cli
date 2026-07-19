@@ -46,6 +46,8 @@ pub enum Kind {
     State,
     #[serde(rename = "io")]
     Io,
+    #[serde(rename = "interface")]
+    Interface,
 }
 
 impl Default for Kind {

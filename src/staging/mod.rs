@@ -203,13 +203,14 @@ pub struct NodeAdded {
 }
 
 /// The wire kind as its stable lowercase token (`behavior` / `boundary` /
-/// `state` / `io`).
+/// `state` / `io` / `interface`).
 fn kind_str(kind: models::node::Kind) -> &'static str {
     match kind {
         models::node::Kind::Behavior => "behavior",
         models::node::Kind::Boundary => "boundary",
         models::node::Kind::State => "state",
         models::node::Kind::Io => "io",
+        models::node::Kind::Interface => "interface",
     }
 }
 
@@ -286,6 +287,8 @@ impl Changeset {
         // - behavior: none is allowed.
         // - io:       none is allowed (an io node is defined by its
         //             description and its single typed port — no kind label).
+        // - interface: none is allowed — an interface node is additive with no
+        //             structural rule (treated as leniently as io/behavior).
         match spec.kind {
             models::node::Kind::Boundary => {}
             models::node::Kind::State => {
@@ -301,7 +304,9 @@ impl Changeset {
                     ));
                 }
             }
-            models::node::Kind::Behavior | models::node::Kind::Io => {
+            models::node::Kind::Behavior
+            | models::node::Kind::Io
+            | models::node::Kind::Interface => {
                 if spec.user_kind.is_some() || spec.path_prefix.is_some() || spec.language.is_some()
                 {
                     return Err(CliError::InvalidArgument(
@@ -1284,13 +1289,14 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
 }
 
 /// A wire node kind as its stable token (`behavior` / `boundary` / `state` /
-/// `io`).
+/// `io` / `interface`).
 fn node_kind_str(kind: models::wire_node::Kind) -> &'static str {
     match kind {
         models::wire_node::Kind::Behavior => "behavior",
         models::wire_node::Kind::Boundary => "boundary",
         models::wire_node::Kind::State => "state",
         models::wire_node::Kind::Io => "io",
+        models::wire_node::Kind::Interface => "interface",
     }
 }
 
@@ -3128,6 +3134,31 @@ mod tests {
             (score, "score", "Rating")
         );
         assert_eq!(rater_info.inputs[0].name, "raw");
+    }
+
+    #[test]
+    fn node_kind_str_maps_interface() {
+        assert_eq!(
+            node_kind_str(models::wire_node::Kind::Interface),
+            "interface"
+        );
+    }
+
+    #[test]
+    fn index_from_graph_tolerates_an_interface_node() {
+        // The pull path must ingest a graph containing a kind=interface node
+        // without erroring, and record the kind token (additive kind).
+        let id = Uuid::from_u128(0x1F);
+        let graph = graph_with_nodes(serde_json::json!([{
+            "id": id, "kind": "interface", "parent_id": null,
+            "position": { "x": 0.0, "y": 0.0 },
+            "data": {
+                "name": "Ports", "description": "", "status": "idle",
+                "is_test_node": false, "is_external": false,
+            }
+        }]));
+        let index = index_from_graph(&graph).unwrap();
+        assert_eq!(index.node_info(&id).unwrap().kind, "interface");
     }
 
     #[test]

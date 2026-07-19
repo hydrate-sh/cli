@@ -303,6 +303,7 @@ pub enum NodeKind {
     Boundary,
     State,
     Io,
+    Interface,
 }
 
 #[derive(Debug, Args)]
