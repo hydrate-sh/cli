@@ -423,6 +423,8 @@ mod tests {
             id: Uuid::from_u128(id),
             name: Some(name.to_string()),
             r#type: Some(ty.to_string()),
+            external: None,
+            contract_name: None,
         }
     }
 
@@ -554,6 +556,47 @@ mod tests {
         let n = v["nodes"].as_array().unwrap();
         assert_eq!(n.len(), 1);
         assert_eq!(n[0]["kind"], "interface");
+    }
+
+    #[test]
+    fn show_tolerates_per_port_external_and_contract_name() {
+        // A port may carry the additive `external` + `contract_name` fields —
+        // data (not matched by kind), so `show` renders a graph carrying them
+        // without error in both modes, surfacing the port by name — accept-and-ignore.
+        use models::wire_node::Kind;
+        let external_port = WirePort {
+            description: None,
+            id: Uuid::from_u128(0xE0),
+            name: Some("hook".to_string()),
+            r#type: Some("Payload".to_string()),
+            external: Some(true),
+            contract_name: Some(Some("PaymentWebhook".to_string())),
+        };
+        let g = GraphResponse {
+            branch: Box::new(BranchRef::new(Uuid::from_u128(2), 1)),
+            project_id: Uuid::from_u128(0xFEED),
+            version: "1".to_string(),
+            nodes: vec![node(
+                0x30,
+                "Api",
+                Kind::Boundary,
+                None,
+                vec![external_port],
+                vec![],
+            )],
+            edges: vec![],
+        };
+
+        // Both modes render without panicking, and the port is still surfaced by
+        // its name/type (the extra fields are accepted, not required to appear).
+        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        assert!(human.contains("hook:Payload"), "{human}");
+
+        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["nodes"].as_array().unwrap().len(), 1);
+        // the port survives into JSON too (by name), not just Human mode
+        assert!(json.contains("hook"), "{json}");
     }
 
     #[test]
