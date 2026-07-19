@@ -560,9 +560,9 @@ mod tests {
 
     #[test]
     fn show_tolerates_per_port_external_and_contract_name() {
-        // Phase 1.5: a port may carry `external` + `contract_name`. These are
-        // data (not matched by kind), so `show` must deserialize and render a
-        // graph that carries them without error in both modes — accept-and-ignore.
+        // A port may carry the additive `external` + `contract_name` fields —
+        // data (not matched by kind), so `show` renders a graph carrying them
+        // without error in both modes, surfacing the port by name — accept-and-ignore.
         use models::wire_node::Kind;
         let external_port = WirePort {
             description: None,
@@ -595,6 +595,8 @@ mod tests {
         let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["nodes"].as_array().unwrap().len(), 1);
+        // the port survives into JSON too (by name), not just Human mode
+        assert!(json.contains("hook"), "{json}");
     }
 
     #[test]

@@ -777,7 +777,7 @@ impl Changeset {
                 id,
                 name: Some(name),
                 r#type: Some(r#type),
-                // Phase 1.5 per-port fields: accept-and-ignore. The CLI does not
+                // Per-port additive fields: accept-and-ignore. The CLI does not
                 // author these, so they stay unset and are never sent on the wire.
                 external: None,
                 contract_name: None,
@@ -836,7 +836,7 @@ impl Changeset {
                 id,
                 name: Some(port.name.clone()),
                 r#type: Some(port.r#type.clone()),
-                // Phase 1.5 per-port fields: accept-and-ignore. The CLI does not
+                // Per-port additive fields: accept-and-ignore. The CLI does not
                 // author these, so they stay unset and are never sent on the wire.
                 external: None,
                 contract_name: None,
