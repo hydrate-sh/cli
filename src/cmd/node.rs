@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn map_kind_accepts_interface() {
         // `node add --kind interface` is accepted as an authoring choice and
-        // maps to the wire interface kind (Phase-1 additive — no structural rule).
+        // maps to the wire interface kind (additive — no client-side structural rule).
         assert_eq!(map_kind(NodeKind::Interface), Kind::Interface);
     }
 

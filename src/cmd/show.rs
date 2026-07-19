@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn show_renders_an_interface_node_in_both_modes() {
         // A graph containing a kind=interface node must render without panicking
-        // and surface the kind token in both output modes (Phase-1 additive).
+        // and surface the kind token in both output modes (additive kind).
         use models::wire_node::Kind;
         let g = GraphResponse {
             branch: Box::new(BranchRef::new(Uuid::from_u128(2), 1)),

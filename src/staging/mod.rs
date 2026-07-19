@@ -3147,7 +3147,7 @@ mod tests {
     #[test]
     fn index_from_graph_tolerates_an_interface_node() {
         // The pull path must ingest a graph containing a kind=interface node
-        // without erroring, and record the kind token (Phase-1 additive).
+        // without erroring, and record the kind token (additive kind).
         let id = Uuid::from_u128(0x1F);
         let graph = graph_with_nodes(serde_json::json!([{
             "id": id, "kind": "interface", "parent_id": null,
