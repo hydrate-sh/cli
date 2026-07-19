@@ -356,6 +356,7 @@ fn kind_str(kind: models::wire_node::Kind) -> &'static str {
         models::wire_node::Kind::Boundary => "boundary",
         models::wire_node::Kind::State => "state",
         models::wire_node::Kind::Io => "io",
+        models::wire_node::Kind::Interface => "interface",
     }
 }
 
@@ -525,6 +526,34 @@ mod tests {
         let branches = [branch("feature", 2, false)];
         let err = pick_branch(&branches, None, None).unwrap_err();
         assert!(matches!(err, CliError::Other(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn kind_str_maps_interface() {
+        assert_eq!(kind_str(models::wire_node::Kind::Interface), "interface");
+    }
+
+    #[test]
+    fn show_renders_an_interface_node_in_both_modes() {
+        // A graph containing a kind=interface node must render without panicking
+        // and surface the kind token in both output modes (Phase-1 additive).
+        use models::wire_node::Kind;
+        let g = GraphResponse {
+            branch: Box::new(BranchRef::new(Uuid::from_u128(2), 1)),
+            project_id: Uuid::from_u128(0xFEED),
+            version: "1".to_string(),
+            nodes: vec![node(0x20, "Ports", Kind::Interface, None, vec![], vec![])],
+            edges: vec![],
+        };
+
+        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        assert!(human.contains("Ports  [interface]"), "{human}");
+
+        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let n = v["nodes"].as_array().unwrap();
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0]["kind"], "interface");
     }
 
     #[test]

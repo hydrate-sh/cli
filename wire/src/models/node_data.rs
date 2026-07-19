@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 /// NodeData : A node's data payload; its shape varies by kind and whether the node is external.  On update, key-presence semantics apply: a field present with a null value is set to null, while an omitted field is left unchanged. All fields are optional at the type level — cross-field rules (e.g. behavior nodes reject `user_kind`; external nodes require `external_kind`) are enforced server-side, so a partial update is not blocked by \"missing required field\" errors that don't apply to it.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeData {
+    #[serde(rename = "aliases", skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<String>>,
     #[serde(rename = "config", skip_serializing_if = "Option::is_none")]
     pub config: Option<Vec<models::Port>>,
     #[serde(rename = "constraints", skip_serializing_if = "Option::is_none")]
@@ -58,6 +60,7 @@ impl NodeData {
     /// A node's data payload; its shape varies by kind and whether the node is external.  On update, key-presence semantics apply: a field present with a null value is set to null, while an omitted field is left unchanged. All fields are optional at the type level — cross-field rules (e.g. behavior nodes reject `user_kind`; external nodes require `external_kind`) are enforced server-side, so a partial update is not blocked by \"missing required field\" errors that don't apply to it.
     pub fn new() -> NodeData {
         NodeData {
+            aliases: None,
             config: None,
             constraints: None,
             description: None,
@@ -91,6 +94,8 @@ pub enum Kind {
     State,
     #[serde(rename = "io")]
     Io,
+    #[serde(rename = "interface")]
+    Interface,
 }
 
 impl Default for Kind {
