@@ -24,7 +24,8 @@ The authoring loop
   3. hydrate node add ...    stage nodes (with --description)
      hydrate edge add ...    connect an output port to a matching-typed input port
   4. hydrate diff            review what is staged; nothing has hit the server yet
-  5. hydrate commit          apply the staged changeset to the branch
+  5. hydrate validate        dry-run the staged change; read the coherence findings
+  6. hydrate commit          apply the staged changeset to the branch
 
 Inspecting
   hydrate projects             list your projects (and the ids for --project)
@@ -38,6 +39,8 @@ A scriptable agent surface
   piped (or with --json), so an agent can drive the whole loop. `walk` reads the
   WHOLE node — its description (its prompt), constraints, and verifications — for
   just the node in question, without pulling the entire graph into context.
+  `validate` dry-runs the staged change and exits nonzero on error-severity
+  findings, so a loop can gate on it: `hydrate validate && hydrate commit`.
 
 Editing in place
   hydrate node set <path> ...  edit a node's description, constraints, or ports
@@ -105,6 +108,7 @@ mod tests {
             "hydrate pull",
             "hydrate node add",
             "hydrate edge add",
+            "hydrate validate",
             "hydrate commit",
             "hydrate projects",
             "hydrate show",

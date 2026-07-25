@@ -25,6 +25,7 @@ mod projects;
 mod pull;
 mod show;
 mod status;
+mod validate;
 mod view;
 mod walk;
 
@@ -58,7 +59,22 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         },
         Command::Status => finish(status::run(mode), mode),
         Command::Diff => finish(diff::run(mode), mode),
+        Command::Validate => finish_with_code(validate::run(mode), mode),
         Command::Commit => finish(commit::run(mode), mode),
+    }
+}
+
+/// Like [`finish`], but the handler chooses the success exit code (validate
+/// returns `0` when clean, [`crate::exit::VALIDATION`] when it found error-level
+/// findings) — the findings themselves are already printed. A real failure still
+/// prints the error envelope and maps to its own stable code.
+fn finish_with_code(result: Result<u8, CliError>, mode: OutputMode) -> ExitCode {
+    match result {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            output::print_error(&e, mode);
+            ExitCode::from(e.exit_code())
+        }
     }
 }
 

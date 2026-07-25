@@ -137,6 +137,28 @@ impl Client {
             .map_err(CliError::from)
     }
 
+    /// Dry-run a typed delta batch against `branch_id` and get back the coherence
+    /// findings — never mutating the branch. Mirrors [`Client::apply_deltas`], but
+    /// the server rolls back before commit, so it carries no optimistic-concurrency
+    /// token: it reports what the resulting graph's coherence would be.
+    pub fn validate_deltas(
+        &self,
+        branch_id: Uuid,
+        body: models::V1ValidateBody,
+    ) -> Result<models::ValidateResponse, CliError> {
+        let params = branches_api::ValidateBranchDeltasV1BranchesBranchIdValidatePostParams {
+            branch_id: branch_id.to_string(),
+            v1_validate_body: body,
+        };
+        self.rt
+            .block_on(
+                branches_api::validate_branch_deltas_v1_branches_branch_id_validate_post(
+                    &self.cfg, params,
+                ),
+            )
+            .map_err(CliError::from)
+    }
+
     /// Apply a typed delta batch to `branch_id` under optimistic concurrency.
     pub fn apply_deltas(
         &self,

@@ -26,6 +26,7 @@ src/models/delete_node_delta.rs
 src/models/delta_apply_response.rs
 src/models/delta_field_error_body.rs
 src/models/edge.rs
+src/models/finding.rs
 src/models/flatten_boundary_delta.rs
 src/models/graph_response.rs
 src/models/healthz_response.rs

@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 pub struct ValidateResponse {
     #[serde(rename = "branch")]
     pub branch: Box<models::BranchRef>,
-    #[serde(rename = "delta_count")]
-    pub delta_count: i32,
+    #[serde(rename = "findings", skip_serializing_if = "Option::is_none")]
+    pub findings: Option<Vec<models::Finding>>,
     #[serde(rename = "project_id")]
     pub project_id: uuid::Uuid,
     #[serde(rename = "valid")]
@@ -26,10 +26,10 @@ pub struct ValidateResponse {
 }
 
 impl ValidateResponse {
-    pub fn new(branch: models::BranchRef, delta_count: i32, project_id: uuid::Uuid, valid: bool, version: String) -> ValidateResponse {
+    pub fn new(branch: models::BranchRef, project_id: uuid::Uuid, valid: bool, version: String) -> ValidateResponse {
         ValidateResponse {
             branch: Box::new(branch),
-            delta_count,
+            findings: None,
             project_id,
             valid,
             version,

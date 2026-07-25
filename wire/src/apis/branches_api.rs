@@ -269,7 +269,7 @@ pub async fn list_branches_v1_projects_project_id_branches_get(configuration: &c
     }
 }
 
-/// Run the same validation pipeline as the branch apply, but roll back before commit. Returns 200 on success (with the projected version) or a structured 422 identifying the first failing delta. Use it before applying a batch you can't recover from.
+/// Dry-run a delta batch and get back the full coherence report over the graph that would result — never mutating the branch. Returns 200 with `{valid, findings}`: `findings` is the complete list of coherence problems (an input port with no incoming edge, a wire pinned to a missing port, or an edge whose endpoint types differ), and `valid` is true only when there are no error-severity findings. The verdict is in the body, so an incoherent graph is still a 200. A 4xx is returned only for a request that can't be processed at all (a malformed body or an unknown delta type). An empty delta list reports the branch's current coherence.
 pub async fn validate_branch_deltas_v1_branches_branch_id_validate_post(configuration: &configuration::Configuration, params: ValidateBranchDeltasV1BranchesBranchIdValidatePostParams) -> Result<models::ValidateResponse, Error<ValidateBranchDeltasV1BranchesBranchIdValidatePostError>> {
 
     let uri_str = format!("{}/v1/branches/{branch_id}/validate", configuration.base_path, branch_id=crate::apis::urlencode(params.branch_id));

@@ -39,7 +39,18 @@ hydrate boundary flatten ... Promote a boundary's children and remove it
 hydrate clear                Stage removal of every top-level node
 hydrate status               Show the bound branch + staged-operation summary
 hydrate diff                 Show staged operations in detail
+hydrate validate             Dry-run the staged change; report coherence findings
 hydrate commit               Commit the staged changeset to the bound branch
+```
+
+`hydrate validate` posts the staged changeset to the server for a dry-run — it
+never commits and never clears the stage — and prints the coherence findings
+(`{valid, findings[]}` with `--json`). It exits `0` when there are no
+error-severity findings and a distinct nonzero code (`5`) when there are, so an
+agent can gate a loop:
+
+```
+hydrate validate && hydrate commit
 ```
 
 Run `hydrate guide` for an orientation, or see the full reference at
