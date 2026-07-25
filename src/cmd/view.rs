@@ -43,6 +43,13 @@ impl PortView {
             None => name.to_string(),
         }
     }
+
+    /// Whether this port carries any per-port spec field beyond `name:type`. When
+    /// it does, the human view renders the side as an annotated block rather than
+    /// a single compact line, so the extra fields the JSON carries are not dropped.
+    fn has_annotations(&self) -> bool {
+        self.description.is_some() || self.external.is_some() || self.contract_name.is_some()
+    }
 }
 
 /// A verification in a read view: the check's text, its optional type tag, and
@@ -199,18 +206,15 @@ impl NodeView {
             .unwrap_or_default();
         let mut out = format!("{head}{leaf}  [{}]{language}", self.kind);
 
+        // `status` is always serialized in JSON; surface it in the human block too
+        // so the two outputs carry the same information.
+        out.push_str(&format!("\n{body}status: {}", self.status));
         if !self.description.is_empty() {
             out.push_str(&format!("\n{body}desc: {}", self.description));
         }
-        if !self.inputs.is_empty() {
-            out.push_str(&format!("\n{body}in:  {}", join_ports(&self.inputs)));
-        }
-        if !self.outputs.is_empty() {
-            out.push_str(&format!("\n{body}out: {}", join_ports(&self.outputs)));
-        }
-        if !self.config.is_empty() {
-            out.push_str(&format!("\n{body}config: {}", join_ports(&self.config)));
-        }
+        out.push_str(&port_lines("in", &self.inputs, &body));
+        out.push_str(&port_lines("out", &self.outputs, &body));
+        out.push_str(&port_lines("config", &self.config, &body));
         if let Some(k) = &self.user_kind {
             out.push_str(&format!("\n{body}user-kind: {k}"));
         }
@@ -259,12 +263,90 @@ impl NodeView {
     }
 }
 
+/// Render one side's port list (`in` / `out` / `config`) as human lines under an
+/// indented node block. Empty sides emit nothing. When no port on the side
+/// carries an extra spec field, the side stays a single compact `label: a, b`
+/// line; when any does, it expands to an annotated block so each port's
+/// `description`, `external`, and `contract_name` are surfaced — the same fields
+/// the JSON carries.
+fn port_lines(label: &str, ports: &[PortView], body: &str) -> String {
+    if ports.is_empty() {
+        return String::new();
+    }
+    if ports.iter().all(|p| !p.has_annotations()) {
+        return format!("\n{body}{label}: {}", join_ports(ports));
+    }
+    let mut out = format!("\n{body}{label}:");
+    for p in ports {
+        out.push_str(&format!("\n{body}  - {}", p.label()));
+        if let Some(d) = &p.description {
+            out.push_str(&format!("\n{body}    desc: {d}"));
+        }
+        if let Some(e) = p.external {
+            out.push_str(&format!("\n{body}    external: {e}"));
+        }
+        if let Some(c) = &p.contract_name {
+            out.push_str(&format!("\n{body}    contract: {c}"));
+        }
+    }
+    out
+}
+
 fn join_ports(ports: &[PortView]) -> String {
     ports
         .iter()
         .map(PortView::label)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Reconstruct every node's dotted path from a node set by walking each node's
+/// `parent_id` chain to the root. The returned map is keyed by node UUID. A
+/// missing parent or a `parent_id` cycle is corruption in the server response —
+/// surfaced loudly, never silently dropping a node. Shared by the read verbs so
+/// `show` (whole graph) and `walk` (a scoped slice) address nodes identically.
+pub fn node_paths(nodes: &[WireNode]) -> Result<HashMap<Uuid, String>, CliError> {
+    let by_id: HashMap<Uuid, &WireNode> = nodes.iter().map(|n| (n.id, n)).collect();
+    let mut paths = HashMap::with_capacity(nodes.len());
+    for node in nodes {
+        paths.insert(node.id, node_path(node, &by_id)?);
+    }
+    Ok(paths)
+}
+
+/// Reconstruct one node's dotted path by walking the `parent_id` chain to the
+/// root. See [`node_paths`] for the failure modes.
+fn node_path(node: &WireNode, by_id: &HashMap<Uuid, &WireNode>) -> Result<String, CliError> {
+    let mut parts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut current = node;
+    loop {
+        if !seen.insert(current.id) {
+            return Err(CliError::State(
+                "the branch graph has a parent_id cycle".to_string(),
+            ));
+        }
+        let name = &current.data.name;
+        if name.is_empty() || name.contains('.') {
+            return Err(CliError::State(format!(
+                "the branch graph has a node name that can't be path-addressed: {name:?}"
+            )));
+        }
+        parts.push(name.clone());
+        match current.parent_id {
+            None => break,
+            Some(parent_id) => {
+                current = by_id.get(&parent_id).copied().ok_or_else(|| {
+                    CliError::State(format!(
+                        "the branch graph node '{}' references a missing parent {parent_id}",
+                        current.data.name
+                    ))
+                })?;
+            }
+        }
+    }
+    parts.reverse();
+    Ok(parts.join("."))
 }
 
 /// Build a `port UUID → owner label` map over a labeled node set, where each
@@ -397,6 +479,37 @@ mod tests {
             human.contains("(agent) [property] score is within 0..=10"),
             "{human}"
         );
+    }
+
+    #[test]
+    fn node_view_human_renders_status() {
+        // `status` is always serialized in JSON; the human block must carry it too
+        // (the two outputs carry the same information).
+        let v = node_view(&rich_node(), "Api.Rater".to_string());
+        let human = v.human(0);
+        assert!(human.contains("status: draft"), "{human}");
+    }
+
+    #[test]
+    fn node_view_human_renders_per_port_description_external_and_contract() {
+        // A port's `description`, `external`, and `contract_name` are carried in
+        // JSON; when present they must also surface in the human port block.
+        let mut node = rich_node();
+        node.data.inputs = Some(vec![WirePort {
+            description: Some("the raw dog".to_string()),
+            id: Uuid::from_u128(0xF0),
+            name: Some("raw".to_string()),
+            r#type: Some("HotDog".to_string()),
+            external: Some(true),
+            contract_name: Some(Some("HotDogContract".to_string())),
+        }]);
+        let v = node_view(&node, "Api.Rater".to_string());
+        let human = v.human(0);
+        // The compact `name:type` token is still present, plus the extra fields.
+        assert!(human.contains("raw:HotDog"), "{human}");
+        assert!(human.contains("desc: the raw dog"), "{human}");
+        assert!(human.contains("external: true"), "{human}");
+        assert!(human.contains("contract: HotDogContract"), "{human}");
     }
 
     #[test]

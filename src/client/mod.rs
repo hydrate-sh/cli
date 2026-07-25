@@ -6,7 +6,7 @@
 //! handlers use these methods as they are implemented.
 
 use hydrate_wire::apis::configuration::Configuration;
-use hydrate_wire::apis::{branches_api, graph_api, health_api, projects_api};
+use hydrate_wire::apis::{branches_api, health_api, projects_api};
 use hydrate_wire::models;
 use uuid::Uuid;
 
@@ -133,49 +133,6 @@ impl Client {
         self.rt
             .block_on(
                 branches_api::fetch_branch_graph_v1_branches_branch_id_graph_get(&self.cfg, params),
-            )
-            .map_err(CliError::from)
-    }
-
-    /// Fetch a node with its 1-hop neighborhood (the node, its directly
-    /// connected neighbors, and the edges between them) from `project_id`'s
-    /// active main-branch graph. The scoped read `walk` uses so an agent pulls
-    /// only the context around one node, never the whole graph.
-    pub fn fetch_node_with_neighbors(
-        &self,
-        project_id: Uuid,
-        node_id: Uuid,
-    ) -> Result<models::NodeNeighborhoodResponse, CliError> {
-        let params = graph_api::FetchNodeWithNeighborsV1GraphProjectIdNodeNodeIdGetParams {
-            project_id: project_id.to_string(),
-            node_id: node_id.to_string(),
-        };
-        self.rt
-            .block_on(
-                graph_api::fetch_node_with_neighbors_v1_graph_project_id_node_node_id_get(
-                    &self.cfg, params,
-                ),
-            )
-            .map_err(CliError::from)
-    }
-
-    /// Fetch a boundary's scope (the boundary node, its children, and the edges
-    /// interior to it) from `project_id`'s active main-branch graph. The scoped
-    /// read `walk --boundary` uses to inspect a boundary's enforcement surface.
-    pub fn fetch_boundary(
-        &self,
-        project_id: Uuid,
-        node_id: Uuid,
-    ) -> Result<models::BoundaryResponse, CliError> {
-        let params = graph_api::FetchBoundaryV1GraphProjectIdBoundaryNodeIdGetParams {
-            project_id: project_id.to_string(),
-            node_id: node_id.to_string(),
-        };
-        self.rt
-            .block_on(
-                graph_api::fetch_boundary_v1_graph_project_id_boundary_node_id_get(
-                    &self.cfg, params,
-                ),
             )
             .map_err(CliError::from)
     }

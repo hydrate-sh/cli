@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use hydrate_wire::models::{BranchMeta, GraphResponse, WireNode};
+use hydrate_wire::models::{BranchMeta, GraphResponse};
 use uuid::Uuid;
 
 use super::context::{choose_selection, current_binding, env_project, resolve_project};
@@ -138,13 +138,8 @@ fn render(
 /// path, project its ports, translate edge handles back to dotted port paths,
 /// and (when `filter` is set) narrow to that node's subtree.
 fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliError> {
-    let by_id: HashMap<Uuid, &WireNode> = graph.nodes.iter().map(|n| (n.id, n)).collect();
-
-    // node id -> dotted path.
-    let mut paths: HashMap<Uuid, String> = HashMap::new();
-    for node in &graph.nodes {
-        paths.insert(node.id, node_path(node, &by_id)?);
-    }
+    // node id -> dotted path (shared reconstruction, also used by `walk`).
+    let paths = view::node_paths(&graph.nodes)?;
 
     // port id -> (owning node's dotted path, port name).
     let mut port_owner: HashMap<Uuid, (String, Option<String>)> = HashMap::new();
@@ -258,46 +253,12 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
     out
 }
 
-/// Reconstruct a node's dotted path by walking the `parent_id` chain to the root.
-/// A missing parent or a `parent_id` cycle is corruption in the server response —
-/// surfaced loudly, never silently dropping a node.
-fn node_path(node: &WireNode, by_id: &HashMap<Uuid, &WireNode>) -> Result<String, CliError> {
-    let mut parts = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut current = node;
-    loop {
-        if !seen.insert(current.id) {
-            return Err(CliError::State(
-                "the branch graph has a parent_id cycle".to_string(),
-            ));
-        }
-        let name = &current.data.name;
-        if name.is_empty() || name.contains('.') {
-            return Err(CliError::State(format!(
-                "the branch graph has a node name that can't be path-addressed: {name:?}"
-            )));
-        }
-        parts.push(name.clone());
-        match current.parent_id {
-            None => break,
-            Some(parent_id) => {
-                current = by_id.get(&parent_id).copied().ok_or_else(|| {
-                    CliError::State(format!(
-                        "the branch graph node '{}' references a missing parent {parent_id}",
-                        current.data.name
-                    ))
-                })?;
-            }
-        }
-    }
-    parts.reverse();
-    Ok(parts.join("."))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hydrate_wire::models::{self, BranchRef, Position, WireEdge, WireNodeData, WirePort};
+    use hydrate_wire::models::{
+        self, BranchRef, Position, WireEdge, WireNode, WireNodeData, WirePort,
+    };
 
     fn branch(name: &str, id: u128, is_main: bool) -> BranchMeta {
         BranchMeta {
