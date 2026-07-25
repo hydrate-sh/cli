@@ -11,7 +11,7 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-/// Finding : A single C04 coherence finding over the graph that results from a delta batch. All three v1 ``code``s are ``error``-severity; ``severity`` keeps the ``warning`` arm in the contract for future advisory codes. ``locator`` is the node / port / edge id (a string) the finding is about.
+/// Finding : A single coherence finding over the graph that results from a delta batch. All three v1 ``code``s are ``error``-severity; ``severity`` keeps the ``warning`` arm in the contract for future advisory codes. ``locator`` is the node / port / edge id (a string) the finding is about.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     #[serde(rename = "code")]
@@ -25,7 +25,7 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// A single C04 coherence finding over the graph that results from a delta batch. All three v1 ``code``s are ``error``-severity; ``severity`` keeps the ``warning`` arm in the contract for future advisory codes. ``locator`` is the node / port / edge id (a string) the finding is about.
+    /// A single coherence finding over the graph that results from a delta batch. All three v1 ``code``s are ``error``-severity; ``severity`` keeps the ``warning`` arm in the contract for future advisory codes. ``locator`` is the node / port / edge id (a string) the finding is about.
     pub fn new(code: Code, locator: String, message: String, severity: Severity) -> Finding {
         Finding {
             code,
