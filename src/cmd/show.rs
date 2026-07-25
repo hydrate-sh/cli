@@ -11,11 +11,11 @@
 
 use std::collections::HashMap;
 
-use hydrate_wire::models::{self, BranchMeta, GraphResponse, WireNode, WirePort};
-use serde::Serialize;
+use hydrate_wire::models::{BranchMeta, GraphResponse};
 use uuid::Uuid;
 
 use super::context::{choose_selection, current_binding, env_project, resolve_project};
+use super::view::{self, EdgeView, NodeView};
 use crate::client::Client;
 use crate::config::Config;
 use crate::error::CliError;
@@ -99,53 +99,11 @@ fn pick_branch(
         })
 }
 
-/// A port in the view: its name (unnamed ports are rendered as `<unnamed>`) and
-/// type. No id, no position — this is a human/machine inspection surface.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct ShowPort {
-    name: Option<String>,
-    r#type: Option<String>,
-}
-
-impl ShowPort {
-    fn label(&self) -> String {
-        let name = self.name.as_deref().unwrap_or("<unnamed>");
-        match &self.r#type {
-            Some(t) => format!("{name}:{t}"),
-            None => name.to_string(),
-        }
-    }
-}
-
-/// A node in the view: its dotted path, kind, and ports (no position).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct ShowNode {
-    path: String,
-    kind: String,
-    /// Codegen language carried by a node — set via `--language`, in practice on a
-    /// boundary. Surfaced for whichever node the server reports it on; omitted when
-    /// unset so a languageless node never emits a bogus or null value.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    inputs: Vec<ShowPort>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    outputs: Vec<ShowPort>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    config: Vec<ShowPort>,
-}
-
-/// An edge in the view: source and target as dotted `node.port` paths.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct ShowEdge {
-    from: String,
-    to: String,
-}
-
-/// The whole rendered view (before mode selection).
+/// The whole rendered view (before mode selection). Nodes and edges are the
+/// shared, complete [`view`] projections — every node is rendered whole.
 struct View {
-    nodes: Vec<ShowNode>,
-    edges: Vec<ShowEdge>,
+    nodes: Vec<NodeView>,
+    edges: Vec<EdgeView>,
     /// Edges with exactly one endpoint inside the filtered subtree — hidden from
     /// `edges` (the other end is out of view), but surfaced as a loud count so a
     /// filtered inspection never drops a wire without a word. Always 0 unfiltered.
@@ -180,13 +138,8 @@ fn render(
 /// path, project its ports, translate edge handles back to dotted port paths,
 /// and (when `filter` is set) narrow to that node's subtree.
 fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliError> {
-    let by_id: HashMap<Uuid, &WireNode> = graph.nodes.iter().map(|n| (n.id, n)).collect();
-
-    // node id -> dotted path.
-    let mut paths: HashMap<Uuid, String> = HashMap::new();
-    for node in &graph.nodes {
-        paths.insert(node.id, node_path(node, &by_id)?);
-    }
+    // node id -> dotted path (shared reconstruction, also used by `walk`).
+    let paths = view::node_paths(&graph.nodes)?;
 
     // port id -> (owning node's dotted path, port name).
     let mut port_owner: HashMap<Uuid, (String, Option<String>)> = HashMap::new();
@@ -209,20 +162,11 @@ fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliEr
         None => true,
     };
 
-    let mut nodes: Vec<ShowNode> = graph
+    let mut nodes: Vec<NodeView> = graph
         .nodes
         .iter()
         .filter(|n| in_scope(&paths[&n.id]))
-        .map(|n| ShowNode {
-            path: paths[&n.id].clone(),
-            kind: kind_str(n.kind).to_string(),
-            // `language` is a double option on the wire (present/null/absent);
-            // flatten so only a real value surfaces.
-            language: n.data.language.clone().flatten(),
-            inputs: show_ports(n.data.inputs.as_deref()),
-            outputs: show_ports(n.data.outputs.as_deref()),
-            config: show_ports(n.data.config.as_deref()),
-        })
+        .map(|n| view::node_view(n, paths[&n.id].clone()))
         .collect();
     nodes.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -251,7 +195,7 @@ fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliEr
         let (from, from_node) = port_path(&port_owner, src)?;
         let (to, to_node) = port_path(&port_owner, tgt)?;
         match (in_scope(&from_node), in_scope(&to_node)) {
-            (true, true) => edges.push(ShowEdge { from, to }),
+            (true, true) => edges.push(EdgeView { from, to }),
             // Exactly one endpoint in the subtree: it crosses the boundary.
             (true, false) | (false, true) => cross_boundary += 1,
             (false, false) => {}
@@ -281,18 +225,8 @@ fn port_path(
     Ok((format!("{node_path}.{port}"), node_path.clone()))
 }
 
-fn show_ports(ports: Option<&[WirePort]>) -> Vec<ShowPort> {
-    ports
-        .unwrap_or_default()
-        .iter()
-        .map(|p| ShowPort {
-            name: p.name.clone(),
-            r#type: p.r#type.clone(),
-        })
-        .collect()
-}
-
-/// Render the human, indented-tree form.
+/// Render the human, indented-tree form. Each node renders whole (its full
+/// [`NodeView`] block), indented by its depth in the tree.
 fn human(view: &View, project_name: &str, branch_name: &str) -> String {
     let mut out = format!("Project '{project_name}' branch '{branch_name}':");
     if view.nodes.is_empty() {
@@ -300,30 +234,8 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
     }
     for node in &view.nodes {
         let depth = node.path.matches('.').count();
-        let indent = "  ".repeat(depth + 1);
-        // A dotted path always has at least one segment (names are non-empty), so
-        // `rsplit` yields the leaf; there is no fallback case to handle.
-        let leaf = node
-            .path
-            .rsplit('.')
-            .next()
-            .expect("a node path always has at least one segment");
-        let language = node
-            .language
-            .as_deref()
-            .map(|l| format!("  ({l})"))
-            .unwrap_or_default();
-        out.push_str(&format!("\n{indent}{leaf}  [{}]{language}", node.kind));
-        let ports = "  ".repeat(depth + 2);
-        if !node.inputs.is_empty() {
-            out.push_str(&format!("\n{ports}in:  {}", join_ports(&node.inputs)));
-        }
-        if !node.outputs.is_empty() {
-            out.push_str(&format!("\n{ports}out: {}", join_ports(&node.outputs)));
-        }
-        if !node.config.is_empty() {
-            out.push_str(&format!("\n{ports}config: {}", join_ports(&node.config)));
-        }
+        out.push('\n');
+        out.push_str(&node.human(depth));
     }
     if !view.edges.is_empty() {
         out.push_str("\nEdges:");
@@ -341,65 +253,12 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
     out
 }
 
-fn join_ports(ports: &[ShowPort]) -> String {
-    ports
-        .iter()
-        .map(ShowPort::label)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// A wire node kind as its stable lowercase token.
-fn kind_str(kind: models::wire_node::Kind) -> &'static str {
-    match kind {
-        models::wire_node::Kind::Behavior => "behavior",
-        models::wire_node::Kind::Boundary => "boundary",
-        models::wire_node::Kind::State => "state",
-        models::wire_node::Kind::Io => "io",
-        models::wire_node::Kind::Interface => "interface",
-    }
-}
-
-/// Reconstruct a node's dotted path by walking the `parent_id` chain to the root.
-/// A missing parent or a `parent_id` cycle is corruption in the server response —
-/// surfaced loudly, never silently dropping a node.
-fn node_path(node: &WireNode, by_id: &HashMap<Uuid, &WireNode>) -> Result<String, CliError> {
-    let mut parts = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut current = node;
-    loop {
-        if !seen.insert(current.id) {
-            return Err(CliError::State(
-                "the branch graph has a parent_id cycle".to_string(),
-            ));
-        }
-        let name = &current.data.name;
-        if name.is_empty() || name.contains('.') {
-            return Err(CliError::State(format!(
-                "the branch graph has a node name that can't be path-addressed: {name:?}"
-            )));
-        }
-        parts.push(name.clone());
-        match current.parent_id {
-            None => break,
-            Some(parent_id) => {
-                current = by_id.get(&parent_id).copied().ok_or_else(|| {
-                    CliError::State(format!(
-                        "the branch graph node '{}' references a missing parent {parent_id}",
-                        current.data.name
-                    ))
-                })?;
-            }
-        }
-    }
-    parts.reverse();
-    Ok(parts.join("."))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hydrate_wire::models::{BranchRef, Position, WireEdge, WireNodeData};
+    use hydrate_wire::models::{
+        self, BranchRef, Position, WireEdge, WireNode, WireNodeData, WirePort,
+    };
 
     fn branch(name: &str, id: u128, is_main: bool) -> BranchMeta {
         BranchMeta {
@@ -532,7 +391,10 @@ mod tests {
 
     #[test]
     fn kind_str_maps_interface() {
-        assert_eq!(kind_str(models::wire_node::Kind::Interface), "interface");
+        assert_eq!(
+            view::kind_str(models::wire_node::Kind::Interface),
+            "interface"
+        );
     }
 
     #[test]
@@ -633,6 +495,43 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0]["from"], "Api.Maker.dog");
         assert_eq!(edges[0]["to"], "Api.Rater.raw");
+    }
+
+    #[test]
+    fn show_renders_the_whole_node_not_a_skeleton() {
+        // The read is complete: a node's description, constraints, and
+        // verifications must reach BOTH outputs — the lossy projection that
+        // dropped them is the bug being fixed (a node's description is its prompt).
+        let mut g = sample_graph();
+        // Enrich Rater (index 2 in sample_graph) with the fields the old
+        // projection dropped.
+        let data = &mut g.nodes[2].data;
+        data.description = "Rate a hot dog on a 0-10 scale.".to_string();
+        data.constraints = Some(vec!["deterministic".to_string()]);
+        data.verifications = Some(vec![models::WireVerification {
+            author: models::wire_verification::Author::User,
+            id: Uuid::from_u128(0xA1),
+            text: "score is within 0..=10".to_string(),
+            r#type: None,
+        }]);
+
+        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let rater = v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["path"] == "Api.Rater")
+            .unwrap();
+        assert_eq!(rater["description"], "Rate a hot dog on a 0-10 scale.");
+        assert_eq!(rater["constraints"][0], "deterministic");
+        assert_eq!(rater["verifications"][0]["text"], "score is within 0..=10");
+        assert_eq!(rater["verifications"][0]["author"], "user");
+
+        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        assert!(human.contains("Rate a hot dog on a 0-10 scale."), "{human}");
+        assert!(human.contains("deterministic"), "{human}");
+        assert!(human.contains("score is within 0..=10"), "{human}");
     }
 
     #[test]

@@ -30,6 +30,14 @@ Inspecting
   hydrate projects             list your projects (and the ids for --project)
   hydrate branches             list the working branches of the selected project
   hydrate show [path]          read-only view of a branch's graph (optionally a subtree)
+  hydrate walk <path>          read one node's scoped context (node + neighbors);
+                               `--boundary` reads a boundary's children + edges
+
+A scriptable agent surface
+  Every command reads human-friendly on a terminal and machine-readable JSON when
+  piped (or with --json), so an agent can drive the whole loop. `walk` reads the
+  WHOLE node — its description (its prompt), constraints, and verifications — for
+  just the node in question, without pulling the entire graph into context.
 
 Editing in place
   hydrate node set <path> ...  edit a node's description, constraints, or ports
@@ -100,6 +108,7 @@ mod tests {
             "hydrate commit",
             "hydrate projects",
             "hydrate show",
+            "hydrate walk",
             "--project",
             "HYD_PROJECT",
             "node set",

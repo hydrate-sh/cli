@@ -25,6 +25,8 @@ mod projects;
 mod pull;
 mod show;
 mod status;
+mod view;
+mod walk;
 
 /// Route a parsed command to its handler.
 pub fn dispatch(cli: Cli) -> ExitCode {
@@ -38,6 +40,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         Command::Fork(args) => finish(fork::run(args, project, mode), mode),
         Command::Branches => finish(branches::run(project, mode), mode),
         Command::Show(args) => finish(show::run(args, project, mode), mode),
+        Command::Walk(args) => finish(walk::run(args, mode), mode),
         Command::Pull => finish(pull::run(mode), mode),
         Command::Node { action } => match action {
             NodeAction::Add(args) => finish(node::add(args, mode), mode),

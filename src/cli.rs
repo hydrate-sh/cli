@@ -66,6 +66,11 @@ pub enum Command {
     /// Never mutates: it creates no branch and stages nothing.
     Show(ShowArgs),
 
+    /// Read one node's scoped context for an agent: the node plus its 1-hop
+    /// neighborhood, or (with --boundary) a boundary's children and interior
+    /// edges. Renders the whole node; never mutates.
+    Walk(WalkArgs),
+
     /// Refresh the local view of the bound branch's live graph, so you can
     /// reference already-committed nodes by their dotted path.
     Pull,
@@ -119,6 +124,18 @@ pub struct ShowArgs {
     /// else the project's main branch.
     #[arg(long)]
     pub branch: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct WalkArgs {
+    /// The node to read, by dotted path (e.g. `Api` or `Api.Rater`).
+    #[arg(value_name = "PATH")]
+    pub path: String,
+
+    /// Read the boundary's scope — its children and the edges interior to it —
+    /// instead of the node plus its 1-hop neighborhood.
+    #[arg(long)]
+    pub boundary: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -459,5 +476,28 @@ mod tests {
         // Absent flag is None (falls through to env/binding/single-active).
         let none = Cli::parse_from(["hyd", "branches"]);
         assert_eq!(none.project, None);
+    }
+
+    #[test]
+    fn walk_parses_path_and_boundary_flag() {
+        // The scoped read takes a required dotted path and defaults to the
+        // node-neighborhood mode; `--boundary` switches to the boundary scope.
+        let node = Cli::parse_from(["hyd", "walk", "Api.Rater"]);
+        match node.command {
+            Command::Walk(args) => {
+                assert_eq!(args.path, "Api.Rater");
+                assert!(!args.boundary);
+            }
+            other => panic!("expected Walk, got {other:?}"),
+        }
+
+        let boundary = Cli::parse_from(["hyd", "walk", "Api", "--boundary"]);
+        match boundary.command {
+            Command::Walk(args) => {
+                assert_eq!(args.path, "Api");
+                assert!(args.boundary);
+            }
+            other => panic!("expected Walk, got {other:?}"),
+        }
     }
 }
