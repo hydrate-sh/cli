@@ -103,6 +103,12 @@ pub enum Command {
     /// Show the staged operations in detail.
     Diff,
 
+    /// Dry-run the staged changeset on the bound branch and report the server's
+    /// coherence findings, without committing or clearing the stage. Exits
+    /// nonzero when there are error-severity findings, so an agent can gate
+    /// `hydrate validate && hydrate commit`.
+    Validate,
+
     /// Commit the staged changeset to the bound branch.
     Commit,
 }

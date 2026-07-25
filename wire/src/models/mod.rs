@@ -38,6 +38,8 @@ pub mod delta_field_error_body;
 pub use self::delta_field_error_body::DeltaFieldErrorBody;
 pub mod edge;
 pub use self::edge::Edge;
+pub mod finding;
+pub use self::finding::Finding;
 pub mod flatten_boundary_delta;
 pub use self::flatten_boundary_delta::FlattenBoundaryDelta;
 pub mod graph_response;
