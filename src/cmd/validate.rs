@@ -6,10 +6,12 @@
 //! applies the batch and — critically — **never clears the stage**. It exists so
 //! an agent can gate a loop, `hydrate validate && hydrate commit`.
 //!
-//! Exit code: `0` when there are no error-severity findings, [`exit::VALIDATION`]
-//! when there are. The findings themselves always print (in both modes); the exit
-//! code is only the pass/fail signal. A transport or parse failure keeps its own
-//! existing code (it never masquerades as "found errors").
+//! Exit code: `0` when the server's authoritative `valid` verdict is true,
+//! [`exit::VALIDATION`] when it is false. The server is the sole authority for
+//! validation; this client never re-derives the verdict from the findings. The
+//! findings themselves always print (in both modes); the exit code is only the
+//! pass/fail signal. A transport or parse failure keeps its own existing code (it
+//! never masquerades as "found errors").
 
 use hydrate_wire::models::{self, ValidateResponse};
 
@@ -23,9 +25,10 @@ use crate::staging::lower;
 use crate::state::{Binding, Stage};
 
 /// Run `validate`: prepare the request from the stage (read-only), POST it, print
-/// the findings, and return the process exit code (`0` clean, [`exit::VALIDATION`]
-/// on error-severity findings). Returns `Err` only for a real failure (no
-/// workdir, unbound, transport, parse) — those keep their own exit codes.
+/// the findings, and return the process exit code (`0` when the server verdict is
+/// `valid`, [`exit::VALIDATION`] when it is not). Returns `Err` only for a real
+/// failure (no workdir, unbound, transport, parse) — those keep their own exit
+/// codes.
 pub fn run(mode: OutputMode) -> Result<u8, CliError> {
     let base = require_workdir()?;
     let binding = Binding::load(&base)?.ok_or_else(|| {
@@ -41,6 +44,14 @@ pub fn run(mode: OutputMode) -> Result<u8, CliError> {
     let config = Config::load()?;
     let client = Client::new(&config)?;
     let response = client.validate_deltas(binding.branch_id, body)?;
+
+    // Fail loud on a server-verdict / severity disagreement rather than silently
+    // trusting one side. It goes to stderr so it is loud in BOTH output modes
+    // without polluting the stdout contract (the verbatim JSON, or the human
+    // report). The server verdict still governs the exit code below.
+    if let Some(warning) = disagreement_warning(&response) {
+        eprintln!("{warning}");
+    }
 
     println!("{}", render(&response, &binding, mode));
     Ok(exit_code(&response))
@@ -58,9 +69,9 @@ fn prepare(base: &std::path::Path) -> Result<models::V1ValidateBody, CliError> {
     })
 }
 
-/// The error-severity findings in the report (the ones that gate the exit code
-/// and the invalid verdict). `warning`-severity findings are advisory and do not
-/// fail the check.
+/// The error-severity findings in the report. Used only for the displayed count
+/// and to cross-check the server verdict — NOT to derive it. `warning`-severity
+/// findings are advisory.
 fn error_findings(response: &ValidateResponse) -> Vec<&models::Finding> {
     response
         .findings
@@ -70,13 +81,36 @@ fn error_findings(response: &ValidateResponse) -> Vec<&models::Finding> {
         .collect()
 }
 
-/// `0` when there are no error-severity findings, [`exit::VALIDATION`] when there
-/// are — the gate an agent scripts against (`validate && commit`).
+/// `0` when the server's authoritative `valid` verdict is true,
+/// [`exit::VALIDATION`] when it is false — the gate an agent scripts against
+/// (`validate && commit`). The server is the sole authority; the client never
+/// re-derives this from the findings.
 fn exit_code(response: &ValidateResponse) -> u8 {
-    if error_findings(response).is_empty() {
+    if response.valid {
         exit::SUCCESS
     } else {
         exit::VALIDATION
+    }
+}
+
+/// A loud warning when the server's `valid` verdict disagrees with the presence of
+/// error-severity findings — server says `valid` yet ships error findings, or says
+/// `invalid` with none. This is a contract signal, not a thing the client resolves
+/// (the server verdict still governs); we surface it rather than swallow it. `None`
+/// when the two agree.
+fn disagreement_warning(response: &ValidateResponse) -> Option<String> {
+    let error_count = error_findings(response).len();
+    let has_errors = error_count > 0;
+    // Disagreement iff `valid` and `has_errors` are the same boolean.
+    if response.valid == has_errors {
+        Some(format!(
+            "warning: server verdict (valid={}) disagrees with {} shown; \
+             trusting the server verdict.",
+            response.valid,
+            plural(error_count, "error-severity finding"),
+        ))
+    } else {
+        None
     }
 }
 
@@ -102,7 +136,8 @@ fn severity_str(severity: models::finding::Severity) -> &'static str {
 /// `{valid, findings[]}` contract; human lays out the same findings as a readable
 /// list plus a clear valid/invalid summary. Both carry the same information.
 fn render(response: &ValidateResponse, binding: &Binding, mode: OutputMode) -> String {
-    let findings = response.findings.clone().unwrap_or_default();
+    // Borrow, don't clone: normalize `null` to `[]` without copying the vec.
+    let findings: &[models::Finding] = response.findings.as_deref().unwrap_or_default();
     match mode {
         OutputMode::Json => serde_json::json!({
             "valid": response.valid,
@@ -110,13 +145,12 @@ fn render(response: &ValidateResponse, binding: &Binding, mode: OutputMode) -> S
         })
         .to_string(),
         OutputMode::Human => {
-            let errors = error_findings(response).len();
             let mut out = String::new();
             if findings.is_empty() {
                 out.push_str("No coherence findings.");
             } else {
                 out.push_str(&format!("{}:", plural(findings.len(), "coherence finding")));
-                for f in &findings {
+                for f in findings {
                     out.push_str(&format!(
                         "\n  [{}] {}  {}: {}",
                         severity_str(f.severity),
@@ -127,19 +161,29 @@ fn render(response: &ValidateResponse, binding: &Binding, mode: OutputMode) -> S
                 }
                 out.push('\n');
             }
-            // The verdict line is what an agent (and a human) reads first: valid
-            // only when nothing is error-severity, and it says which branch.
-            if errors == 0 {
+            // The verdict line is what an agent (and a human) reads first, and it
+            // is driven by the server's authoritative `valid` — never re-derived
+            // from the local severity scan. It says which branch.
+            if response.valid {
                 out.push_str(&format!(
                     "\nValid: no coherence errors on branch '{}'.",
                     binding.branch_name
                 ));
             } else {
-                out.push_str(&format!(
-                    "\nInvalid: {} on branch '{}'; not safe to commit.",
-                    plural(errors, "coherence error"),
-                    binding.branch_name
-                ));
+                let errors = error_findings(response).len();
+                if errors > 0 {
+                    out.push_str(&format!(
+                        "\nInvalid: {} on branch '{}'; not safe to commit.",
+                        plural(errors, "coherence error"),
+                        binding.branch_name
+                    ));
+                } else {
+                    // Server said invalid with no error-severity finding to show.
+                    out.push_str(&format!(
+                        "\nInvalid: branch '{}' is not coherent; not safe to commit.",
+                        binding.branch_name
+                    ));
+                }
             }
             out
         }
@@ -328,6 +372,78 @@ mod tests {
         let after = Stage::load(tmp.path()).unwrap();
         assert_eq!(before.deltas, after.deltas);
         assert_eq!(after.deltas.len(), 1);
+    }
+
+    #[test]
+    fn server_invalid_verdict_exits_five_even_with_no_findings() {
+        // The server is the sole authority for validity. If it says `valid:false`
+        // with an EMPTY findings list (a future warning-arm the contract already
+        // anticipates), the CLI must still exit VALIDATION and read "Invalid" —
+        // never re-derive the verdict from the (empty) severity scan and pass.
+        let r = response(false, vec![]);
+        assert_eq!(exit_code(&r), exit::VALIDATION);
+
+        let human = render(&r, &binding(), OutputMode::Human);
+        assert!(human.contains("Invalid"), "{human}");
+        assert!(human.contains("branch 'spicy'"), "{human}");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&r, &binding(), OutputMode::Json)).unwrap();
+        assert_eq!(v["valid"], false);
+    }
+
+    #[test]
+    fn server_invalid_verdict_exits_five_with_warning_only_findings() {
+        // valid:false but only warning-severity findings: the server verdict, not
+        // the local error-severity scan, governs. Exit VALIDATION, read "Invalid".
+        let r = response(
+            false,
+            vec![finding(
+                Code::UnsatisfiedInput,
+                Severity::Warning,
+                "node-7",
+                "advisory only",
+            )],
+        );
+        assert_eq!(exit_code(&r), exit::VALIDATION);
+        let human = render(&r, &binding(), OutputMode::Human);
+        assert!(human.contains("Invalid"), "{human}");
+        assert!(human.contains("advisory only"), "{human}");
+    }
+
+    #[test]
+    fn server_valid_verdict_exits_zero() {
+        // Even were error-severity findings present, a `valid:true` server verdict
+        // governs the exit code — SUCCESS. (This pairing is itself a disagreement,
+        // surfaced separately by `disagreement_warning`; the verdict still governs.)
+        let r = response(true, vec![]);
+        assert_eq!(exit_code(&r), exit::SUCCESS);
+    }
+
+    #[test]
+    fn disagreement_warning_fires_when_verdict_and_severities_conflict() {
+        // valid:false but no error-severity finding → disagreement.
+        let r = response(false, vec![]);
+        assert!(disagreement_warning(&r).is_some());
+
+        // valid:true but an error-severity finding present → disagreement.
+        let r = response(
+            true,
+            vec![finding(Code::DanglingWire, Severity::Error, "e", "m")],
+        );
+        assert!(disagreement_warning(&r).is_some());
+    }
+
+    #[test]
+    fn disagreement_warning_silent_when_verdict_and_severities_agree() {
+        // valid:true + no error findings → agree.
+        assert!(disagreement_warning(&response(true, vec![])).is_none());
+        // valid:false + an error finding → agree.
+        let r = response(
+            false,
+            vec![finding(Code::DanglingWire, Severity::Error, "e", "m")],
+        );
+        assert!(disagreement_warning(&r).is_none());
     }
 
     #[test]
