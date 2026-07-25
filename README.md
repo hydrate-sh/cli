@@ -12,6 +12,14 @@ the server's rules; a bad batch is rejected by the server.
 
 The binary is `hydrate`, with a short alias `hyd`.
 
+Every command reads human-friendly on a terminal and emits machine-readable JSON
+when piped (or with `--json`), and read commands return the **whole** node — its
+description (which is its prompt), constraints, and verifications — so `hydrate`
+doubles as a scriptable surface for an agent that builds from the living spec.
+Use `hydrate walk <path>` to read one node's scoped context (the node plus its
+immediate neighborhood, or a boundary's children with `--boundary`) without
+pulling the entire graph.
+
 ## Command surface
 
 ```
@@ -19,6 +27,7 @@ hydrate projects             List the projects on your account (ids for --projec
 hydrate fork <name>          Fork a working branch from main, bind this directory to it
 hydrate branches             List your working branches
 hydrate show [path]          Print a read-only view of a branch's graph
+hydrate walk <path>          Read one node's scoped context (node + neighborhood)
 hydrate pull                 Refresh the local view of the branch's graph
 hydrate node add ...         Stage a node (behavior or boundary)
 hydrate node set <path> ...  Stage an edit to a node (description, ports, ...)
