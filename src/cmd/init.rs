@@ -9,7 +9,7 @@
 //! place and never duplicates it or clobbers the user's other content.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::context;
 use crate::error::CliError;
@@ -67,18 +67,34 @@ pub fn run(mode: OutputMode) -> Result<(), CliError> {
 /// file's current state. Fails loud on any IO error rather than proceeding as
 /// if it had written the block.
 fn apply(path: &Path) -> Result<Outcome, CliError> {
-    if !path.exists() {
-        write(path, &format!("{BLOCK}\n"))?;
-        return Ok(Outcome::Created);
+    // If anything is already at `path`, refuse to follow a symlink: writing
+    // through it would clobber an unintended target the user never named.
+    // `symlink_metadata` does NOT follow the link, so a broken or valid link is
+    // detected the same way; a stat error means there is nothing to preserve.
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(CliError::InitRefused(format!(
+                "{} is a symlink; refusing to write through it",
+                path.display()
+            )));
+        }
+        Ok(_) => {}
+        // No entry at `path` (or the parent isn't a directory): there is nothing
+        // to preserve, so create the file holding just the block. If the location
+        // is genuinely unwritable, `write` surfaces that loudly.
+        Err(_) => {
+            write(path, &format!("{BLOCK}\n"))?;
+            return Ok(Outcome::Created);
+        }
     }
 
     let existing = fs::read_to_string(path)
         .map_err(|e| CliError::Other(format!("could not read {}: {e}", path.display())))?;
 
-    let (contents, outcome) = match (existing.find(START), existing.find(END)) {
-        // A complete block is present: splice the new block over exactly the old
-        // one (markers included), leaving everything around it untouched.
-        (Some(start), Some(end)) if end >= start => {
+    let (contents, outcome) = match classify(&existing)? {
+        // A single well-formed block: splice the new block over exactly the old
+        // one (markers included), leaving every byte around it untouched.
+        MarkerState::OneBlock { start, end } => {
             let stop = end + END.len();
             let mut next = String::with_capacity(existing.len());
             next.push_str(&existing[..start]);
@@ -88,7 +104,7 @@ fn apply(path: &Path) -> Result<Outcome, CliError> {
         }
         // No block yet: append it, guaranteeing a blank line before it so it
         // never runs into the user's existing content.
-        _ => {
+        MarkerState::None => {
             let mut next = existing;
             if !next.ends_with('\n') {
                 next.push('\n');
@@ -104,10 +120,69 @@ fn apply(path: &Path) -> Result<Outcome, CliError> {
     Ok(outcome)
 }
 
-/// Write `contents` to `path`, mapping any IO failure to a loud, distinct error.
+/// The hydrate-marker state of an existing `AGENTS.md`, as far as `init` cares.
+enum MarkerState {
+    /// No markers at all — safe to append the block.
+    None,
+    /// Exactly one well-formed block: one start before one end. Byte offsets of
+    /// the start marker and the start of the end marker, for in-place splicing.
+    OneBlock { start: usize, end: usize },
+}
+
+/// Classify the file's hydrate-marker state, refusing loudly on any malformed or
+/// ambiguous arrangement rather than silently splicing out the user's content.
+///
+/// Only two shapes are safe to act on: no markers (append) and exactly one
+/// start-before-one-end (replace in place). A lone start, a lone end, an end
+/// before a start, or duplicate markers of either kind are ambiguous — acting on
+/// them could delete arbitrary user text or append a duplicate block — so they
+/// are rejected with a distinct error and the file is left untouched.
+fn classify(existing: &str) -> Result<MarkerState, CliError> {
+    let starts = existing.match_indices(START).count();
+    let ends = existing.match_indices(END).count();
+
+    match (starts, ends) {
+        (0, 0) => Ok(MarkerState::None),
+        (1, 1) => {
+            // Unwraps are safe: exactly one of each marker exists.
+            let start = existing.find(START).unwrap();
+            let end = existing.find(END).unwrap();
+            if start < end {
+                Ok(MarkerState::OneBlock { start, end })
+            } else {
+                Err(malformed())
+            }
+        }
+        _ => Err(malformed()),
+    }
+}
+
+/// The distinct refusal raised for any malformed/ambiguous marker state.
+fn malformed() -> CliError {
+    CliError::InitRefused(format!(
+        "{AGENTS_FILE} has a malformed or ambiguous hydrate block (the `{START}` / `{END}` \
+         markers). Refusing to edit it to avoid losing your content — fix the markers by hand \
+         and re-run."
+    ))
+}
+
+/// Write `contents` to `path` atomically: write a sibling temp file in the same
+/// directory, then `rename` it over `path`. A crash or full disk mid-write leaves
+/// the previous `AGENTS.md` intact rather than a half-written or truncated one.
+/// The temp file is a sibling so the rename stays within one filesystem (where it
+/// is atomic) and replaces any existing target in a single step. Any IO failure
+/// maps to a loud, distinct error.
 fn write(path: &Path, contents: &str) -> Result<(), CliError> {
-    fs::write(path, contents)
-        .map_err(|e| CliError::Other(format!("could not write {}: {e}", path.display())))
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, contents)
+        .map_err(|e| CliError::Other(format!("could not write {}: {e}", tmp.display())))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        // Best-effort cleanup; the rename error is the one that matters.
+        let _ = fs::remove_file(&tmp);
+        CliError::Other(format!("could not write {}: {e}", path.display()))
+    })
 }
 
 /// Render the outcome for `mode`. Human = one sentence naming the action and the
@@ -259,6 +334,103 @@ mod tests {
             ),
             other => panic!("expected a loud IO error, got {other:?}"),
         }
+    }
+
+    /// Assert that `apply` refused to touch the file: it returns an
+    /// `InitRefused` error and the file's bytes are exactly what they were.
+    fn assert_refused_unchanged(path: &Path, before: &str) {
+        let err = apply(path).unwrap_err();
+        assert!(
+            matches!(err, CliError::InitRefused(_)),
+            "expected a loud InitRefused error, got {err:?}"
+        );
+        let after = fs::read_to_string(path).unwrap();
+        assert_eq!(
+            before, after,
+            "file must be left byte-for-byte unchanged on refusal"
+        );
+    }
+
+    #[test]
+    fn lone_start_marker_refuses_and_leaves_file_untouched() {
+        let dir = TempDir::new().unwrap();
+        let path = agents_path(&dir);
+        let before = format!("# Notes\n\n{START}\ndangling block, no end\n\nmore user text\n");
+        fs::write(&path, &before).unwrap();
+        assert_refused_unchanged(&path, &before);
+    }
+
+    #[test]
+    fn lone_end_marker_refuses_and_leaves_file_untouched() {
+        let dir = TempDir::new().unwrap();
+        let path = agents_path(&dir);
+        let before = format!("# Notes\n\nsome text\n{END}\ntrailing user text\n");
+        fs::write(&path, &before).unwrap();
+        assert_refused_unchanged(&path, &before);
+    }
+
+    #[test]
+    fn end_before_start_refuses_and_leaves_file_untouched() {
+        let dir = TempDir::new().unwrap();
+        let path = agents_path(&dir);
+        let before = format!("# Notes\n\n{END}\ninverted markers\n{START}\n");
+        fs::write(&path, &before).unwrap();
+        assert_refused_unchanged(&path, &before);
+    }
+
+    #[test]
+    fn two_complete_blocks_refuse_and_leave_file_untouched() {
+        let dir = TempDir::new().unwrap();
+        let path = agents_path(&dir);
+        let before = format!("{START}\nfirst\n{END}\n\nmiddle\n\n{START}\nsecond\n{END}\n");
+        fs::write(&path, &before).unwrap();
+        assert_refused_unchanged(&path, &before);
+    }
+
+    #[test]
+    fn symlink_at_agents_md_refuses_rather_than_writing_through_it() {
+        let dir = TempDir::new().unwrap();
+        // A real target elsewhere, and AGENTS.md as a symlink pointing at it.
+        let target = dir.path().join("real-target.md");
+        let target_before = "# the real file behind the link\n";
+        fs::write(&target, target_before).unwrap();
+        let path = agents_path(&dir);
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let err = apply(&path).unwrap_err();
+        match err {
+            CliError::InitRefused(msg) => {
+                assert!(
+                    msg.contains("symlink"),
+                    "message should name the symlink: {msg}"
+                );
+            }
+            other => panic!("expected a loud InitRefused error, got {other:?}"),
+        }
+        // The link's target is untouched — we did not write through it.
+        assert_eq!(fs::read_to_string(&target).unwrap(), target_before);
+    }
+
+    #[test]
+    fn update_in_place_preserves_surrounding_bytes_exactly() {
+        // A stricter idempotency/preservation check: after replacing the block,
+        // every byte outside the markers is identical to before.
+        let dir = TempDir::new().unwrap();
+        let path = agents_path(&dir);
+        let before = format!("# Top\n\n{START}\nstale\n{END}\n\n## Bottom\n");
+        fs::write(&path, &before).unwrap();
+
+        apply(&path).unwrap();
+        let after = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            after.starts_with("# Top\n\n"),
+            "prefix bytes changed:\n{after}"
+        );
+        assert!(
+            after.ends_with("\n\n## Bottom\n"),
+            "suffix bytes changed:\n{after}"
+        );
     }
 
     #[test]

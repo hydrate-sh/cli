@@ -23,7 +23,7 @@ pulling the entire graph.
 ## Command surface
 
 ```
-hydrate init                 Write a pointer to `hydrate guide` into this repo's AGENTS.md
+hydrate init                 Write a pointer to `hydrate guide` into this directory's AGENTS.md
 hydrate projects             List the projects on your account (ids for --project)
 hydrate fork <name>          Fork a working branch from main, bind this directory to it
 hydrate branches             List your working branches
