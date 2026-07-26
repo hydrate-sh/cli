@@ -20,6 +20,7 @@ mod diff;
 mod edge;
 mod fork;
 mod guide;
+mod init;
 mod node;
 mod projects;
 mod pull;
@@ -37,6 +38,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
     let project = cli.project;
     match cli.command {
         Command::Guide => finish(guide::run(mode), mode),
+        Command::Init => finish(init::run(mode), mode),
         Command::Projects => finish(projects::run(mode), mode),
         Command::Fork(args) => finish(fork::run(args, project, mode), mode),
         Command::Branches => finish(branches::run(project, mode), mode),
