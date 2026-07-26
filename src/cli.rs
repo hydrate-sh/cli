@@ -53,6 +53,11 @@ pub enum Command {
     /// worked example, and a pointer to the full docs. Start here.
     Guide,
 
+    /// Write a small pointer block into this directory's AGENTS.md so a coding
+    /// agent discovers the workflow (it points at `hydrate guide`). Idempotent,
+    /// never clobbers your other content; a pure local file write.
+    Init,
+
     /// List the projects on your account (archived ones are flagged).
     Projects,
 
