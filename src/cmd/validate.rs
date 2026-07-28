@@ -20,6 +20,8 @@ use crate::client::Client;
 use crate::config::Config;
 use crate::error::CliError;
 use crate::exit;
+use uuid::Uuid;
+
 use crate::locator::Locators;
 use crate::output::OutputMode;
 use crate::staging::lower;
@@ -38,9 +40,10 @@ pub fn run(mode: OutputMode) -> Result<u8, CliError> {
         )
     })?;
 
-    // Read the stage into the delta batch. This never writes the stage back —
-    // validate is a dry-run, so the staged work must survive it untouched.
-    let body = prepare(&base)?;
+    // Read the stage ONCE and use it for both the request and the labels, so
+    // the aliases rendered are the ones that were actually validated.
+    let stage = Stage::load(&base)?;
+    let body = prepare(&stage)?;
 
     let config = Config::load()?;
     let client = Client::new(&config)?;
@@ -55,14 +58,22 @@ pub fn run(mode: OutputMode) -> Result<u8, CliError> {
     }
 
     // Findings name server ids; the local index + stage turn those back into the
-    // paths you authored with. A missing index isn't fatal — the report still
-    // prints, in raw ids — but it IS worth saying so, because that is exactly
-    // the state where the output looks unusable for no obvious reason.
-    let index = Index::load(&base)?;
-    let stage = Stage::load(&base)?;
+    // paths you authored with. Resolution is PRESENTATION — it must never cost
+    // the caller the verdict they already paid a round trip for, so an index we
+    // can't read degrades to raw ids with a loud note instead of propagating.
+    let index = match Index::load(&base) {
+        Ok(index) => index,
+        Err(e) => {
+            eprintln!(
+                "warning: could not read this working copy's index ({e}); \
+                 findings will be shown by id. Run `hydrate pull` to rebuild it."
+            );
+            None
+        }
+    };
     let locators = Locators::new(index.as_ref(), &stage);
-    if let Some(hint) = unresolved_hint(&response, &locators) {
-        eprintln!("{hint}");
+    for note in resolution_notes(&response, &locators, index.as_ref()) {
+        eprintln!("{note}");
     }
 
     println!("{}", render(&response, &binding, &locators, mode));
@@ -73,9 +84,8 @@ pub fn run(mode: OutputMode) -> Result<u8, CliError> {
 /// never a write. An empty stage lowers to an empty batch, which the server
 /// answers with the branch's *current* coherence (a useful "is it coherent now?"
 /// probe), so — unlike `commit` — there is no "nothing staged" short-circuit.
-fn prepare(base: &std::path::Path) -> Result<models::V1ValidateBody, CliError> {
-    let stage = Stage::load(base)?;
-    let deltas = lower(&stage)?;
+fn prepare(stage: &Stage) -> Result<models::V1ValidateBody, CliError> {
+    let deltas = lower(stage)?;
     Ok(models::V1ValidateBody {
         deltas: Some(deltas),
     })
@@ -126,25 +136,70 @@ fn disagreement_warning(response: &ValidateResponse) -> Option<String> {
     }
 }
 
-/// A loud note when some findings couldn't be traced back to an authored path.
+/// Everything worth saying about how well the report could be traced back to
+/// authored paths. Empty when resolution was clean and the view is current.
 ///
-/// Unresolvable ids mean the local view is behind the branch, and the report
-/// silently degrading to raw ids is the confusing failure this avoids. `None`
-/// when everything resolved (or there was nothing to resolve).
-fn unresolved_hint(response: &ValidateResponse, locators: &Locators) -> Option<String> {
+/// Three distinct conditions, because they have three different remedies:
+///   * the local view is BEHIND the branch — a pull fixes it, and this fires
+///     even when every id resolved, because a stale-but-resolvable id yields a
+///     confidently WRONG path, which is worse than a raw one;
+///   * some ids could not be placed at all;
+///   * some are only half-placed (a dangling edge whose far end is gone) — a
+///     pull will not conjure a port that no longer exists.
+fn resolution_notes(
+    response: &ValidateResponse,
+    locators: &Locators,
+    index: Option<&Index>,
+) -> Vec<String> {
+    let mut notes = Vec::new();
     let findings: &[models::Finding] = response.findings.as_deref().unwrap_or_default();
-    let unresolved = findings
+
+    // Staleness is checkable independently of whether anything resolved, and it
+    // is the only condition under which a shown path can be silently wrong.
+    if let Some(index) = index {
+        if index.version != response.branch.version {
+            notes.push(format!(
+                "warning: this working copy was pulled at branch version {}, \
+                 but the branch is now at {} — paths shown may be out of date; \
+                 run `hydrate pull`.",
+                index.version, response.branch.version,
+            ));
+        }
+    }
+
+    if findings.is_empty() {
+        return notes;
+    }
+
+    // Only count ids we FAILED to place. A locator that isn't an id at all is a
+    // different condition entirely, and telling someone to pull wouldn't help.
+    let unplaced = findings
         .iter()
+        .filter(|f| Uuid::parse_str(&f.locator).is_ok())
         .filter(|f| locators.resolve(&f.locator).is_none())
         .count();
-    if unresolved == 0 {
-        return None;
+    if unplaced > 0 {
+        notes.push(format!(
+            "note: {} shown by id — this working copy's view may be behind the \
+             branch; run `hydrate pull` to see paths.",
+            plural(unplaced, "finding"),
+        ));
     }
-    Some(format!(
-        "note: {} shown by id — this working copy's view may be behind the \
-         branch; run `hydrate pull` to see paths.",
-        plural(unresolved, "finding"),
-    ))
+
+    let partial = findings
+        .iter()
+        .filter_map(|f| locators.resolve(&f.locator))
+        .filter(|r| !r.complete)
+        .count();
+    if partial > 0 {
+        notes.push(format!(
+            "note: {} name a port this working copy cannot place; the raw id is \
+             shown for that side.",
+            plural(partial, "finding"),
+        ));
+    }
+
+    notes
 }
 
 /// The machine token for a finding's code (its serde wire spelling), so the human
@@ -187,12 +242,22 @@ fn render(
             "findings": findings,
             "located": findings
                 .iter()
-                .map(|f| {
+                .enumerate()
+                .map(|(i, f)| {
+                    let resolved = locators.resolve(&f.locator);
                     serde_json::json!({
+                        // Two findings can share a locator (an input can be both
+                        // unsatisfied and type-mismatched), so the locator is not
+                        // a join key — the index into `findings` is.
+                        "finding_index": i,
                         "code": code_str(f.code),
                         "severity": severity_str(f.severity),
                         "locator": f.locator,
-                        "path": locators.resolve(&f.locator),
+                        "path": resolved.as_ref().map(|r| r.label.clone()),
+                        // False when part of `path` is still a raw id, so a
+                        // consumer can tell a complete answer from a partial one
+                        // without string-sniffing for a UUID.
+                        "path_complete": resolved.as_ref().map(|r| r.complete),
                         "message": locators.rewrite(&f.message),
                     })
                 })
@@ -210,6 +275,7 @@ fn render(
                     // local view can't place it, rather than hiding the finding.
                     let locator = locators
                         .resolve(&f.locator)
+                        .map(|r| r.label)
                         .unwrap_or_else(|| f.locator.clone());
                     out.push_str(&format!(
                         "\n  [{}] {}  {}: {}",
@@ -263,7 +329,6 @@ fn plural(n: usize, noun: &str) -> String {
 mod tests {
     use super::*;
     use hydrate_wire::models::finding::{Code, Severity};
-    use uuid::Uuid;
 
     /// A resolver that knows nothing — the pre-existing tests assert the
     /// raw-id rendering, which is exactly what an empty local view produces.
@@ -315,7 +380,9 @@ mod tests {
         let locators = locators_knowing(port, "Api.Rater:in:key");
         let human = render(&r, &binding(), &locators, OutputMode::Human);
 
-        assert!(human.contains("Api.Rater:in:key"), "{human}");
+        // The dotted spelling `status`/`diff`/`show` use — and the one the
+        // authoring verbs accept, so it can be pasted straight back.
+        assert!(human.contains("Api.Rater.key"), "{human}");
         assert!(
             !human.contains(&port.to_string()),
             "raw id leaked into the human report: {human}"
@@ -344,11 +411,13 @@ mod tests {
         assert_eq!(v["findings"][0]["locator"], port.to_string());
         assert_eq!(v["findings"][0]["message"], raw_message);
         // `located` is the actionable view.
-        assert_eq!(v["located"][0]["path"], "Api.Rater:in:key");
+        assert_eq!(v["located"][0]["path"], "Api.Rater.key");
         assert_eq!(
             v["located"][0]["message"],
-            "input port Api.Rater:in:key has no incoming edge"
+            "input port Api.Rater.key has no incoming edge"
         );
+        assert_eq!(v["located"][0]["finding_index"], 0);
+        assert_eq!(v["located"][0]["path_complete"], true);
         assert_eq!(v["located"][0]["code"], "unsatisfied_input");
         assert_eq!(v["located"][0]["severity"], "error");
     }
@@ -378,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_findings_produce_a_pull_hint() {
+    fn unplaced_findings_produce_a_pull_hint() {
         let r = response(
             false,
             vec![finding(
@@ -388,8 +457,11 @@ mod tests {
                 "unfed",
             )],
         );
-        let hint = unresolved_hint(&r, &no_locators()).expect("expected a hint");
-        assert!(hint.contains("hydrate pull"), "{hint}");
+        let notes = resolution_notes(&r, &no_locators(), None);
+        assert!(
+            notes.iter().any(|n| n.contains("hydrate pull")),
+            "{notes:?}"
+        );
     }
 
     #[test]
@@ -404,13 +476,13 @@ mod tests {
                 "unfed",
             )],
         );
-        assert!(unresolved_hint(&r, &locators_knowing(port, "Api:in:k")).is_none());
+        assert!(resolution_notes(&r, &locators_knowing(port, "Api:in:k"), None).is_empty());
     }
 
     #[test]
     fn no_hint_on_a_clean_report() {
         let r = response(true, vec![]);
-        assert!(unresolved_hint(&r, &no_locators()).is_none());
+        assert!(resolution_notes(&r, &no_locators(), None).is_empty());
     }
 
     fn response(valid: bool, findings: Vec<models::Finding>) -> ValidateResponse {
@@ -556,7 +628,7 @@ mod tests {
         let tmp = staged_dir();
         let before = Stage::load(tmp.path()).unwrap();
 
-        let body = prepare(tmp.path()).unwrap();
+        let body = prepare(&Stage::load(tmp.path()).unwrap()).unwrap();
         // The staged delta is carried into the request body...
         assert_eq!(body.deltas.as_ref().unwrap().len(), 1);
 
@@ -646,7 +718,7 @@ mod tests {
         // batch asks the server for the branch's current coherence.
         let tmp = tempfile::TempDir::new().unwrap();
         Stage::empty().save(tmp.path()).unwrap();
-        let body = prepare(tmp.path()).unwrap();
+        let body = prepare(&Stage::load(tmp.path()).unwrap()).unwrap();
         assert!(body.deltas.as_ref().unwrap().is_empty());
     }
 }
