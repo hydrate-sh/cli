@@ -203,13 +203,14 @@ pub struct NodeAdded {
 }
 
 /// The wire kind as its stable lowercase token (`behavior` / `boundary` /
-/// `state` / `io`).
+/// `state` / `io` / `interface`).
 fn kind_str(kind: models::node::Kind) -> &'static str {
     match kind {
         models::node::Kind::Behavior => "behavior",
         models::node::Kind::Boundary => "boundary",
         models::node::Kind::State => "state",
         models::node::Kind::Io => "io",
+        models::node::Kind::Interface => "interface",
     }
 }
 
@@ -286,6 +287,8 @@ impl Changeset {
         // - behavior: none is allowed.
         // - io:       none is allowed (an io node is defined by its
         //             description and its single typed port — no kind label).
+        // - interface: none is allowed — an interface node is additive with no
+        //             structural rule (treated as leniently as io/behavior).
         match spec.kind {
             models::node::Kind::Boundary => {}
             models::node::Kind::State => {
@@ -301,7 +304,9 @@ impl Changeset {
                     ));
                 }
             }
-            models::node::Kind::Behavior | models::node::Kind::Io => {
+            models::node::Kind::Behavior
+            | models::node::Kind::Io
+            | models::node::Kind::Interface => {
                 if spec.user_kind.is_some() || spec.path_prefix.is_some() || spec.language.is_some()
                 {
                     return Err(CliError::InvalidArgument(
@@ -772,6 +777,10 @@ impl Changeset {
                 id,
                 name: Some(name),
                 r#type: Some(r#type),
+                // Per-port additive fields: accept-and-ignore. The CLI does not
+                // author these, so they stay unset and are never sent on the wire.
+                external: None,
+                contract_name: None,
             })
             .collect();
         Ok((Some(wire), added))
@@ -827,6 +836,10 @@ impl Changeset {
                 id,
                 name: Some(port.name.clone()),
                 r#type: Some(port.r#type.clone()),
+                // Per-port additive fields: accept-and-ignore. The CLI does not
+                // author these, so they stay unset and are never sent on the wire.
+                external: None,
+                contract_name: None,
             });
         }
         Ok(MintedPorts { deltas, ids })
@@ -1284,13 +1297,14 @@ pub fn index_from_graph(graph: &models::GraphResponse) -> Result<Index, CliError
 }
 
 /// A wire node kind as its stable token (`behavior` / `boundary` / `state` /
-/// `io`).
+/// `io` / `interface`).
 fn node_kind_str(kind: models::wire_node::Kind) -> &'static str {
     match kind {
         models::wire_node::Kind::Behavior => "behavior",
         models::wire_node::Kind::Boundary => "boundary",
         models::wire_node::Kind::State => "state",
         models::wire_node::Kind::Io => "io",
+        models::wire_node::Kind::Interface => "interface",
     }
 }
 
@@ -1713,7 +1727,7 @@ fn render_node_path(rest: &str) -> String {
 
 /// `port:` alias bodies are `node_path:side:name`; render as `node_path.name`
 /// (side is dropped — it is not part of the author-facing path).
-fn render_port_path(rest: &str) -> String {
+pub(crate) fn render_port_path(rest: &str) -> String {
     let mut parts = rest.rsplitn(3, ':');
     let name = parts.next().unwrap_or("");
     let _side = parts.next();
@@ -3131,6 +3145,31 @@ mod tests {
     }
 
     #[test]
+    fn node_kind_str_maps_interface() {
+        assert_eq!(
+            node_kind_str(models::wire_node::Kind::Interface),
+            "interface"
+        );
+    }
+
+    #[test]
+    fn index_from_graph_tolerates_an_interface_node() {
+        // The pull path must ingest a graph containing a kind=interface node
+        // without erroring, and record the kind token (additive kind).
+        let id = Uuid::from_u128(0x1F);
+        let graph = graph_with_nodes(serde_json::json!([{
+            "id": id, "kind": "interface", "parent_id": null,
+            "position": { "x": 0.0, "y": 0.0 },
+            "data": {
+                "name": "Ports", "description": "", "status": "idle",
+                "is_test_node": false, "is_external": false,
+            }
+        }]));
+        let index = index_from_graph(&graph).unwrap();
+        assert_eq!(index.node_info(&id).unwrap().kind, "interface");
+    }
+
+    #[test]
     fn index_from_graph_fails_loud_on_a_typeless_port() {
         let graph: models::GraphResponse = serde_json::from_value(serde_json::json!({
             "branch": { "id": Uuid::from_u128(0xB), "version": 1 },
@@ -4205,6 +4244,8 @@ mod tests {
                     id: cfg_id,
                     name: Some("region".to_string()),
                     r#type: Some("String".to_string()),
+                    external: None,
+                    contract_name: None,
                 }]);
             }
         }
@@ -4246,6 +4287,8 @@ mod tests {
                     id: cfg,
                     name: Some("region".to_string()),
                     r#type: Some("String".to_string()),
+                    external: None,
+                    contract_name: None,
                 }]);
             }
         }

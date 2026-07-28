@@ -4,8 +4,9 @@
 
 use std::process::Command;
 
-const VERBS: [&str; 9] = [
-    "projects", "fork", "branches", "show", "node", "edge", "status", "diff", "commit",
+const VERBS: [&str; 12] = [
+    "init", "projects", "fork", "branches", "show", "walk", "node", "edge", "status", "diff",
+    "validate", "commit",
 ];
 
 // `CARGO_BIN_EXE_<name>` is provided to integration tests at COMPILE time, so it

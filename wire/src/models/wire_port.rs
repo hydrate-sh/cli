@@ -13,8 +13,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WirePort {
+    #[serde(rename = "contract_name", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
+    pub contract_name: Option<Option<String>>,
     #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(rename = "external", skip_serializing_if = "Option::is_none")]
+    pub external: Option<bool>,
     #[serde(rename = "id")]
     pub id: uuid::Uuid,
     #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
@@ -26,7 +30,9 @@ pub struct WirePort {
 impl WirePort {
     pub fn new(id: uuid::Uuid) -> WirePort {
         WirePort {
+            contract_name: None,
             description: None,
+            external: None,
             id,
             name: None,
             r#type: None,
