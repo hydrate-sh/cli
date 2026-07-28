@@ -20,9 +20,10 @@ use crate::client::Client;
 use crate::config::Config;
 use crate::error::CliError;
 use crate::exit;
+use crate::locator::Locators;
 use crate::output::OutputMode;
 use crate::staging::lower;
-use crate::state::{Binding, Stage};
+use crate::state::{Binding, Index, Stage};
 
 /// Run `validate`: prepare the request from the stage (read-only), POST it, print
 /// the findings, and return the process exit code (`0` when the server verdict is
@@ -53,7 +54,18 @@ pub fn run(mode: OutputMode) -> Result<u8, CliError> {
         eprintln!("{warning}");
     }
 
-    println!("{}", render(&response, &binding, mode));
+    // Findings name server ids; the local index + stage turn those back into the
+    // paths you authored with. A missing index isn't fatal — the report still
+    // prints, in raw ids — but it IS worth saying so, because that is exactly
+    // the state where the output looks unusable for no obvious reason.
+    let index = Index::load(&base)?;
+    let stage = Stage::load(&base)?;
+    let locators = Locators::new(index.as_ref(), &stage);
+    if let Some(hint) = unresolved_hint(&response, &locators) {
+        eprintln!("{hint}");
+    }
+
+    println!("{}", render(&response, &binding, &locators, mode));
     Ok(exit_code(&response))
 }
 
@@ -114,6 +126,27 @@ fn disagreement_warning(response: &ValidateResponse) -> Option<String> {
     }
 }
 
+/// A loud note when some findings couldn't be traced back to an authored path.
+///
+/// Unresolvable ids mean the local view is behind the branch, and the report
+/// silently degrading to raw ids is the confusing failure this avoids. `None`
+/// when everything resolved (or there was nothing to resolve).
+fn unresolved_hint(response: &ValidateResponse, locators: &Locators) -> Option<String> {
+    let findings: &[models::Finding] = response.findings.as_deref().unwrap_or_default();
+    let unresolved = findings
+        .iter()
+        .filter(|f| locators.resolve(&f.locator).is_none())
+        .count();
+    if unresolved == 0 {
+        return None;
+    }
+    Some(format!(
+        "note: {} shown by id — this working copy's view may be behind the \
+         branch; run `hydrate pull` to see paths.",
+        plural(unresolved, "finding"),
+    ))
+}
+
 /// The machine token for a finding's code (its serde wire spelling), so the human
 /// output names the same code the JSON carries.
 fn code_str(code: models::finding::Code) -> &'static str {
@@ -135,13 +168,35 @@ fn severity_str(severity: models::finding::Severity) -> &'static str {
 /// Render the coherence report for `mode`. JSON carries the verbatim
 /// `{valid, findings[]}` contract; human lays out the same findings as a readable
 /// list plus a clear valid/invalid summary. Both carry the same information.
-fn render(response: &ValidateResponse, binding: &Binding, mode: OutputMode) -> String {
+fn render(
+    response: &ValidateResponse,
+    binding: &Binding,
+    locators: &Locators,
+    mode: OutputMode,
+) -> String {
     // Borrow, don't clone: normalize `null` to `[]` without copying the vec.
     let findings: &[models::Finding] = response.findings.as_deref().unwrap_or_default();
     match mode {
         OutputMode::Json => serde_json::json!({
             "valid": response.valid,
+            // `findings` stays verbatim — the server's ids are the contract, and
+            // a consumer may need to correlate them. `located` is the same list
+            // with the ids resolved to authored paths, so an agent can act on a
+            // finding without a lookup per id. `path` is null when the local
+            // view can't place the id (stale index — see the hint in `run`).
             "findings": findings,
+            "located": findings
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "code": code_str(f.code),
+                        "severity": severity_str(f.severity),
+                        "locator": f.locator,
+                        "path": locators.resolve(&f.locator),
+                        "message": locators.rewrite(&f.message),
+                    })
+                })
+                .collect::<Vec<_>>(),
         })
         .to_string(),
         OutputMode::Human => {
@@ -151,12 +206,17 @@ fn render(response: &ValidateResponse, binding: &Binding, mode: OutputMode) -> S
             } else {
                 out.push_str(&format!("{}:", plural(findings.len(), "coherence finding")));
                 for f in findings {
+                    // Prefer the authored path; fall back to the raw id when the
+                    // local view can't place it, rather than hiding the finding.
+                    let locator = locators
+                        .resolve(&f.locator)
+                        .unwrap_or_else(|| f.locator.clone());
                     out.push_str(&format!(
                         "\n  [{}] {}  {}: {}",
                         severity_str(f.severity),
                         code_str(f.code),
-                        f.locator,
-                        f.message,
+                        locator,
+                        locators.rewrite(&f.message),
                     ));
                 }
                 out.push('\n');
@@ -205,6 +265,12 @@ mod tests {
     use hydrate_wire::models::finding::{Code, Severity};
     use uuid::Uuid;
 
+    /// A resolver that knows nothing — the pre-existing tests assert the
+    /// raw-id rendering, which is exactly what an empty local view produces.
+    fn no_locators() -> Locators {
+        Locators::new(None, &crate::state::Stage::empty())
+    }
+
     fn binding() -> Binding {
         Binding {
             project_id: Uuid::from_u128(1),
@@ -223,6 +289,130 @@ mod tests {
         }
     }
 
+    /// A resolver that can place `port_id` at an authored path — the state
+    /// after a `pull`.
+    fn locators_knowing(port_id: Uuid, path: &str) -> Locators {
+        let mut stage = crate::state::Stage::empty();
+        stage.aliases.insert(format!("port:{path}"), port_id);
+        Locators::new(None, &stage)
+    }
+
+    #[test]
+    fn human_output_names_the_authored_path_not_the_raw_id() {
+        // The finding an agent actually gets: the server reports a port id, and
+        // an id is not something you can act on. Both the locator column AND the
+        // message must come back in authored terms.
+        let port = Uuid::from_u128(77);
+        let r = response(
+            false,
+            vec![finding(
+                Code::UnsatisfiedInput,
+                Severity::Error,
+                &port.to_string(),
+                &format!("input port {port} has no incoming edge"),
+            )],
+        );
+        let locators = locators_knowing(port, "Api.Rater:in:key");
+        let human = render(&r, &binding(), &locators, OutputMode::Human);
+
+        assert!(human.contains("Api.Rater:in:key"), "{human}");
+        assert!(
+            !human.contains(&port.to_string()),
+            "raw id leaked into the human report: {human}"
+        );
+    }
+
+    #[test]
+    fn json_adds_located_while_keeping_findings_verbatim() {
+        let port = Uuid::from_u128(78);
+        let raw_message = format!("input port {port} has no incoming edge");
+        let r = response(
+            false,
+            vec![finding(
+                Code::UnsatisfiedInput,
+                Severity::Error,
+                &port.to_string(),
+                &raw_message,
+            )],
+        );
+        let locators = locators_knowing(port, "Api.Rater:in:key");
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&r, &binding(), &locators, OutputMode::Json)).unwrap();
+
+        // `findings` is the server's contract — unchanged, ids intact, so a
+        // consumer can still correlate against the server.
+        assert_eq!(v["findings"][0]["locator"], port.to_string());
+        assert_eq!(v["findings"][0]["message"], raw_message);
+        // `located` is the actionable view.
+        assert_eq!(v["located"][0]["path"], "Api.Rater:in:key");
+        assert_eq!(
+            v["located"][0]["message"],
+            "input port Api.Rater:in:key has no incoming edge"
+        );
+        assert_eq!(v["located"][0]["code"], "unsatisfied_input");
+        assert_eq!(v["located"][0]["severity"], "error");
+    }
+
+    #[test]
+    fn an_unresolvable_id_keeps_its_raw_form_and_a_null_path() {
+        // Degrading to the raw id is correct — dropping the finding, or faking a
+        // path, would be worse. `path: null` is how a consumer detects it.
+        let port = Uuid::from_u128(79);
+        let r = response(
+            false,
+            vec![finding(
+                Code::UnsatisfiedInput,
+                Severity::Error,
+                &port.to_string(),
+                "input port has no incoming edge",
+            )],
+        );
+        let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
+        assert!(human.contains(&port.to_string()), "{human}");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&r, &binding(), &no_locators(), OutputMode::Json))
+                .unwrap();
+        assert!(v["located"][0]["path"].is_null());
+        assert_eq!(v["located"][0]["locator"], port.to_string());
+    }
+
+    #[test]
+    fn unresolved_findings_produce_a_pull_hint() {
+        let r = response(
+            false,
+            vec![finding(
+                Code::UnsatisfiedInput,
+                Severity::Error,
+                &Uuid::from_u128(80).to_string(),
+                "unfed",
+            )],
+        );
+        let hint = unresolved_hint(&r, &no_locators()).expect("expected a hint");
+        assert!(hint.contains("hydrate pull"), "{hint}");
+    }
+
+    #[test]
+    fn no_hint_when_every_finding_resolves() {
+        let port = Uuid::from_u128(81);
+        let r = response(
+            false,
+            vec![finding(
+                Code::UnsatisfiedInput,
+                Severity::Error,
+                &port.to_string(),
+                "unfed",
+            )],
+        );
+        assert!(unresolved_hint(&r, &locators_knowing(port, "Api:in:k")).is_none());
+    }
+
+    #[test]
+    fn no_hint_on_a_clean_report() {
+        let r = response(true, vec![]);
+        assert!(unresolved_hint(&r, &no_locators()).is_none());
+    }
+
     fn response(valid: bool, findings: Vec<models::Finding>) -> ValidateResponse {
         ValidateResponse {
             branch: Box::new(models::BranchRef::new(Uuid::from_u128(2), 5)),
@@ -238,12 +428,13 @@ mod tests {
         let r = response(true, vec![]);
         assert_eq!(exit_code(&r), exit::SUCCESS);
 
-        let human = render(&r, &binding(), OutputMode::Human);
+        let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
         assert!(human.contains("Valid"), "{human}");
         assert!(human.contains("branch 'spicy'"), "{human}");
 
         let v: serde_json::Value =
-            serde_json::from_str(&render(&r, &binding(), OutputMode::Json)).unwrap();
+            serde_json::from_str(&render(&r, &binding(), &no_locators(), OutputMode::Json))
+                .unwrap();
         assert_eq!(v["valid"], true);
         assert!(v["findings"].as_array().unwrap().is_empty());
     }
@@ -280,7 +471,7 @@ mod tests {
         );
         // Human: the finding is spelled out (code, severity, locator, message) and
         // the verdict says invalid.
-        let human = render(&r, &binding(), OutputMode::Human);
+        let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
         assert!(human.contains("type_mismatch"), "{human}");
         assert!(human.contains("error"), "{human}");
         assert!(human.contains("edge-9"), "{human}");
@@ -289,7 +480,8 @@ mod tests {
 
         // JSON: the verbatim {valid, findings[]} contract, every field intact.
         let v: serde_json::Value =
-            serde_json::from_str(&render(&r, &binding(), OutputMode::Json)).unwrap();
+            serde_json::from_str(&render(&r, &binding(), &no_locators(), OutputMode::Json))
+                .unwrap();
         assert_eq!(v["valid"], false);
         let arr = v["findings"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -313,7 +505,7 @@ mod tests {
             )],
         );
         assert_eq!(exit_code(&r), exit::SUCCESS);
-        let human = render(&r, &binding(), OutputMode::Human);
+        let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
         assert!(human.contains("advisory only"), "{human}");
         assert!(human.contains("Valid"), "{human}");
     }
@@ -339,7 +531,8 @@ mod tests {
         );
         assert_eq!(exit_code(&r), exit::VALIDATION);
         let v: serde_json::Value =
-            serde_json::from_str(&render(&r, &binding(), OutputMode::Json)).unwrap();
+            serde_json::from_str(&render(&r, &binding(), &no_locators(), OutputMode::Json))
+                .unwrap();
         // Both findings ride in the payload; the exit code is gated on the error.
         assert_eq!(v["findings"].as_array().unwrap().len(), 2);
     }
@@ -383,12 +576,13 @@ mod tests {
         let r = response(false, vec![]);
         assert_eq!(exit_code(&r), exit::VALIDATION);
 
-        let human = render(&r, &binding(), OutputMode::Human);
+        let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
         assert!(human.contains("Invalid"), "{human}");
         assert!(human.contains("branch 'spicy'"), "{human}");
 
         let v: serde_json::Value =
-            serde_json::from_str(&render(&r, &binding(), OutputMode::Json)).unwrap();
+            serde_json::from_str(&render(&r, &binding(), &no_locators(), OutputMode::Json))
+                .unwrap();
         assert_eq!(v["valid"], false);
     }
 
@@ -406,7 +600,7 @@ mod tests {
             )],
         );
         assert_eq!(exit_code(&r), exit::VALIDATION);
-        let human = render(&r, &binding(), OutputMode::Human);
+        let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
         assert!(human.contains("Invalid"), "{human}");
         assert!(human.contains("advisory only"), "{human}");
     }
