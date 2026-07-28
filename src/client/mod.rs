@@ -137,6 +137,78 @@ impl Client {
             .map_err(CliError::from)
     }
 
+    /// Read one node's subtree on `branch_id`, to a bounded `depth` — a
+    /// SCOPED read.
+    ///
+    /// Unlike [`Client::fetch_branch_graph`], the response is bounded by the
+    /// depth requested rather than by the size of the branch, so reading a
+    /// slice of a large project does not put the whole graph on the wire.
+    /// `depth` 1 is direct children.
+    ///
+    /// Branch-addressed on purpose: the `/v1/graph/{project_id}/...` twins
+    /// resolve the project's MAIN branch, and edits happen on working
+    /// branches, so those cannot serve an authoring client at all.
+    pub fn fetch_branch_subtree(
+        &self,
+        branch_id: Uuid,
+        node_id: Uuid,
+        depth: u32,
+    ) -> Result<models::SubtreeResponse, CliError> {
+        let params = branches_api::FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetParams {
+            branch_id: branch_id.to_string(),
+            node_id: node_id.to_string(),
+            depth: Some(depth),
+        };
+        self.rt
+            .block_on(
+                branches_api::fetch_branch_subtree_v1_branches_branch_id_subtree_node_id_get(
+                    &self.cfg, params,
+                ),
+            )
+            .map_err(CliError::from)
+    }
+
+    /// Read one node and its 1-hop neighborhood on `branch_id` — the scoped
+    /// read behind `walk`. Only the node, its immediate neighbors, and the
+    /// edges between them cross the wire.
+    pub fn fetch_branch_node(
+        &self,
+        branch_id: Uuid,
+        node_id: Uuid,
+    ) -> Result<models::NodeNeighborhoodResponse, CliError> {
+        let params = branches_api::FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetParams {
+            branch_id: branch_id.to_string(),
+            node_id: node_id.to_string(),
+        };
+        self.rt
+            .block_on(
+                branches_api::fetch_branch_node_v1_branches_branch_id_node_node_id_get(
+                    &self.cfg, params,
+                ),
+            )
+            .map_err(CliError::from)
+    }
+
+    /// Read a boundary's direct children and their interior edges on
+    /// `branch_id` — the scoped read behind `walk --boundary`.
+    pub fn fetch_branch_boundary(
+        &self,
+        branch_id: Uuid,
+        node_id: Uuid,
+    ) -> Result<models::BoundaryResponse, CliError> {
+        let params = branches_api::FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetParams {
+            branch_id: branch_id.to_string(),
+            node_id: node_id.to_string(),
+        };
+        self.rt
+            .block_on(
+                branches_api::fetch_branch_boundary_v1_branches_branch_id_boundary_node_id_get(
+                    &self.cfg, params,
+                ),
+            )
+            .map_err(CliError::from)
+    }
+
     /// Dry-run a typed delta batch against `branch_id` and get back the coherence
     /// findings — never mutating the branch. Mirrors [`Client::apply_deltas`], but
     /// the server rolls back before commit, so it carries no optimistic-concurrency

@@ -12,14 +12,14 @@ use crate::models;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InlineObject3 {
+pub struct InlineObject7 {
     #[serde(rename = "detail", skip_serializing_if = "Option::is_none")]
-    pub detail: Option<Box<models::InlineObject3Detail>>,
+    pub detail: Option<Box<models::InlineObject7Detail>>,
 }
 
-impl InlineObject3 {
-    pub fn new() -> InlineObject3 {
-        InlineObject3 {
+impl InlineObject7 {
+    pub fn new() -> InlineObject7 {
+        InlineObject7 {
             detail: None,
         }
     }

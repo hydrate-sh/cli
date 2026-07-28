@@ -24,6 +24,7 @@ mod init;
 mod node;
 mod projects;
 mod pull;
+mod scoped;
 mod show;
 mod status;
 mod validate;

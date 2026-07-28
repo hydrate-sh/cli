@@ -15,6 +15,7 @@ use hydrate_wire::models::{BranchMeta, GraphResponse};
 use uuid::Uuid;
 
 use super::context::{choose_selection, current_binding, env_project, resolve_project};
+use super::scoped;
 use super::view::{self, EdgeView, NodeView};
 use crate::client::Client;
 use crate::config::Config;
@@ -47,6 +48,28 @@ pub fn run(
         .map(|b| b.branch_id);
     let branches = client.list_branches(project.id)?.branches;
     let (branch_id, branch_name) = pick_branch(&branches, args.branch.as_deref(), bound)?;
+
+    // --depth asks for a SCOPED read: fetch only the slice, not the branch.
+    // Gated on `bound == Some(branch_id)` because the local index records no
+    // branch identity — it is implicitly the BOUND branch's, so resolving a
+    // path through it and then reading a different branch could return a
+    // different node under the name the user typed.
+    if let (Some(depth), Some(path)) = (args.depth, args.path.as_deref()) {
+        let on_bound_branch = bound == Some(branch_id);
+        match scoped::plan(scoped::base_dir().as_deref(), path, on_bound_branch)? {
+            scoped::Plan::Scoped(node_id) => {
+                let subtree = client.fetch_branch_subtree(branch_id, node_id, depth)?;
+                println!(
+                    "{}",
+                    render_subtree(&subtree, &project.name, &branch_name, path, mode)?
+                );
+                return Ok(());
+            }
+            scoped::Plan::WholeGraph(why) => {
+                eprintln!("{}", scoped::fallback_note(path, why));
+            }
+        }
+    }
 
     // The one and only network read of graph content — and it is a GET.
     let graph = client.fetch_branch_graph(branch_id)?;
@@ -120,8 +143,14 @@ fn render(
     filter: Option<&str>,
     mode: OutputMode,
 ) -> Result<String, CliError> {
-    let view = build_view(graph, filter)?;
-    Ok(match mode {
+    let view = build_view(graph, filter, None, None)?;
+    Ok(render_view(&view, project_name, branch_name, mode))
+}
+
+/// Turn a built [`View`] into output. Split from [`render`] so the scoped read
+/// can reuse it with server-supplied paths instead of local reconstruction.
+fn render_view(view: &View, project_name: &str, branch_name: &str, mode: OutputMode) -> String {
+    match mode {
         OutputMode::Json => serde_json::json!({
             "project": project_name,
             "branch": branch_name,
@@ -130,16 +159,44 @@ fn render(
             "cross_boundary_edges": view.cross_boundary,
         })
         .to_string(),
-        OutputMode::Human => human(&view, project_name, branch_name),
-    })
+        OutputMode::Human => human(view, project_name, branch_name),
+    }
 }
 
 /// Build the display view from the fetched graph: reconstruct each node's dotted
 /// path, project its ports, translate edge handles back to dotted port paths,
 /// and (when `filter` is set) narrow to that node's subtree.
-fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliError> {
-    // node id -> dotted path (shared reconstruction, also used by `walk`).
-    let paths = view::node_paths(&graph.nodes)?;
+fn build_view(
+    graph: &GraphResponse,
+    filter: Option<&str>,
+    // Server-rendered paths, when the caller has them. A SCOPED read cannot
+    // reconstruct paths locally: the slice does not contain the ancestors a
+    // dotted path is built from, so `node_paths` fails with "references a
+    // missing parent". The server holds the whole branch and is the only party
+    // that can answer.
+    server_paths: Option<&HashMap<Uuid, String>>,
+    // Reasons for nodes the server could not address. A slice legitimately
+    // contains them (an unnamed node is legal while designing), so they must
+    // RENDER — skipping drops their ports from the port table and the next
+    // edge lookup then fails blaming the server.
+    unaddressable: Option<&HashMap<Uuid, String>>,
+) -> Result<View, CliError> {
+    // node id -> dotted path (local reconstruction for the whole-graph read).
+    let mut paths = match server_paths {
+        Some(p) => p.clone(),
+        None => view::node_paths(&graph.nodes)?,
+    };
+    // Fill in a label for every node the server could not path, so the map is
+    // total from here down and nothing has to guess whether indexing is safe.
+    if let Some(un) = unaddressable {
+        for node in &graph.nodes {
+            paths.entry(node.id).or_insert_with(|| {
+                scoped::unaddressable_label(
+                    un.get(&node.id).map(String::as_str).unwrap_or("unknown"),
+                )
+            });
+        }
+    }
 
     // port id -> (owning node's dotted path, port name).
     let mut port_owner: HashMap<Uuid, (String, Option<String>)> = HashMap::new();
@@ -253,8 +310,123 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
     out
 }
 
+/// Re-key a server map by `Uuid`, failing loud on a key that isn't one.
+///
+/// Dropping an unparseable key would silently turn "the server addressed this
+/// node" into "this node has no path" — the same silent-drop the port resolver
+/// two functions away explicitly refuses.
+fn uuid_keyed(
+    map: &std::collections::HashMap<String, String>,
+    field: &str,
+) -> Result<HashMap<Uuid, String>, CliError> {
+    map.iter()
+        .map(|(k, v)| {
+            Uuid::parse_str(k).map(|id| (id, v.clone())).map_err(|_| {
+                CliError::State(format!(
+                    "the server sent `{field}` keyed by a non-uuid '{k}'"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Render a scoped subtree through the SAME renderer the whole-graph view uses,
+/// so the two are indistinguishable in shape to a reader or a parser.
+///
+/// The subtree is repackaged as a `GraphResponse` carrying exactly the node set
+/// the server returned. It is NOT re-filtered locally: the server already
+/// scoped it, and filtering by path prefix would drop precisely the nodes it
+/// could not give a path — the ones the user needs to see in order to fix them.
+/// Only what the scoped read uniquely knows is added on top: which slice this
+/// is, how deep, whether it was CUT, and what could not be addressed.
+fn render_subtree(
+    subtree: &hydrate_wire::models::SubtreeResponse,
+    project_name: &str,
+    branch_name: &str,
+    path: &str,
+    mode: OutputMode,
+) -> Result<String, CliError> {
+    let mut nodes = vec![(*subtree.root).clone()];
+    nodes.extend(subtree.nodes.iter().cloned());
+    // NOT merged with cross_boundary_edges: by definition those have one
+    // endpoint outside the slice, so the port resolver cannot place them and
+    // errors blaming the server. The server already classified them; take its
+    // count rather than re-deriving one we cannot compute here.
+    let edges = subtree.edges.clone();
+
+    let graph = GraphResponse {
+        branch: subtree.branch.clone(),
+        edges,
+        nodes,
+        project_id: subtree.project_id,
+        version: subtree.version.clone(),
+    };
+    // Server-rendered paths — the whole reason the scoped read returns them.
+    // Reconstructing here fails: the slice has no ancestors to walk.
+    let server_paths = uuid_keyed(&subtree.paths, "paths")?;
+    let unaddressable = uuid_keyed(&subtree.unaddressable, "unaddressable")?;
+    // No local filter: the SERVER already scoped this response to the slice,
+    // and filtering by path prefix would drop exactly the nodes it could not
+    // give a path — the ones the user most needs to see in order to fix them.
+    let mut view = build_view(&graph, None, Some(&server_paths), Some(&unaddressable))?;
+    // The server counted the edges leaving this slice; we cannot.
+    view.cross_boundary = subtree.cross_boundary_edges.len();
+    let rendered = render_view(&view, project_name, branch_name, mode);
+
+    match mode {
+        OutputMode::Json => {
+            // Augment rather than re-derive, so the scoped payload stays a
+            // superset of the familiar one.
+            let mut v: serde_json::Value = serde_json::from_str(&rendered)
+                .map_err(|e| CliError::Other(format!("rendering the subtree: {e}")))?;
+            // Says a slice was read, and which one. Without this a scoped
+            // read and a whole-graph fetch are indistinguishable on stdout —
+            // the one thing the flag exists to control.
+            v["scoped"] = serde_json::json!(true);
+            v["root"] = serde_json::json!(path);
+            v["depth"] = serde_json::json!(subtree.depth);
+            v["truncated"] = serde_json::json!(subtree.truncated);
+            // Same information `walk` reports: which nodes here cannot be
+            // addressed, and why. Labels, not ids — this CLI does not surface
+            // node ids, and an id joins to nothing else in the payload.
+            v["unaddressable"] = serde_json::json!(unaddressable
+                .values()
+                .map(|reason| serde_json::json!({
+                    "label": scoped::unaddressable_label(reason),
+                    "reason": scoped::sanitize(reason),
+                }))
+                .collect::<Vec<_>>());
+            Ok(v.to_string())
+        }
+        OutputMode::Human => {
+            let mut out = format!(
+                "slice of '{path}', {} level(s) deep\n{rendered}",
+                subtree.depth,
+            );
+            if !unaddressable.is_empty() {
+                out.push_str(&format!(
+                    "\n{} node(s) here have no addressable path — name them to \
+                     reference them in other commands.\n",
+                    unaddressable.len()
+                ));
+            }
+            if subtree.truncated {
+                // Reported, never implied: a reader who cannot tell a complete
+                // cell from a slice will treat the slice as complete.
+                out.push_str(&format!(
+                    "\n(cut at depth {} — there are more nodes below; raise --depth to see them)\n",
+                    subtree.depth
+                ));
+            }
+            Ok(out)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use hydrate_wire::models::SubtreeResponse;
+
     use super::*;
     use hydrate_wire::models::{
         self, BranchRef, Position, WireEdge, WireNode, WireNodeData, WirePort,
@@ -315,7 +487,7 @@ mod tests {
 
     /// Api (boundary) { Maker (behavior, out dog:HotDog), Rater (behavior, in
     /// raw:HotDog, out score:Score) }, edge Maker.dog -> Rater.raw.
-    fn sample_graph() -> GraphResponse {
+    pub(super) fn sample_graph() -> GraphResponse {
         use models::wire_node::Kind;
         let maker_out = port(0xD0, "dog", "HotDog");
         let rater_in = port(0xF0, "raw", "HotDog");
@@ -687,5 +859,199 @@ mod tests {
             !json.contains(&g.nodes[0].id.to_string()),
             "leaked node uuid"
         );
+    }
+
+    fn subtree_of(sample: &GraphResponse, root_idx: usize, truncated: bool) -> SubtreeResponse {
+        SubtreeResponse {
+            branch: sample.branch.clone(),
+            cross_boundary_edges: vec![],
+            depth: 1,
+            edges: vec![],
+            nodes: vec![],
+            project_id: sample.project_id,
+            root: Box::new(sample.nodes[root_idx].clone()),
+            truncated,
+            version: sample.version.clone(),
+            // The server always sends a path for every returned node; an
+            // empty map would model a server that doesn't, which the contract
+            // no longer permits.
+            paths: sample
+                .nodes
+                .iter()
+                .map(|n| (n.id.to_string(), n.data.name.clone()))
+                .collect(),
+            unaddressable: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_cut_subtree_says_so_in_both_modes() {
+        // The signal that separates "this is the cell" from "this is a slice".
+        // A reader who cannot tell them apart will act on a partial spec.
+        let g = sample_graph();
+        let cut = subtree_of(&g, 0, true);
+        let human = render_subtree(&cut, "proj", "br", "Api", OutputMode::Human).unwrap();
+        assert!(human.contains("cut at depth 1"), "{human}");
+
+        let json: serde_json::Value = serde_json::from_str(
+            &render_subtree(&cut, "proj", "br", "Api", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["truncated"], true);
+        assert_eq!(json["depth"], 1);
+    }
+
+    #[test]
+    fn a_complete_subtree_makes_no_truncation_claim() {
+        let g = sample_graph();
+        let whole = subtree_of(&g, 0, false);
+        let human = render_subtree(&whole, "proj", "br", "Api", OutputMode::Human).unwrap();
+        assert!(!human.contains("cut at depth"), "{human}");
+
+        let json: serde_json::Value = serde_json::from_str(
+            &render_subtree(&whole, "proj", "br", "Api", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["truncated"], false);
+    }
+
+    #[test]
+    fn the_scoped_json_is_a_superset_of_the_whole_graph_json() {
+        // The two views must be interchangeable to a parser — the scoped read
+        // adds fields, it does not reshape the payload.
+        let g = sample_graph();
+        let scoped: serde_json::Value = serde_json::from_str(
+            &render_subtree(
+                &subtree_of(&g, 0, false),
+                "proj",
+                "br",
+                "Api",
+                OutputMode::Json,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let full: serde_json::Value =
+            serde_json::from_str(&render(&g, "proj", "br", Some("Api"), OutputMode::Json).unwrap())
+                .unwrap();
+        for key in full.as_object().unwrap().keys() {
+            assert!(scoped.get(key).is_some(), "scoped view dropped '{key}'");
+        }
+    }
+
+    #[test]
+    fn no_working_copy_means_no_scoped_read() {
+        // No index means no id, which must degrade to the whole-graph read
+        // rather than erroring — asking for a slice never denies you the graph.
+        assert_eq!(
+            scoped::plan(None, "Api", true).unwrap(),
+            scoped::Plan::WholeGraph(scoped::Fallback::NoWorkingCopy),
+        );
+    }
+}
+
+#[cfg(test)]
+mod scoped_subtree_tests {
+    use super::tests::sample_graph;
+    use super::*;
+    use hydrate_wire::models::SubtreeResponse;
+
+    /// A REAL slice: a root whose own parent is outside the slice, a child, an
+    /// interior edge, and an edge leaving the subtree. The previous fixture was
+    /// a single parentless node with no edges, which is why it could not reach
+    /// either crash — local reconstruction succeeds on it, so the server-path
+    /// branch was never load-bearing.
+    fn real_subtree(unaddressable: Vec<(uuid::Uuid, &str)>, crossing: usize) -> SubtreeResponse {
+        let g = sample_graph();
+        let root = g.nodes[0].clone();
+        let child = g.nodes[1].clone();
+        let mut paths = std::collections::HashMap::new();
+        // Server paths are FULL and absolute — note the ancestor `Outer` is
+        // not in the slice at all, which is exactly what local reconstruction
+        // cannot do.
+        paths.insert(root.id.to_string(), "Outer.Api".to_string());
+        paths.insert(child.id.to_string(), "Outer.Api.Maker".to_string());
+        let mut un = std::collections::HashMap::new();
+        for (id, reason) in &unaddressable {
+            paths.remove(&id.to_string());
+            un.insert(id.to_string(), (*reason).to_string());
+        }
+        SubtreeResponse {
+            branch: g.branch.clone(),
+            cross_boundary_edges: g.edges.iter().take(crossing).cloned().collect(),
+            depth: 1,
+            edges: vec![],
+            nodes: vec![child],
+            project_id: g.project_id,
+            root: Box::new(root),
+            truncated: false,
+            version: g.version.clone(),
+            paths,
+            unaddressable: un,
+        }
+    }
+
+    #[test]
+    fn a_slice_whose_ancestors_are_absent_renders_the_server_paths() {
+        // The bug this whole change exists to fix: local reconstruction here
+        // fails with "references a missing parent", because `Outer` is not in
+        // the payload.
+        let st = real_subtree(vec![], 0);
+        let out = render_subtree(&st, "proj", "br", "Outer.Api", OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let rendered = v.to_string();
+        assert!(rendered.contains("Outer.Api"), "{rendered}");
+    }
+
+    #[test]
+    fn an_unaddressable_node_renders_instead_of_panicking() {
+        // `paths` is deliberately not total; indexing it aborts the process.
+        let g = sample_graph();
+        let child_id = g.nodes[1].id;
+        let st = real_subtree(vec![(child_id, "empty_name")], 0);
+        let out = render_subtree(&st, "proj", "br", "Outer.Api", OutputMode::Human)
+            .expect("must render, not panic");
+        assert!(out.contains("<unnamed"), "{out}");
+        assert!(out.contains("no addressable path"), "{out}");
+    }
+
+    #[test]
+    fn the_unaddressable_reason_reaches_json_without_ids() {
+        let g = sample_graph();
+        let child_id = g.nodes[1].id;
+        let st = real_subtree(vec![(child_id, "ambiguous")], 0);
+        let v: serde_json::Value = serde_json::from_str(
+            &render_subtree(&st, "proj", "br", "Outer.Api", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["unaddressable"][0]["reason"], "ambiguous");
+        assert!(
+            !v.to_string().contains(&child_id.to_string()),
+            "node id leaked into show --depth --json"
+        );
+    }
+
+    #[test]
+    fn a_slice_with_an_edge_leaving_it_still_renders() {
+        // A cross-boundary edge has one endpoint OUTSIDE the slice by
+        // definition, so pushing it through the port resolver fails and blames
+        // the server. Every real subtree with a dependency hits this.
+        let st = real_subtree(vec![], 1);
+        let v: serde_json::Value = serde_json::from_str(
+            &render_subtree(&st, "proj", "br", "Outer.Api", OutputMode::Json)
+                .expect("a slice with an outward edge must render"),
+        )
+        .unwrap();
+        // The server counted them; we report its count rather than re-deriving.
+        assert_eq!(v["cross_boundary_edges"], 1);
+    }
+
+    #[test]
+    fn a_non_uuid_path_key_fails_loud() {
+        let mut st = real_subtree(vec![], 0);
+        st.paths.insert("not-a-uuid".to_string(), "X".to_string());
+        let err = render_subtree(&st, "proj", "br", "Outer.Api", OutputMode::Json)
+            .expect_err("a malformed key is a contract violation, not a shrug");
+        assert!(format!("{err}").contains("non-uuid"), "{err}");
     }
 }

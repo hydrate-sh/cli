@@ -11,17 +11,16 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InlineObject3 {
-    #[serde(rename = "detail", skip_serializing_if = "Option::is_none")]
-    pub detail: Option<Box<models::InlineObject3Detail>>,
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InlineObject6Detail {
+    String(String),
+    InlineObject6DetailOneOf(Box<models::InlineObject6DetailOneOf>),
 }
 
-impl InlineObject3 {
-    pub fn new() -> InlineObject3 {
-        InlineObject3 {
-            detail: None,
-        }
+impl Default for InlineObject6Detail {
+    fn default() -> Self {
+        Self::String(Default::default())
     }
 }
 
