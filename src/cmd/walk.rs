@@ -34,26 +34,27 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
     let config = Config::load()?;
     let client = Client::new(&config)?;
 
-    // `walk` reads the bound branch — the same whole-graph read `show`/`pull`
-    // use — then slices it locally. Reading the project's main-branch graph
-    // instead would return stale or wrong data on any diverged branch.
-    // SCOPED read first: fetch only the slice. This is what makes `walk` bound
-    // what crosses the wire — before this it fetched the WHOLE branch graph and
-    // sliced it locally, so "scoped" was true of the output and false of the
-    // request. Needs the node's id, which the pulled index supplies.
-    let base = scoped::base_dir();
-    if let Some(node_id) = scoped::scoped_target(&base, &args.path)? {
-        let out = if args.boundary {
-            let cell = client.fetch_branch_boundary(binding.branch_id, node_id)?;
-            render_boundary_scoped(&cell, &args.path, mode)?
-        } else {
-            let hood = client.fetch_branch_node(binding.branch_id, node_id)?;
-            render_neighborhood_scoped(&hood, &args.path, mode)?
-        };
-        println!("{out}");
-        return Ok(());
+    // SCOPED read first: fetch only the slice. Before this, `walk` fetched the
+    // WHOLE branch graph and sliced it locally — "scoped" was true of the
+    // output and false of the request. It needs the node's id, which the
+    // pulled index supplies; `walk` always reads the branch it is bound to, so
+    // the index (which records no branch identity of its own) applies.
+    match scoped::plan(Some(&base), &args.path, true)? {
+        scoped::Plan::Scoped(node_id) => {
+            let out = if args.boundary {
+                let cell = client.fetch_branch_boundary(binding.branch_id, node_id)?;
+                render_boundary_scoped(&cell, &args.path, mode)?
+            } else {
+                let hood = client.fetch_branch_node(binding.branch_id, node_id)?;
+                render_neighborhood_scoped(&hood, &args.path, mode)?
+            };
+            println!("{out}");
+            return Ok(());
+        }
+        scoped::Plan::WholeGraph(why) => {
+            eprintln!("{}", scoped::fallback_note(&args.path, why));
+        }
     }
-    eprintln!("{}", scoped::fallback_note(&args.path));
 
     // Fallback: the whole-graph read, sliced locally. Reading the project's
     // main-branch graph instead would return stale or wrong data on any
@@ -104,14 +105,50 @@ fn label_of(
     paths: &std::collections::HashMap<String, String>,
     unaddressable: &std::collections::HashMap<String, String>,
 ) -> String {
-    paths.get(id).cloned().unwrap_or_else(|| {
-        scoped::unaddressable_label(
-            unaddressable
-                .get(id)
-                .map(String::as_str)
-                .unwrap_or("unknown"),
-        )
-    })
+    paths
+        .get(id)
+        .map(|p| scoped::sanitize(p))
+        .unwrap_or_else(|| {
+            scoped::unaddressable_label(
+                unaddressable
+                    .get(id)
+                    .map(String::as_str)
+                    .unwrap_or("unknown"),
+            )
+        })
+}
+
+/// The `unaddressable` map as something a consumer can act on.
+///
+/// The server keys it by node id, but this CLI does not surface ids — and a
+/// raw uuid is not joinable to anything else in the payload, since every other
+/// node here is addressed by path. Emit the label the human sees plus the
+/// reason, so both modes carry the same, usable information.
+fn unaddressable_report(un: &std::collections::HashMap<String, String>) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = un
+        .values()
+        .map(|reason| {
+            serde_json::json!({
+                "label": scoped::unaddressable_label(reason),
+                "reason": scoped::sanitize(reason),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a["label"].as_str().cmp(&b["label"].as_str()));
+    out
+}
+
+/// The human tail naming how many nodes could not be addressed. Shared by both
+/// scoped renderers so they cannot disagree about whether to mention it.
+fn unaddressable_summary(un: &std::collections::HashMap<String, String>) -> String {
+    if un.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n{} node(s) here have no addressable path — name them to reference \
+         them in other commands.\n",
+        un.len()
+    )
 }
 
 /// Render a node + 1-hop neighborhood from the SCOPED read. Paths come from
@@ -158,7 +195,7 @@ fn render_neighborhood_scoped(
             "version": hood.version,
             // Surfaced, not swallowed: a node without a path is a thing the
             // user can fix, and a consumer needs to know which ones.
-            "unaddressable": un,
+            "unaddressable": unaddressable_report(un),
         })
         .to_string(),
         OutputMode::Human => {
@@ -176,13 +213,7 @@ fn render_neighborhood_scoped(
                     out.push_str(&format!("  {} -> {}\n", e.from, e.to));
                 }
             }
-            if !un.is_empty() {
-                out.push_str(&format!(
-                    "\n{} node(s) here have no addressable path — name them to \
-                     reference them in other commands.\n",
-                    un.len()
-                ));
-            }
+            out.push_str(&unaddressable_summary(un));
             out
         }
     })
@@ -194,6 +225,15 @@ fn render_boundary_scoped(
     path: &str,
     mode: OutputMode,
 ) -> Result<String, CliError> {
+    if cell.boundary.kind != models::wire_node::Kind::Boundary {
+        // Same guidance the whole-graph path gives. Without this the quality of
+        // the error depends on whether an index happens to exist locally.
+        return Err(CliError::InvalidArgument(format!(
+            "'{path}' is not a boundary (it is a {}); run `hydrate walk {path}` \
+             for its neighborhood",
+            view::kind_str(cell.boundary.kind),
+        )));
+    }
     let paths = &cell.paths;
     let un = &cell.unaddressable;
 
@@ -239,6 +279,7 @@ fn render_boundary_scoped(
                     out.push_str(&format!("  {} -> {}\n", e.from, e.to));
                 }
             }
+            out.push_str(&unaddressable_summary(un));
             out
         }
     })
@@ -630,9 +671,13 @@ mod scoped_tests {
     use uuid::Uuid;
 
     fn node(id: Uuid, name: &str) -> WireNode {
+        node_of_kind(id, name, models::wire_node::Kind::Behavior)
+    }
+
+    fn node_of_kind(id: Uuid, name: &str, kind: models::wire_node::Kind) -> WireNode {
         WireNode {
             id,
-            kind: models::wire_node::Kind::Behavior,
+            kind,
             parent_id: None,
             position: Box::new(models::Position { x: 0.0, y: 0.0 }),
             data: Box::new(WireNodeData {
@@ -682,7 +727,7 @@ mod scoped_tests {
     fn an_unaddressable_neighbor_does_not_panic() {
         // The server deliberately returns nodes with no path — an unnamed node
         // is legal while designing. Indexing `paths` would panic on an
-        // ordinary graph; this is the exact crash the review caught.
+        // ordinary graph, so indexing the map aborts the command.
         let mut paths = HashMap::new();
         paths.insert(Uuid::from_u128(1).to_string(), "Focus".to_string());
         let mut un = HashMap::new();
@@ -708,9 +753,19 @@ mod scoped_tests {
             &render_neighborhood_scoped(&hood(paths, un), "Focus", OutputMode::Json).unwrap(),
         )
         .unwrap();
+        // Keyed by nothing — a raw node id is not surfaced by this CLI and
+        // would join to nothing else in the payload. The consumer gets the
+        // same label the human sees, plus the reason.
+        assert_eq!(v["unaddressable"][0]["reason"], "reserved_separator");
         assert_eq!(
-            v["unaddressable"][Uuid::from_u128(2).to_string()],
-            "reserved_separator"
+            v["unaddressable"][0]["label"],
+            "<name contains '.', which separates path segments>"
+        );
+        // And the rendered neighbor path is the label, not an id.
+        let rendered = v.to_string();
+        assert!(
+            !rendered.contains(&Uuid::from_u128(2).to_string()),
+            "node id leaked into walk --json: {rendered}"
         );
     }
 
@@ -741,7 +796,7 @@ mod scoped_tests {
                 id: Uuid::from_u128(8),
                 version: 1,
             }),
-            boundary: Box::new(node(b, "Cell")),
+            boundary: Box::new(node_of_kind(b, "Cell", models::wire_node::Kind::Boundary)),
             children: vec![node(child, "dup")],
             edges: vec![],
             paths,

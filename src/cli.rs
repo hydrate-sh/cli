@@ -141,7 +141,17 @@ pub struct ShowArgs {
     /// copy that has been pulled (the local index is what turns the path into
     /// the id the scoped read needs); without one, the whole graph is fetched
     /// and filtered locally, and that is reported.
-    #[arg(long, value_name = "N")]
+    #[arg(
+        long,
+        value_name = "N",
+        // Without PATH there is nothing to root a slice at, and silently
+        // ignoring the flag would fetch the whole branch while the user
+        // believes they bounded it.
+        requires = "path",
+        // The server pins 1..=32; checking here turns a round trip and a raw
+        // 422 into an immediate, readable error.
+        value_parser = clap::value_parser!(u32).range(1..=32),
+    )]
     pub depth: Option<u32>,
 }
 
