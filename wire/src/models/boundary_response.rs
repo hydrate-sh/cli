@@ -21,20 +21,28 @@ pub struct BoundaryResponse {
     pub children: Vec<models::WireNode>,
     #[serde(rename = "edges")]
     pub edges: Vec<models::WireEdge>,
+    /// Dotted path for every node returned that has one, keyed by node id. Server-rendered because a scoped read returns a SLICE: the ancestors a path is built from are not in the payload, so a client cannot derive it. Every returned node appears in exactly one of `paths` or `unaddressable` — index this map for anything not listed there.
+    #[serde(rename = "paths")]
+    pub paths: std::collections::HashMap<String, String>,
     #[serde(rename = "project_id")]
     pub project_id: uuid::Uuid,
+    /// Nodes that could not be given a dotted path, keyed by node id, with the reason: `empty_name` (the node, or an ancestor, has no name — legal while designing), `reserved_separator` (a name contains `.`), or `ambiguous` (two returned nodes would render the same path, so neither is safe to act on). These are data conditions a user fixes by renaming, not errors.
+    #[serde(rename = "unaddressable")]
+    pub unaddressable: std::collections::HashMap<String, String>,
     #[serde(rename = "version")]
     pub version: String,
 }
 
 impl BoundaryResponse {
-    pub fn new(boundary: models::WireNode, branch: models::BranchRef, children: Vec<models::WireNode>, edges: Vec<models::WireEdge>, project_id: uuid::Uuid, version: String) -> BoundaryResponse {
+    pub fn new(boundary: models::WireNode, branch: models::BranchRef, children: Vec<models::WireNode>, edges: Vec<models::WireEdge>, paths: std::collections::HashMap<String, String>, project_id: uuid::Uuid, unaddressable: std::collections::HashMap<String, String>, version: String) -> BoundaryResponse {
         BoundaryResponse {
             boundary: Box::new(boundary),
             branch: Box::new(branch),
             children,
             edges,
+            paths,
             project_id,
+            unaddressable,
             version,
         }
     }

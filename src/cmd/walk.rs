@@ -15,6 +15,7 @@ use hydrate_wire::models::{self, GraphResponse, WireNode};
 use uuid::Uuid;
 
 use super::context::require_workdir;
+use super::scoped;
 use super::view::{self, EdgeView, NodeView};
 use crate::client::Client;
 use crate::config::Config;
@@ -36,6 +37,27 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
     // `walk` reads the bound branch — the same whole-graph read `show`/`pull`
     // use — then slices it locally. Reading the project's main-branch graph
     // instead would return stale or wrong data on any diverged branch.
+    // SCOPED read first: fetch only the slice. This is what makes `walk` bound
+    // what crosses the wire — before this it fetched the WHOLE branch graph and
+    // sliced it locally, so "scoped" was true of the output and false of the
+    // request. Needs the node's id, which the pulled index supplies.
+    let base = scoped::base_dir();
+    if let Some(node_id) = scoped::scoped_target(&base, &args.path)? {
+        let out = if args.boundary {
+            let cell = client.fetch_branch_boundary(binding.branch_id, node_id)?;
+            render_boundary_scoped(&cell, &args.path, mode)?
+        } else {
+            let hood = client.fetch_branch_node(binding.branch_id, node_id)?;
+            render_neighborhood_scoped(&hood, &args.path, mode)?
+        };
+        println!("{out}");
+        return Ok(());
+    }
+    eprintln!("{}", scoped::fallback_note(&args.path));
+
+    // Fallback: the whole-graph read, sliced locally. Reading the project's
+    // main-branch graph instead would return stale or wrong data on any
+    // diverged branch, so this stays branch-addressed too.
     let graph = client.fetch_branch_graph(binding.branch_id)?;
 
     let out = if args.boundary {
@@ -72,6 +94,156 @@ fn locate<'g>(
 /// The focal node keeps the dotted `path` the caller queried; neighbors keep
 /// their own reconstructed dotted paths. Edges are translated to dotted
 /// `node.port` paths over exactly the returned node set.
+/// Label a node from the server's `paths`, falling back to the reported reason.
+///
+/// NEVER indexes `paths`: the map is deliberately not total — the server
+/// returns unnamed nodes (legal while designing) and reports why in
+/// `unaddressable`. Indexing it would panic on an ordinary graph.
+fn label_of(
+    id: &str,
+    paths: &std::collections::HashMap<String, String>,
+    unaddressable: &std::collections::HashMap<String, String>,
+) -> String {
+    paths.get(id).cloned().unwrap_or_else(|| {
+        scoped::unaddressable_label(
+            unaddressable
+                .get(id)
+                .map(String::as_str)
+                .unwrap_or("unknown"),
+        )
+    })
+}
+
+/// Render a node + 1-hop neighborhood from the SCOPED read. Paths come from
+/// the server, which is the only party holding the ancestors a dotted path is
+/// built from — the slice does not contain them.
+fn render_neighborhood_scoped(
+    hood: &models::NodeNeighborhoodResponse,
+    path: &str,
+    mode: OutputMode,
+) -> Result<String, CliError> {
+    let paths = &hood.paths;
+    let un = &hood.unaddressable;
+    let node_id = hood.node.id.to_string();
+
+    let hint = if hood.node.kind == models::wire_node::Kind::Boundary {
+        format!(" (it is a boundary — run `hydrate walk {path} --boundary` for its scope)")
+    } else {
+        String::new()
+    };
+
+    let mut neighbors: Vec<(String, &models::WireNode)> = hood
+        .neighbors
+        .iter()
+        .map(|n| (label_of(&n.id.to_string(), paths, un), n))
+        .collect();
+    neighbors.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let focus = view::node_view(&hood.node, label_of(&node_id, paths, un));
+    let neighbor_views: Vec<NodeView> = neighbors
+        .iter()
+        .map(|(p, n)| view::node_view(n, p.clone()))
+        .collect();
+
+    let mut labeled: Vec<(String, &models::WireNode)> =
+        vec![(label_of(&node_id, paths, un), &hood.node)];
+    labeled.extend(neighbors.iter().map(|(p, n)| (p.clone(), *n)));
+    let edges = view::resolve_edges(&view::port_labels(&labeled), &hood.edges)?;
+
+    Ok(match mode {
+        OutputMode::Json => serde_json::json!({
+            "node": focus,
+            "neighbors": neighbor_views,
+            "edges": edges,
+            "version": hood.version,
+            // Surfaced, not swallowed: a node without a path is a thing the
+            // user can fix, and a consumer needs to know which ones.
+            "unaddressable": un,
+        })
+        .to_string(),
+        OutputMode::Human => {
+            let mut out = format!("Node '{path}' (version {}):{hint}\n", hood.version);
+            out.push_str(&focus.human(0));
+            if !neighbor_views.is_empty() {
+                out.push_str("\nNeighbors:\n");
+                for n in &neighbor_views {
+                    out.push_str(&n.human(1));
+                }
+            }
+            if !edges.is_empty() {
+                out.push_str("\nEdges:\n");
+                for e in &edges {
+                    out.push_str(&format!("  {} -> {}\n", e.from, e.to));
+                }
+            }
+            if !un.is_empty() {
+                out.push_str(&format!(
+                    "\n{} node(s) here have no addressable path — name them to \
+                     reference them in other commands.\n",
+                    un.len()
+                ));
+            }
+            out
+        }
+    })
+}
+
+/// Render a boundary's children from the SCOPED read.
+fn render_boundary_scoped(
+    cell: &models::BoundaryResponse,
+    path: &str,
+    mode: OutputMode,
+) -> Result<String, CliError> {
+    let paths = &cell.paths;
+    let un = &cell.unaddressable;
+
+    let mut children: Vec<(String, &models::WireNode)> = cell
+        .children
+        .iter()
+        .map(|n| (label_of(&n.id.to_string(), paths, un), n))
+        .collect();
+    children.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let boundary_label = label_of(&cell.boundary.id.to_string(), paths, un);
+    let focus = view::node_view(&cell.boundary, boundary_label.clone());
+    let child_views: Vec<NodeView> = children
+        .iter()
+        .map(|(p, n)| view::node_view(n, p.clone()))
+        .collect();
+
+    let mut labeled: Vec<(String, &models::WireNode)> = vec![(boundary_label, &cell.boundary)];
+    labeled.extend(children.iter().map(|(p, n)| (p.clone(), *n)));
+    let edges = view::resolve_edges(&view::port_labels(&labeled), &cell.edges)?;
+
+    Ok(match mode {
+        OutputMode::Json => serde_json::json!({
+            "boundary": focus,
+            "children": child_views,
+            "edges": edges,
+            "version": cell.version,
+            "unaddressable": un,
+        })
+        .to_string(),
+        OutputMode::Human => {
+            let mut out = format!("Boundary '{path}' (version {}):\n", cell.version);
+            out.push_str(&focus.human(0));
+            if !child_views.is_empty() {
+                out.push_str("\nChildren:\n");
+                for c in &child_views {
+                    out.push_str(&c.human(1));
+                }
+            }
+            if !edges.is_empty() {
+                out.push_str("\nInterior edges:\n");
+                for e in &edges {
+                    out.push_str(&format!("  {} -> {}\n", e.from, e.to));
+                }
+            }
+            out
+        }
+    })
+}
+
 fn render_neighborhood(
     graph: &GraphResponse,
     path: &str,
@@ -445,5 +617,138 @@ mod tests {
         g.edges[0].source_handle = Some(Uuid::from_u128(0xBEEF));
         let err = render_neighborhood(&g, "Api.Rater", OutputMode::Json).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
+    }
+}
+
+#[cfg(test)]
+mod scoped_tests {
+    use super::*;
+    use hydrate_wire::models::{
+        BoundaryResponse, NodeNeighborhoodResponse, WireNode, WireNodeData,
+    };
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn node(id: Uuid, name: &str) -> WireNode {
+        WireNode {
+            id,
+            kind: models::wire_node::Kind::Behavior,
+            parent_id: None,
+            position: Box::new(models::Position { x: 0.0, y: 0.0 }),
+            data: Box::new(WireNodeData {
+                name: name.to_string(),
+                description: String::new(),
+                status: "idle".to_string(),
+                inputs: None,
+                outputs: None,
+                config: None,
+                constraints: None,
+                verifications: None,
+                is_test_node: false,
+                is_external: false,
+                source_decisions: None,
+                user_kind: None,
+                path_prefix: None,
+                language: None,
+                external_kind: None,
+                protocol: None,
+                documentation_url: None,
+            }),
+        }
+    }
+
+    fn hood(
+        paths: HashMap<String, String>,
+        un: HashMap<String, String>,
+    ) -> NodeNeighborhoodResponse {
+        let focus = Uuid::from_u128(1);
+        let neighbor = Uuid::from_u128(2);
+        NodeNeighborhoodResponse {
+            version: "v1".to_string(),
+            project_id: Uuid::from_u128(9),
+            branch: Box::new(models::BranchRef {
+                id: Uuid::from_u128(8),
+                version: 1,
+            }),
+            node: Box::new(node(focus, "Focus")),
+            neighbors: vec![node(neighbor, "")],
+            edges: vec![],
+            paths,
+            unaddressable: un,
+        }
+    }
+
+    #[test]
+    fn an_unaddressable_neighbor_does_not_panic() {
+        // The server deliberately returns nodes with no path — an unnamed node
+        // is legal while designing. Indexing `paths` would panic on an
+        // ordinary graph; this is the exact crash the review caught.
+        let mut paths = HashMap::new();
+        paths.insert(Uuid::from_u128(1).to_string(), "Focus".to_string());
+        let mut un = HashMap::new();
+        un.insert(Uuid::from_u128(2).to_string(), "empty_name".to_string());
+
+        let out = render_neighborhood_scoped(&hood(paths, un), "Focus", OutputMode::Human)
+            .expect("must render, not panic");
+        assert!(out.contains("<unnamed"), "{out}");
+        assert!(out.contains("no addressable path"), "{out}");
+    }
+
+    #[test]
+    fn the_unaddressable_reason_reaches_json_consumers() {
+        let mut paths = HashMap::new();
+        paths.insert(Uuid::from_u128(1).to_string(), "Focus".to_string());
+        let mut un = HashMap::new();
+        un.insert(
+            Uuid::from_u128(2).to_string(),
+            "reserved_separator".to_string(),
+        );
+
+        let v: serde_json::Value = serde_json::from_str(
+            &render_neighborhood_scoped(&hood(paths, un), "Focus", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            v["unaddressable"][Uuid::from_u128(2).to_string()],
+            "reserved_separator"
+        );
+    }
+
+    #[test]
+    fn a_fully_addressable_slice_reports_nothing_unaddressable() {
+        let mut paths = HashMap::new();
+        paths.insert(Uuid::from_u128(1).to_string(), "Focus".to_string());
+        paths.insert(Uuid::from_u128(2).to_string(), "Other".to_string());
+        let out =
+            render_neighborhood_scoped(&hood(paths, HashMap::new()), "Focus", OutputMode::Human)
+                .unwrap();
+        assert!(!out.contains("no addressable path"), "{out}");
+        assert!(out.contains("Other"), "{out}");
+    }
+
+    #[test]
+    fn a_boundary_child_without_a_path_does_not_panic() {
+        let b = Uuid::from_u128(1);
+        let child = Uuid::from_u128(2);
+        let mut paths = HashMap::new();
+        paths.insert(b.to_string(), "Cell".to_string());
+        let mut un = HashMap::new();
+        un.insert(child.to_string(), "ambiguous".to_string());
+        let cell = BoundaryResponse {
+            version: "v1".to_string(),
+            project_id: Uuid::from_u128(9),
+            branch: Box::new(models::BranchRef {
+                id: Uuid::from_u128(8),
+                version: 1,
+            }),
+            boundary: Box::new(node(b, "Cell")),
+            children: vec![node(child, "dup")],
+            edges: vec![],
+            paths,
+            unaddressable: un,
+        };
+        let out = render_boundary_scoped(&cell, "Cell", OutputMode::Human)
+            .expect("must render, not panic");
+        assert!(out.contains("share a name"), "{out}");
     }
 }

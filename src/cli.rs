@@ -135,6 +135,14 @@ pub struct ShowArgs {
     /// else the project's main branch.
     #[arg(long)]
     pub branch: Option<String>,
+
+    /// Read only this many levels below PATH, fetching just that slice instead
+    /// of the whole branch. 1 is direct children. Requires PATH and a working
+    /// copy that has been pulled (the local index is what turns the path into
+    /// the id the scoped read needs); without one, the whole graph is fetched
+    /// and filtered locally, and that is reported.
+    #[arg(long, value_name = "N")]
+    pub depth: Option<u32>,
 }
 
 #[derive(Debug, Args)]

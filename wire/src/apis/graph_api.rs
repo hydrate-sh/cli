@@ -39,16 +39,27 @@ pub struct FetchNodeWithNeighborsV1GraphProjectIdNodeNodeIdGetParams {
     pub node_id: String
 }
 
+/// struct for passing parameters to the method [`fetch_subtree_v1_graph_project_id_subtree_node_id_get`]
+#[derive(Clone, Debug)]
+pub struct FetchSubtreeV1GraphProjectIdSubtreeNodeIdGetParams {
+    /// The project the node lives in.
+    pub project_id: String,
+    /// The node to root the subtree at.
+    pub node_id: String,
+    /// How many levels of descendants to include. 1 = direct children only. Levels below the cut are omitted and ``truncated`` reports that they exist.
+    pub depth: Option<u32>
+}
+
 
 /// struct for typed errors of method [`fetch_boundary_v1_graph_project_id_boundary_node_id_get`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBoundaryV1GraphProjectIdBoundaryNodeIdGetError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -56,11 +67,11 @@ pub enum FetchBoundaryV1GraphProjectIdBoundaryNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchGraphV1GraphProjectIdGetError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -68,11 +79,23 @@ pub enum FetchGraphV1GraphProjectIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchNodeWithNeighborsV1GraphProjectIdNodeNodeIdGetError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`fetch_subtree_v1_graph_project_id_subtree_node_id_get`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FetchSubtreeV1GraphProjectIdSubtreeNodeIdGetError {
+    Status401(models::InlineObject5),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -187,6 +210,47 @@ pub async fn fetch_node_with_neighbors_v1_graph_project_id_node_node_id_get(conf
     } else {
         let content = resp.text().await?;
         let entity: Option<FetchNodeWithNeighborsV1GraphProjectIdNodeNodeIdGetError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
+/// Returns a node and its descendants down to ``depth`` levels, with the edges among them. The scoped read for working inside a large project: unlike the full graph read, the response is bounded by ``depth`` rather than by the size of the branch, so a slice of a big graph never puts the whole graph on the wire.
+pub async fn fetch_subtree_v1_graph_project_id_subtree_node_id_get(configuration: &configuration::Configuration, params: FetchSubtreeV1GraphProjectIdSubtreeNodeIdGetParams) -> Result<models::SubtreeResponse, Error<FetchSubtreeV1GraphProjectIdSubtreeNodeIdGetError>> {
+
+    let uri_str = format!("{}/v1/graph/{project_id}/subtree/{node_id}", configuration.base_path, project_id=crate::apis::urlencode(params.project_id), node_id=crate::apis::urlencode(params.node_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::GET, &uri_str);
+
+    if let Some(ref param_value) = params.depth {
+        req_builder = req_builder.query(&[("depth", &param_value.to_string())]);
+    }
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let content_type = super::ContentType::from(content_type);
+
+    if !status.is_client_error() && !status.is_server_error() {
+        let content = resp.text().await?;
+        match content_type {
+            ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::SubtreeResponse`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::SubtreeResponse`")))),
+        }
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<FetchSubtreeV1GraphProjectIdSubtreeNodeIdGetError> = serde_json::from_str(&content).ok();
         Err(Error::ResponseError(ResponseContent { status, content, entity }))
     }
 }

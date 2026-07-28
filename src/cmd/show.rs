@@ -48,6 +48,32 @@ pub fn run(
     let branches = client.list_branches(project.id)?.branches;
     let (branch_id, branch_name) = pick_branch(&branches, args.branch.as_deref(), bound)?;
 
+    // --depth asks for a SCOPED read: fetch only the slice, not the branch.
+    // That needs the node's id, and the CLI addresses nodes by dotted path, so
+    // the local index is what makes it possible. No index (never pulled, or not
+    // bound here) means no id, and we fall back to the whole-graph read — but
+    // say so, because the whole point of the flag is what crosses the wire.
+    if let (Some(depth), Some(path)) = (args.depth, args.path.as_deref()) {
+        match scoped_target(&base_dir(), path)? {
+            Some(node_id) => {
+                // Branch-addressed: the /v1/graph twins answer about the
+                // project's MAIN branch, and this reads the branch you are
+                // bound to, which is where the edits are.
+                let subtree = client.fetch_branch_subtree(branch_id, node_id, depth)?;
+                println!(
+                    "{}",
+                    render_subtree(&subtree, &project.name, &branch_name, path, mode)?
+                );
+                return Ok(());
+            }
+            None => eprintln!(
+                "note: no local index for '{path}', so the whole branch was \
+                 fetched and filtered here. Run `hydrate pull` in a bound \
+                 working copy to read just the slice."
+            ),
+        }
+    }
+
     // The one and only network read of graph content — and it is a GET.
     let graph = client.fetch_branch_graph(branch_id)?;
     println!(
@@ -120,8 +146,14 @@ fn render(
     filter: Option<&str>,
     mode: OutputMode,
 ) -> Result<String, CliError> {
-    let view = build_view(graph, filter)?;
-    Ok(match mode {
+    let view = build_view(graph, filter, None)?;
+    Ok(render_view(&view, project_name, branch_name, mode))
+}
+
+/// Turn a built [`View`] into output. Split from [`render`] so the scoped read
+/// can reuse it with server-supplied paths instead of local reconstruction.
+fn render_view(view: &View, project_name: &str, branch_name: &str, mode: OutputMode) -> String {
+    match mode {
         OutputMode::Json => serde_json::json!({
             "project": project_name,
             "branch": branch_name,
@@ -130,21 +162,38 @@ fn render(
             "cross_boundary_edges": view.cross_boundary,
         })
         .to_string(),
-        OutputMode::Human => human(&view, project_name, branch_name),
-    })
+        OutputMode::Human => human(view, project_name, branch_name),
+    }
 }
 
 /// Build the display view from the fetched graph: reconstruct each node's dotted
 /// path, project its ports, translate edge handles back to dotted port paths,
 /// and (when `filter` is set) narrow to that node's subtree.
-fn build_view(graph: &GraphResponse, filter: Option<&str>) -> Result<View, CliError> {
-    // node id -> dotted path (shared reconstruction, also used by `walk`).
-    let paths = view::node_paths(&graph.nodes)?;
+fn build_view(
+    graph: &GraphResponse,
+    filter: Option<&str>,
+    // Server-rendered paths, when the caller has them. A SCOPED read cannot
+    // reconstruct paths locally: the slice does not contain the ancestors a
+    // dotted path is built from, so `node_paths` fails with "references a
+    // missing parent". The server holds the whole branch and is the only party
+    // that can answer.
+    server_paths: Option<&HashMap<Uuid, String>>,
+) -> Result<View, CliError> {
+    // node id -> dotted path (local reconstruction for the whole-graph read).
+    let paths = match server_paths {
+        Some(p) => p.clone(),
+        None => view::node_paths(&graph.nodes)?,
+    };
 
     // port id -> (owning node's dotted path, port name).
     let mut port_owner: HashMap<Uuid, (String, Option<String>)> = HashMap::new();
     for node in &graph.nodes {
-        let path = &paths[&node.id];
+        let Some(path) = paths.get(&node.id) else {
+            // No path: the server reported this node as unaddressable (an
+            // unnamed node is legal while designing). Its ports simply cannot
+            // be referenced by path; skip rather than index and panic.
+            continue;
+        };
         for side in [
             node.data.inputs.as_deref(),
             node.data.outputs.as_deref(),
@@ -253,8 +302,97 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
     out
 }
 
+/// The working-copy root, or `None` when this directory is not one. `show`
+/// deliberately works outside a working copy (it takes `--project`), so a
+/// missing root is an ordinary state, not an error.
+fn base_dir() -> Option<std::path::PathBuf> {
+    crate::cmd::context::cwd()
+        .ok()
+        .and_then(|c| crate::state::find_root(&c))
+}
+
+/// Resolve `path` to the node id the scoped read needs, using the pulled index.
+///
+/// `None` means "cannot do a scoped read here" — no working copy, no index, or
+/// the path is not in it (a stale index, or a typo). The caller falls back to
+/// the whole-graph read and reports that, rather than failing: asking for a
+/// slice should degrade to the old behaviour, never deny you the graph.
+fn scoped_target(base: &Option<std::path::PathBuf>, path: &str) -> Result<Option<Uuid>, CliError> {
+    let Some(base) = base.as_ref() else {
+        return Ok(None);
+    };
+    let Some(index) = crate::state::Index::load(base)? else {
+        return Ok(None);
+    };
+    Ok(index.entries.get(&format!("node:{path}")).copied())
+}
+
+/// Render a scoped subtree through the SAME renderer the whole-graph view uses,
+/// so the two are indistinguishable in shape to a reader or a parser.
+///
+/// The subtree is repackaged as a `GraphResponse` carrying exactly the returned
+/// node set and both edge lists; passing `path` as the filter then makes the
+/// existing `build_view` split interior from crossing edges the way it always
+/// has. Only what the scoped read uniquely knows is added on top: `depth`, and
+/// whether the walk was CUT.
+fn render_subtree(
+    subtree: &hydrate_wire::models::SubtreeResponse,
+    project_name: &str,
+    branch_name: &str,
+    path: &str,
+    mode: OutputMode,
+) -> Result<String, CliError> {
+    let mut nodes = vec![(*subtree.root).clone()];
+    nodes.extend(subtree.nodes.iter().cloned());
+    let mut edges = subtree.edges.clone();
+    edges.extend(subtree.cross_boundary_edges.iter().cloned());
+
+    let graph = GraphResponse {
+        branch: subtree.branch.clone(),
+        edges,
+        nodes,
+        project_id: subtree.project_id,
+        version: subtree.version.clone(),
+    };
+    // Server-rendered paths — the whole reason the scoped read returns them.
+    // Reconstructing here fails: the slice has no ancestors to walk.
+    let server_paths: HashMap<Uuid, String> = subtree
+        .paths
+        .iter()
+        .filter_map(|(k, v)| Uuid::parse_str(k).ok().map(|id| (id, v.clone())))
+        .collect();
+    let view = build_view(&graph, Some(path), Some(&server_paths))?;
+    let rendered = render_view(&view, project_name, branch_name, mode);
+
+    match mode {
+        OutputMode::Json => {
+            // Augment rather than re-derive, so the scoped payload stays a
+            // superset of the familiar one.
+            let mut v: serde_json::Value = serde_json::from_str(&rendered)
+                .map_err(|e| CliError::Other(format!("rendering the subtree: {e}")))?;
+            v["depth"] = serde_json::json!(subtree.depth);
+            v["truncated"] = serde_json::json!(subtree.truncated);
+            Ok(v.to_string())
+        }
+        OutputMode::Human => {
+            let mut out = rendered;
+            if subtree.truncated {
+                // Reported, never implied: a reader who cannot tell a complete
+                // cell from a slice will treat the slice as complete.
+                out.push_str(&format!(
+                    "\n(cut at depth {} — there are more nodes below; raise --depth to see them)\n",
+                    subtree.depth
+                ));
+            }
+            Ok(out)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use hydrate_wire::models::SubtreeResponse;
+
     use super::*;
     use hydrate_wire::models::{
         self, BranchRef, Position, WireEdge, WireNode, WireNodeData, WirePort,
@@ -687,5 +825,90 @@ mod tests {
             !json.contains(&g.nodes[0].id.to_string()),
             "leaked node uuid"
         );
+    }
+
+    fn subtree_of(sample: &GraphResponse, root_idx: usize, truncated: bool) -> SubtreeResponse {
+        SubtreeResponse {
+            branch: sample.branch.clone(),
+            cross_boundary_edges: vec![],
+            depth: 1,
+            edges: vec![],
+            nodes: vec![],
+            project_id: sample.project_id,
+            root: Box::new(sample.nodes[root_idx].clone()),
+            truncated,
+            version: sample.version.clone(),
+            // The server always sends a path for every returned node; an
+            // empty map would model a server that doesn't, which the contract
+            // no longer permits.
+            paths: sample
+                .nodes
+                .iter()
+                .map(|n| (n.id.to_string(), n.data.name.clone()))
+                .collect(),
+            unaddressable: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_cut_subtree_says_so_in_both_modes() {
+        // The signal that separates "this is the cell" from "this is a slice".
+        // A reader who cannot tell them apart will act on a partial spec.
+        let g = sample_graph();
+        let cut = subtree_of(&g, 0, true);
+        let human = render_subtree(&cut, "proj", "br", "Api", OutputMode::Human).unwrap();
+        assert!(human.contains("cut at depth 1"), "{human}");
+
+        let json: serde_json::Value = serde_json::from_str(
+            &render_subtree(&cut, "proj", "br", "Api", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["truncated"], true);
+        assert_eq!(json["depth"], 1);
+    }
+
+    #[test]
+    fn a_complete_subtree_makes_no_truncation_claim() {
+        let g = sample_graph();
+        let whole = subtree_of(&g, 0, false);
+        let human = render_subtree(&whole, "proj", "br", "Api", OutputMode::Human).unwrap();
+        assert!(!human.contains("cut at depth"), "{human}");
+
+        let json: serde_json::Value = serde_json::from_str(
+            &render_subtree(&whole, "proj", "br", "Api", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["truncated"], false);
+    }
+
+    #[test]
+    fn the_scoped_json_is_a_superset_of_the_whole_graph_json() {
+        // The two views must be interchangeable to a parser — the scoped read
+        // adds fields, it does not reshape the payload.
+        let g = sample_graph();
+        let scoped: serde_json::Value = serde_json::from_str(
+            &render_subtree(
+                &subtree_of(&g, 0, false),
+                "proj",
+                "br",
+                "Api",
+                OutputMode::Json,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let full: serde_json::Value =
+            serde_json::from_str(&render(&g, "proj", "br", Some("Api"), OutputMode::Json).unwrap())
+                .unwrap();
+        for key in full.as_object().unwrap().keys() {
+            assert!(scoped.get(key).is_some(), "scoped view dropped '{key}'");
+        }
+    }
+
+    #[test]
+    fn scoped_target_is_none_outside_a_working_copy() {
+        // No index means no id, which must degrade to the whole-graph read
+        // rather than erroring — asking for a slice never denies you the graph.
+        assert_eq!(scoped_target(&None, "Api").unwrap(), None);
     }
 }
