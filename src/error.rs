@@ -39,6 +39,9 @@ pub enum CliError {
     /// The single-project rule found more than one project, so the target is
     /// ambiguous and must be disambiguated rather than guessed.
     AmbiguousProject { count: usize },
+    /// `init` refused to edit `AGENTS.md` to avoid destroying the user's content
+    /// (a malformed/ambiguous hydrate block, or a symlink at the target).
+    InitRefused(String),
     /// Anything else (a bug, an unexpected response).
     Other(String),
 }
@@ -70,6 +73,7 @@ impl CliError {
             CliError::NotInWorkdir => "not_in_workdir",
             CliError::NoProject => "no_project",
             CliError::AmbiguousProject { .. } => "ambiguous_project",
+            CliError::InitRefused(_) => "init_refused",
             CliError::Other(_) => "error",
         }
     }
@@ -112,6 +116,7 @@ impl fmt::Display for CliError {
                  pick one with `--project <name|id>` or the HYD_PROJECT environment \
                  variable (run `hydrate projects` to see the names and ids)"
             ),
+            CliError::InitRefused(detail) => write!(f, "{detail}"),
             CliError::Other(detail) => write!(f, "{detail}"),
         }
     }
@@ -326,6 +331,17 @@ mod tests {
         assert!(ambiguous.contains("--project"), "{ambiguous}");
         assert!(ambiguous.contains("HYD_PROJECT"), "{ambiguous}");
         assert!(ambiguous.contains("hydrate projects"), "{ambiguous}");
+    }
+
+    #[test]
+    fn init_refused_has_its_own_kind_and_generic_exit() {
+        // A refusal to touch AGENTS.md is a distinct machine token (so a client
+        // can tell it apart from a plain IO error) and a generic, non-retryable
+        // failure.
+        let e = CliError::InitRefused("AGENTS.md is a symlink; refusing".into());
+        assert_eq!(e.kind(), "init_refused");
+        assert_eq!(e.exit_code(), exit::GENERIC);
+        assert!(e.to_string().contains("symlink"));
     }
 
     #[test]

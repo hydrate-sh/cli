@@ -20,11 +20,15 @@ mod diff;
 mod edge;
 mod fork;
 mod guide;
+mod init;
 mod node;
 mod projects;
 mod pull;
 mod show;
 mod status;
+mod validate;
+mod view;
+mod walk;
 
 /// Route a parsed command to its handler.
 pub fn dispatch(cli: Cli) -> ExitCode {
@@ -34,10 +38,12 @@ pub fn dispatch(cli: Cli) -> ExitCode {
     let project = cli.project;
     match cli.command {
         Command::Guide => finish(guide::run(mode), mode),
+        Command::Init => finish(init::run(mode), mode),
         Command::Projects => finish(projects::run(mode), mode),
         Command::Fork(args) => finish(fork::run(args, project, mode), mode),
         Command::Branches => finish(branches::run(project, mode), mode),
         Command::Show(args) => finish(show::run(args, project, mode), mode),
+        Command::Walk(args) => finish(walk::run(args, mode), mode),
         Command::Pull => finish(pull::run(mode), mode),
         Command::Node { action } => match action {
             NodeAction::Add(args) => finish(node::add(args, mode), mode),
@@ -55,7 +61,22 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         },
         Command::Status => finish(status::run(mode), mode),
         Command::Diff => finish(diff::run(mode), mode),
+        Command::Validate => finish_with_code(validate::run(mode), mode),
         Command::Commit => finish(commit::run(mode), mode),
+    }
+}
+
+/// Like [`finish`], but the handler chooses the success exit code (validate
+/// returns `0` when clean, [`crate::exit::VALIDATION`] when it found error-level
+/// findings) — the findings themselves are already printed. A real failure still
+/// prints the error envelope and maps to its own stable code.
+fn finish_with_code(result: Result<u8, CliError>, mode: OutputMode) -> ExitCode {
+    match result {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            output::print_error(&e, mode);
+            ExitCode::from(e.exit_code())
+        }
     }
 }
 

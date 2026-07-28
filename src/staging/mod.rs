@@ -1727,7 +1727,7 @@ fn render_node_path(rest: &str) -> String {
 
 /// `port:` alias bodies are `node_path:side:name`; render as `node_path.name`
 /// (side is dropped — it is not part of the author-facing path).
-fn render_port_path(rest: &str) -> String {
+pub(crate) fn render_port_path(rest: &str) -> String {
     let mut parts = rest.rsplitn(3, ':');
     let name = parts.next().unwrap_or("");
     let _side = parts.next();

@@ -29,6 +29,7 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub(crate) mod exit;
+pub(crate) mod locator;
 pub(crate) mod output;
 pub(crate) mod staging;
 pub(crate) mod state;

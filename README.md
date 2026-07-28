@@ -12,13 +12,23 @@ the server's rules; a bad batch is rejected by the server.
 
 The binary is `hydrate`, with a short alias `hyd`.
 
+Every command reads human-friendly on a terminal and emits machine-readable JSON
+when piped (or with `--json`), and read commands return the **whole** node — its
+description (which is its prompt), constraints, and verifications — so `hydrate`
+doubles as a scriptable surface for an agent that builds from the living spec.
+Use `hydrate walk <path>` to read one node's scoped context (the node plus its
+immediate neighborhood, or a boundary's children with `--boundary`) without
+pulling the entire graph.
+
 ## Command surface
 
 ```
+hydrate init                 Write a pointer to `hydrate guide` into this directory's AGENTS.md
 hydrate projects             List the projects on your account (ids for --project)
 hydrate fork <name>          Fork a working branch from main, bind this directory to it
 hydrate branches             List your working branches
 hydrate show [path]          Print a read-only view of a branch's graph
+hydrate walk <path>          Read one node's scoped context (node + neighborhood)
 hydrate pull                 Refresh the local view of the branch's graph
 hydrate node add ...         Stage a node (behavior or boundary)
 hydrate node set <path> ...  Stage an edit to a node (description, ports, ...)
@@ -30,8 +40,34 @@ hydrate boundary flatten ... Promote a boundary's children and remove it
 hydrate clear                Stage removal of every top-level node
 hydrate status               Show the bound branch + staged-operation summary
 hydrate diff                 Show staged operations in detail
+hydrate validate             Dry-run the staged change; report coherence findings
 hydrate commit               Commit the staged changeset to the bound branch
 ```
+
+`hydrate validate` posts the staged changeset to the server for a dry-run — it
+never commits and never clears the stage — and prints the coherence findings. It
+exits `0` when there are no error-severity findings and a distinct nonzero code
+(`5`) when there are, so an agent can gate a loop:
+
+```
+hydrate validate && hydrate commit
+```
+
+Findings are reported against the dotted paths you author with
+(`Api.Rater.key`), not the server's internal ids, so you can act on one directly
+— and paste the path into the next command. With `--json` the payload is
+`{valid, findings[], located[]}`:
+
+- `findings[]` is the server's report verbatim, ids intact, for correlating with
+  the API.
+- `located[]` is the same list resolved for use. Each entry carries
+  `finding_index` (its position in `findings[]` — two findings can share a
+  locator, so that is the join key), `path`, `path_complete`, and a `message`
+  with the ids replaced.
+
+Paths are resolved from this working copy, so run `hydrate pull` if it is behind
+the branch. When a path cannot be resolved the raw id is shown rather than
+guessed at, `path` is `null`, and a note explains why on stderr.
 
 Run `hydrate guide` for an orientation, or see the full reference at
 [docs.hydrate.sh](https://docs.hydrate.sh).

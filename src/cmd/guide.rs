@@ -24,12 +24,35 @@ The authoring loop
   3. hydrate node add ...    stage nodes (with --description)
      hydrate edge add ...    connect an output port to a matching-typed input port
   4. hydrate diff            review what is staged; nothing has hit the server yet
-  5. hydrate commit          apply the staged changeset to the branch
+  5. hydrate validate        dry-run the staged change; read the coherence findings
+  6. hydrate commit          apply the staged changeset to the branch
 
 Inspecting
   hydrate projects             list your projects (and the ids for --project)
   hydrate branches             list the working branches of the selected project
   hydrate show [path]          read-only view of a branch's graph (optionally a subtree)
+  hydrate walk <path>          read one node's scoped context (node + neighbors);
+                               `--boundary` reads a boundary's children + edges
+
+A scriptable agent surface
+  Every command reads human-friendly on a terminal and machine-readable JSON when
+  piped (or with --json), so an agent can drive the whole loop. `walk` reads the
+  WHOLE node — its description (its prompt), constraints, and verifications — for
+  just the node in question, without pulling the entire graph into context.
+  `validate` dry-runs the staged change and exits nonzero on error-severity
+  findings, so a loop can gate on it: `hydrate validate && hydrate commit`.
+
+If you are a coding agent, run this loop
+  Do these in order for every change, so you build from the spec, not a guess:
+  1. hydrate walk <area>     Read the scoped spec BEFORE editing — a node and its
+                             neighborhood, or a boundary's scope with `--boundary`
+                             — so you build from intent, not a guess.
+  2. author as you build     Record each decision: `hydrate node add` /
+                             `hydrate node set`, `hydrate edge add`.
+  3. hydrate validate        Run it BEFORE committing and fix every error-severity
+                             finding. It exits nonzero on errors, so
+                             `hydrate validate && hydrate commit` gates the commit.
+  4. hydrate commit          Commit once validate is clean.
 
 Editing in place
   hydrate node set <path> ...  edit a node's description, constraints, or ports
@@ -97,9 +120,11 @@ mod tests {
             "hydrate pull",
             "hydrate node add",
             "hydrate edge add",
+            "hydrate validate",
             "hydrate commit",
             "hydrate projects",
             "hydrate show",
+            "hydrate walk",
             "--project",
             "HYD_PROJECT",
             "node set",
@@ -110,6 +135,28 @@ mod tests {
         ] {
             assert!(GUIDE.contains(needle), "guide is missing: {needle}");
         }
+    }
+
+    #[test]
+    fn guide_states_the_agent_loop_in_order() {
+        // The agent-facing section must spell out the imperative loop — read
+        // before editing, then author, validate, commit — so a coding agent can
+        // follow it straight from `guide`.
+        assert!(
+            GUIDE.contains("If you are a coding agent"),
+            "guide is missing the agent loop section"
+        );
+        for needle in ["BEFORE editing", "BEFORE committing", "author as you build"] {
+            assert!(GUIDE.contains(needle), "agent loop is missing: {needle}");
+        }
+        // The steps appear in loop order: walk → validate → commit.
+        let walk = GUIDE.find("If you are a coding agent").unwrap();
+        let validate = GUIDE[walk..].find("hydrate validate").unwrap();
+        let commit = GUIDE[walk..].find("hydrate commit").unwrap();
+        assert!(
+            validate < commit,
+            "the loop must validate before it commits"
+        );
     }
 
     #[test]
