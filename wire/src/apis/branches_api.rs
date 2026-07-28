@@ -30,11 +30,40 @@ pub struct CreateBranchV1ProjectsProjectIdBranchesPostParams {
     pub v1_create_branch_body: models::V1CreateBranchBody
 }
 
+/// struct for passing parameters to the method [`fetch_branch_boundary_v1_branches_branch_id_boundary_node_id_get`]
+#[derive(Clone, Debug)]
+pub struct FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetParams {
+    /// The branch to read.
+    pub branch_id: String,
+    /// The boundary node to inspect.
+    pub node_id: String
+}
+
 /// struct for passing parameters to the method [`fetch_branch_graph_v1_branches_branch_id_graph_get`]
 #[derive(Clone, Debug)]
 pub struct FetchBranchGraphV1BranchesBranchIdGraphGetParams {
     /// The branch to read.
     pub branch_id: String
+}
+
+/// struct for passing parameters to the method [`fetch_branch_node_v1_branches_branch_id_node_node_id_get`]
+#[derive(Clone, Debug)]
+pub struct FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetParams {
+    /// The branch to read.
+    pub branch_id: String,
+    /// The node to read.
+    pub node_id: String
+}
+
+/// struct for passing parameters to the method [`fetch_branch_subtree_v1_branches_branch_id_subtree_node_id_get`]
+#[derive(Clone, Debug)]
+pub struct FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetParams {
+    /// The branch to read.
+    pub branch_id: String,
+    /// The node to root the subtree at.
+    pub node_id: String,
+    /// How many levels of descendants to include. 1 = direct children only.
+    pub depth: Option<u32>
 }
 
 /// struct for passing parameters to the method [`list_branches_v1_projects_project_id_branches_get`]
@@ -57,12 +86,12 @@ pub struct ValidateBranchDeltasV1BranchesBranchIdValidatePostParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ApplyBranchDeltasV1BranchesBranchIdDeltasPostError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost404Response),
     Status409(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost409Response),
     Status422(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost422Response),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -70,11 +99,23 @@ pub enum ApplyBranchDeltasV1BranchesBranchIdDeltasPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CreateBranchV1ProjectsProjectIdBranchesPostError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`fetch_branch_boundary_v1_branches_branch_id_boundary_node_id_get`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetError {
+    Status401(models::InlineObject5),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -82,11 +123,35 @@ pub enum CreateBranchV1ProjectsProjectIdBranchesPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchGraphV1BranchesBranchIdGraphGetError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`fetch_branch_node_v1_branches_branch_id_node_node_id_get`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetError {
+    Status401(models::InlineObject5),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject4),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`fetch_branch_subtree_v1_branches_branch_id_subtree_node_id_get`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetError {
+    Status401(models::InlineObject5),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -94,11 +159,11 @@ pub enum FetchBranchGraphV1BranchesBranchIdGraphGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ListBranchesV1ProjectsProjectIdBranchesGetError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -106,11 +171,11 @@ pub enum ListBranchesV1ProjectsProjectIdBranchesGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ValidateBranchDeltasV1BranchesBranchIdValidatePostError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost404Response),
     Status422(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost422Response),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -193,6 +258,44 @@ pub async fn create_branch_v1_projects_project_id_branches_post(configuration: &
     }
 }
 
+/// Returns a boundary node, its direct children, and the edges between those children — on this branch. Edges that cross the boundary belong to the parent cell's inspection and are not returned.
+pub async fn fetch_branch_boundary_v1_branches_branch_id_boundary_node_id_get(configuration: &configuration::Configuration, params: FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetParams) -> Result<models::BoundaryResponse, Error<FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetError>> {
+
+    let uri_str = format!("{}/v1/branches/{branch_id}/boundary/{node_id}", configuration.base_path, branch_id=crate::apis::urlencode(params.branch_id), node_id=crate::apis::urlencode(params.node_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::GET, &uri_str);
+
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let content_type = super::ContentType::from(content_type);
+
+    if !status.is_client_error() && !status.is_server_error() {
+        let content = resp.text().await?;
+        match content_type {
+            ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::BoundaryResponse`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::BoundaryResponse`")))),
+        }
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
 /// Read the full graph (nodes, ports, edges, version) of a specific branch. Use the returned `version` as `expected_version` on a subsequent apply to that branch.
 pub async fn fetch_branch_graph_v1_branches_branch_id_graph_get(configuration: &configuration::Configuration, params: FetchBranchGraphV1BranchesBranchIdGraphGetParams) -> Result<models::GraphResponse, Error<FetchBranchGraphV1BranchesBranchIdGraphGetError>> {
 
@@ -227,6 +330,85 @@ pub async fn fetch_branch_graph_v1_branches_branch_id_graph_get(configuration: &
     } else {
         let content = resp.text().await?;
         let entity: Option<FetchBranchGraphV1BranchesBranchIdGraphGetError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
+/// Returns a node, every node one edge away from it, and those edges — on this branch. The scoped read an agent uses to load just the context around what it is about to change.
+pub async fn fetch_branch_node_v1_branches_branch_id_node_node_id_get(configuration: &configuration::Configuration, params: FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetParams) -> Result<models::NodeNeighborhoodResponse, Error<FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetError>> {
+
+    let uri_str = format!("{}/v1/branches/{branch_id}/node/{node_id}", configuration.base_path, branch_id=crate::apis::urlencode(params.branch_id), node_id=crate::apis::urlencode(params.node_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::GET, &uri_str);
+
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let content_type = super::ContentType::from(content_type);
+
+    if !status.is_client_error() && !status.is_server_error() {
+        let content = resp.text().await?;
+        match content_type {
+            ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::NodeNeighborhoodResponse`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::NodeNeighborhoodResponse`")))),
+        }
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
+/// Returns a node and its descendants down to `depth` levels on this branch, with the edges among them. The scoped counterpart to `GET /v1/branches/{branch_id}/graph`: bounded by `depth` rather than by the size of the branch, so reading a slice of a large project never puts the whole graph on the wire.
+pub async fn fetch_branch_subtree_v1_branches_branch_id_subtree_node_id_get(configuration: &configuration::Configuration, params: FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetParams) -> Result<models::SubtreeResponse, Error<FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetError>> {
+
+    let uri_str = format!("{}/v1/branches/{branch_id}/subtree/{node_id}", configuration.base_path, branch_id=crate::apis::urlencode(params.branch_id), node_id=crate::apis::urlencode(params.node_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::GET, &uri_str);
+
+    if let Some(ref param_value) = params.depth {
+        req_builder = req_builder.query(&[("depth", &param_value.to_string())]);
+    }
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let content_type = super::ContentType::from(content_type);
+
+    if !status.is_client_error() && !status.is_server_error() {
+        let content = resp.text().await?;
+        match content_type {
+            ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::SubtreeResponse`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::SubtreeResponse`")))),
+        }
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetError> = serde_json::from_str(&content).ok();
         Err(Error::ResponseError(ResponseContent { status, content, entity }))
     }
 }

@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize, de::Error as _};
 use crate::{apis::ResponseContent, models};
 use super::{Error, configuration, ContentType};
 
+/// struct for passing parameters to the method [`create_project_v1_projects_post`]
+#[derive(Clone, Debug)]
+pub struct CreateProjectV1ProjectsPostParams {
+    pub v1_create_project_body: models::V1CreateProjectBody
+}
+
 /// struct for passing parameters to the method [`list_projects_v1_projects_get`]
 #[derive(Clone, Debug)]
 pub struct ListProjectsV1ProjectsGetParams {
@@ -22,17 +28,68 @@ pub struct ListProjectsV1ProjectsGetParams {
 }
 
 
+/// struct for typed errors of method [`create_project_v1_projects_post`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CreateProjectV1ProjectsPostError {
+    Status401(models::InlineObject5),
+    Status403(models::InlineObject),
+    Status409(models::InlineObject2),
+    Status422(models::InlineObject3),
+    Status429(models::InlineObject4),
+    UnknownValue(serde_json::Value),
+}
+
 /// struct for typed errors of method [`list_projects_v1_projects_get`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ListProjectsV1ProjectsGetError {
-    Status401(models::InlineObject3),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject2),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
+
+/// Create a new project owned by the caller. Creating a project also seeds its protected `main` branch in the same transaction, so the returned `main_branch` can be forked immediately (via `POST /v1/projects/{project_id}/branches`) with no second round-trip. The name must be unique among your active projects (case-insensitive); a collision returns 409 `name_taken`. Requires the `graph:write` scope.
+pub async fn create_project_v1_projects_post(configuration: &configuration::Configuration, params: CreateProjectV1ProjectsPostParams) -> Result<models::ProjectCreateResponse, Error<CreateProjectV1ProjectsPostError>> {
+
+    let uri_str = format!("{}/v1/projects", configuration.base_path);
+    let mut req_builder = configuration.client.request(reqwest::Method::POST, &uri_str);
+
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+    req_builder = req_builder.json(&params.v1_create_project_body);
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let content_type = super::ContentType::from(content_type);
+
+    if !status.is_client_error() && !status.is_server_error() {
+        let content = resp.text().await?;
+        match content_type {
+            ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::ProjectCreateResponse`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::ProjectCreateResponse`")))),
+        }
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<CreateProjectV1ProjectsPostError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
 
 /// Returns the projects the caller can see. For API-key callers the list is further filtered by the per-key project allowlist (if configured). Archived projects are excluded. An empty list is a normal response when the caller has no visible projects.
 pub async fn list_projects_v1_projects_get(configuration: &configuration::Configuration, params: ListProjectsV1ProjectsGetParams) -> Result<models::ProjectsListResponse, Error<ListProjectsV1ProjectsGetError>> {
