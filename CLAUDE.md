@@ -37,7 +37,8 @@ Binary `hydrate`, with the short alias `hyd`. Both share one entry point
 - **Secrets never reach logs or output.** The API key is read from the
   environment; it must not be printed, logged, or echoed — not even at debug
   level.
-- **Stable exit codes.** `0` success, `1` generic failure, `4` conflict, `5`
+- **Stable exit codes.** `0` success, `1` generic failure, `2` usage error (the
+  command never ran, so retrying it unchanged cannot succeed), `4` conflict, `5`
   validation-found-errors (`hydrate validate` on a non-`valid` server verdict — a
   shell-gateable pass/fail outcome, not a failure sub-variety), `6` network.
   Richer machine detail rides in the `--json` output, not in new codes.

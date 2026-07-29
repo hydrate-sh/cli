@@ -49,6 +49,14 @@ A scriptable agent surface
   even when your change is clean — run `validate` before staging to get a
   baseline.
 
+  A commit is NOT refused for coherence findings. Unwired inputs, dangling
+  edges, and type mismatches are all reported and all committable — a node
+  legitimately exists before the edge that feeds it, so a half-wired graph must
+  stay committable while you design. `validate` is the check you opt into, not
+  a barrier the server imposes. What a commit DOES refuse is a delta it cannot
+  apply: an unresolved path, a name collision, an edge that breaks the state/io
+  connection rules.
+
 If you are a coding agent, run this loop
   Do these in order for every change, so you build from the spec, not a guess:
   1. hydrate walk <area>     Read the scoped spec BEFORE editing — a node and its
@@ -94,6 +102,11 @@ Worked example
   hydrate diff
   hydrate validate
   hydrate commit
+
+Exit codes
+  0 success; 1 failure; 2 usage error (the command never ran, so retrying it
+  unchanged cannot succeed); 4 conflict (the branch moved — re-run to retry);
+  5 `validate` returned a not-coherent verdict; 6 network failure.
 
 Auth
   Set HYD_API_KEY in your environment (or a .env file). It is never written to
@@ -202,6 +215,76 @@ mod tests {
             GUIDE.contains("baseline"),
             "guide offers no way out of inherited findings"
         );
+    }
+
+    #[test]
+    fn guide_never_claims_a_commit_enforces_coherence() {
+        // A denylist of spellings is not enough: a review defeated the first
+        // version of this test by APPENDING ", but the server will reject the
+        // changeset until they are clear" to the very sentence being pinned,
+        // and every assertion still passed because the true prefix survived.
+        // So assert over the PARAGRAPH and reject any rejection-verb applied to
+        // a commit inside its permissive half.
+        let start = GUIDE
+            .find("A commit is NOT refused")
+            .expect("guide no longer states that a commit survives coherence findings");
+        let para = GUIDE[start..]
+            .split("\n\n")
+            .next()
+            .expect("paragraph")
+            .to_lowercase();
+
+        // The paragraph deliberately ends by naming what a commit DOES refuse.
+        // Scan only the permissive half, and strip the one negated use.
+        let claim = para
+            .split("what a commit does refuse")
+            .next()
+            .expect("permissive half")
+            .replacen("not refused", "", 1);
+
+        for verb in [
+            "reject", "refus", "block", "prevent", "stop ", "enforc", "disallow",
+        ] {
+            assert!(
+                !claim.contains(verb),
+                "the commit-permissive paragraph contains {verb:?}, which reads as \
+                 enforcement:\n{para}"
+            );
+        }
+
+        assert!(
+            GUIDE.contains("DOES refuse"),
+            "guide does not name what a commit refuses"
+        );
+    }
+
+    #[test]
+    fn guide_lists_every_exit_code_the_binary_emits() {
+        // Derived from the constants, NOT from a second hardcoded copy of the
+        // same list: a test that compares the guide against a literal cannot
+        // fail when the code it documents changes, which is the definition of
+        // decoration. Changing exit::CONFLICT must break this.
+        use crate::exit;
+        for (code, noun) in [
+            (exit::SUCCESS, "success"),
+            (exit::GENERIC, "failure"),
+            (exit::CONFLICT, "conflict"),
+            (exit::NETWORK, "network"),
+        ] {
+            let expected = format!("{code} {noun}");
+            assert!(
+                GUIDE.contains(&expected),
+                "guide does not document exit {code} as {noun:?}; looked for {expected:?}"
+            );
+        }
+        assert!(
+            GUIDE.contains(&format!("{} `validate`", exit::VALIDATION)),
+            "guide does not document exit {} for validate",
+            exit::VALIDATION
+        );
+        // 2 comes from the argument parser and has no constant to derive from;
+        // `usage_errors_exit_two` pins the behaviour itself.
+        assert!(GUIDE.contains("2 usage error"), "guide omits exit 2");
     }
 
     #[test]
