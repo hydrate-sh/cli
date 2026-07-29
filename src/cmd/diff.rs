@@ -43,7 +43,11 @@ fn op_line(op: &OpSummary) -> String {
             description,
             constraints,
             verifications,
+            user_kind,
+            path_prefix,
+            language,
             external,
+            external_kind,
             protocol,
             doc_url,
             is_test_node,
@@ -80,11 +84,20 @@ fn op_line(op: &OpSummary) -> String {
             for v in verifications {
                 line.push_str(&format!("\n    verification: {v}"));
             }
-            if let Some(p) = protocol {
-                line.push_str(&format!("\n    protocol: {p}"));
-            }
-            if let Some(d) = doc_url {
-                line.push_str(&format!("\n    doc-url: {d}"));
+            // Every scalar the user staged renders here. Omitting one makes
+            // `diff` — the review-before-commit surface — quietly disagree with
+            // what will actually be sent.
+            for (label, value) in [
+                ("user-kind", user_kind),
+                ("path-prefix", path_prefix),
+                ("language", language),
+                ("external-kind", external_kind),
+                ("protocol", protocol),
+                ("doc-url", doc_url),
+            ] {
+                if let Some(v) = value {
+                    line.push_str(&format!("\n    {label}: {v}"));
+                }
             }
             line
         }
@@ -200,7 +213,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             description,
             constraints,
             verifications,
+            user_kind,
+            path_prefix,
+            language,
             external,
+            external_kind,
             protocol,
             doc_url,
             is_test_node,
@@ -215,7 +232,11 @@ fn op_json(op: &OpSummary) -> serde_json::Value {
             "description": description,
             "constraints": constraints,
             "verifications": verifications,
+            "user_kind": user_kind,
+            "path_prefix": path_prefix,
+            "language": language,
             "external": external,
+            "external_kind": external_kind,
             "protocol": protocol,
             "doc_url": doc_url,
             "test_node": is_test_node,
@@ -321,7 +342,11 @@ mod tests {
             description: None,
             constraints: vec![],
             verifications: vec![],
+            user_kind: None,
+            path_prefix: None,
+            language: None,
             external: false,
+            external_kind: None,
             protocol: None,
             doc_url: None,
             is_test_node: false,
@@ -368,7 +393,11 @@ mod tests {
             description: Some("scores a hotdog".to_string()),
             constraints: vec!["fast".to_string(), "stateless".to_string()],
             verifications: vec![],
+            user_kind: None,
+            path_prefix: None,
+            language: None,
             external: false,
+            external_kind: None,
             protocol: None,
             doc_url: None,
             is_test_node: false,
@@ -398,7 +427,11 @@ mod tests {
             description: Some("the prompt".to_string()),
             constraints: vec!["c1".to_string()],
             verifications: vec![],
+            user_kind: None,
+            path_prefix: None,
+            language: None,
             external: false,
+            external_kind: None,
             protocol: None,
             doc_url: None,
             is_test_node: false,
@@ -420,7 +453,11 @@ mod tests {
             description: None,
             constraints: vec![],
             verifications: vec!["responds within 50ms".to_string()],
+            user_kind: None,
+            path_prefix: None,
+            language: None,
             external: true,
+            external_kind: None,
             protocol: None,
             doc_url: None,
             is_test_node: false,
@@ -624,7 +661,11 @@ mod tests {
             description: None,
             constraints: vec![],
             verifications: vec![],
+            user_kind: None,
+            path_prefix: None,
+            language: None,
             external: false,
+            external_kind: None,
             protocol: None,
             doc_url: None,
             is_test_node: false,
@@ -662,6 +703,54 @@ mod tests {
     }
 
     #[test]
+    fn render_node_add_shows_every_staged_scalar() {
+        // `diff` is the review-before-commit surface. Four boundary/external
+        // scalars were staged and sent but never rendered, so a reviewer could
+        // not see what the commit would carry. Pin ALL of them: a partial
+        // assertion is what let the gap survive.
+        let op = OpSummary::Node {
+            kind: "boundary",
+            path: "Api".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            description: None,
+            constraints: vec![],
+            verifications: vec![],
+            user_kind: Some("service".to_string()),
+            path_prefix: Some("api/".to_string()),
+            language: Some("python".to_string()),
+            external: true,
+            external_kind: Some("saas".to_string()),
+            protocol: Some("HTTPS REST".to_string()),
+            doc_url: Some("https://x".to_string()),
+            is_test_node: false,
+            config: vec![],
+        };
+        let human = render(&summary(vec![op.clone()]), OutputMode::Human);
+        for expected in [
+            "user-kind: service",
+            "path-prefix: api/",
+            "language: python",
+            "external-kind: saas",
+            "protocol: HTTPS REST",
+            "doc-url: https://x",
+        ] {
+            assert!(
+                human.contains(expected),
+                "missing {expected:?} in:\n{human}"
+            );
+        }
+
+        let json = render(&summary(vec![op]), OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let o = &v["ops"][0];
+        assert_eq!(o["user_kind"], "service", "{json}");
+        assert_eq!(o["path_prefix"], "api/", "{json}");
+        assert_eq!(o["language"], "python", "{json}");
+        assert_eq!(o["external_kind"], "saas", "{json}");
+    }
+
+    #[test]
     fn render_node_add_shows_protocol_doc_and_test() {
         let op = OpSummary::Node {
             kind: "behavior",
@@ -671,7 +760,11 @@ mod tests {
             description: None,
             constraints: vec![],
             verifications: vec![],
+            user_kind: None,
+            path_prefix: None,
+            language: None,
             external: true,
+            external_kind: Some("saas".to_string()),
             protocol: Some("gRPC".to_string()),
             doc_url: Some("https://x".to_string()),
             is_test_node: true,

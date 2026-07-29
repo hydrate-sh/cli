@@ -13,18 +13,18 @@ use crate::output::OutputMode;
 const GUIDE: &str = "\
 hydrate — author a typed graph from the terminal.
 
-A project is a graph of nodes. There are two kinds: boundaries, which contain
-other nodes, and behaviors, which do not. Nodes connect through typed ports, and
-each node has a free-text description. An edge runs from an output port to an
-input port of the same type.
+A project is a graph of nodes. Boundaries contain other nodes; behaviors, state,
+io, and interface nodes do not. Nodes connect through typed ports, and each node
+has a free-text description. An edge runs from an output port to an input port;
+the two types should match, but a mismatch is reported rather than refused.
 
 The authoring loop
   1. hydrate fork <name>     create a working branch and bind this directory to it
   2. hydrate pull            sync a local view of the branch's graph
   3. hydrate node add ...    stage nodes (with --description)
-     hydrate edge add ...    connect an output port to a matching-typed input port
+     hydrate edge add ...    connect an output port to an input port
   4. hydrate diff            review what is staged; nothing has hit the server yet
-  5. hydrate validate        dry-run the staged change; read the coherence findings
+  5. hydrate validate        check the branch as it would be; read the findings
   6. hydrate commit          apply the staged changeset to the branch
 
 Inspecting
@@ -42,8 +42,12 @@ A scriptable agent surface
   piped (or with --json), so an agent can drive the whole loop. `walk` reads the
   WHOLE node — its description (its prompt), constraints, and verifications — for
   just the node in question, without pulling the entire graph into context.
-  `validate` dry-runs the staged change and exits nonzero on error-severity
-  findings, so a loop can gate on it: `hydrate validate && hydrate commit`.
+  `validate` reports the coherence of the branch as your staged change would
+  leave it, and exits nonzero when it is not coherent, so a loop can gate on it:
+  `hydrate validate && hydrate commit`. The verdict covers the WHOLE branch, not
+  only your change, so on a branch that already has findings the gate will hold
+  even when your change is clean — run `validate` before staging to get a
+  baseline.
 
 If you are a coding agent, run this loop
   Do these in order for every change, so you build from the spec, not a guess:
@@ -52,10 +56,11 @@ If you are a coding agent, run this loop
                              — so you build from intent, not a guess.
   2. author as you build     Record each decision: `hydrate node add` /
                              `hydrate node set`, `hydrate edge add`.
-  3. hydrate validate        Run it BEFORE committing and fix every error-severity
-                             finding. It exits nonzero on errors, so
-                             `hydrate validate && hydrate commit` gates the commit.
-  4. hydrate commit          Commit once validate is clean.
+  3. hydrate validate        Run it BEFORE committing and fix the findings your
+                             change caused. The verdict covers the whole branch,
+                             so compare against a baseline taken before you
+                             staged — do not try to fix findings you inherited.
+  4. hydrate commit          Commit once your own findings are clear.
 
 Editing in place
   hydrate node set <path> ...  edit a node's description, constraints, or ports
@@ -71,7 +76,8 @@ Conventions
   - Paths are dotted: `Api.Rater` is node Rater inside boundary Api;
     `Api.Rater.score` is its port `score`.
   - Ports are `name:type`, type required: `--in raw:HotDog --out score:Rating`.
-    An edge runs from an output to an input of the SAME type.
+    An edge runs from an output to an input. Matching types are the intent;
+    a mismatch is reported as a finding, not refused.
   - --description is a free-text field on the node. --constraint adds a free-text
     constraint (repeatable).
   - Output is human on a terminal, JSON when piped (force with --json / --human).
@@ -86,6 +92,7 @@ Worked example
       --description 'Mint a collision-free base62 short code for a URL.'
   hydrate edge add --from Api.Shorten.url --to Api.Encoder.url
   hydrate diff
+  hydrate validate
   hydrate commit
 
 Auth
@@ -138,6 +145,63 @@ mod tests {
         ] {
             assert!(GUIDE.contains(needle), "guide is missing: {needle}");
         }
+    }
+
+    #[test]
+    fn guide_does_not_restate_retired_rules() {
+        // The guide is the agent onboarding surface, so a stale rule here
+        // propagates into authored graphs. Two claims were wrong for releases:
+        // that there are only two node kinds, and that an edge requires equal
+        // types (it does not — a mismatch is a finding, not a refusal).
+        for stale in [
+            "two kinds",
+            "SAME type",
+            "matching-typed",
+            "input port of the same type",
+        ] {
+            assert!(
+                !GUIDE.contains(stale),
+                "guide restates a retired rule: {stale}"
+            );
+        }
+        // All five kinds are nameable from the guide.
+        for kind in ["boundar", "behavior", "state", "io", "interface"] {
+            assert!(GUIDE.contains(kind), "guide never mentions kind: {kind}");
+        }
+    }
+
+    #[test]
+    fn guide_worked_example_runs_the_loop_it_teaches() {
+        // The example is what gets copy-pasted. It skipped `validate` while the
+        // loop above it listed validate as step 5 and the agent section called
+        // it mandatory.
+        let example = GUIDE
+            .split("Worked example")
+            .nth(1)
+            .expect("worked example");
+        let diff = example.find("hydrate diff").expect("diff in example");
+        let validate = example
+            .find("hydrate validate")
+            .expect("validate in example");
+        let commit = example.find("hydrate commit").expect("commit in example");
+        assert!(
+            diff < validate && validate < commit,
+            "example out of order:\n{example}"
+        );
+    }
+
+    #[test]
+    fn guide_says_the_validate_verdict_covers_the_whole_branch() {
+        // Without this, an agent on a branch with inherited findings loops
+        // forever "fixing" a changeset that was already clean.
+        assert!(
+            GUIDE.contains("WHOLE branch") || GUIDE.contains("whole branch"),
+            "guide does not scope the validate verdict"
+        );
+        assert!(
+            GUIDE.contains("baseline"),
+            "guide offers no way out of inherited findings"
+        );
     }
 
     #[test]
