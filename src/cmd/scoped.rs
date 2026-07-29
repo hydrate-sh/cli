@@ -25,8 +25,12 @@ use crate::state::Index;
 /// scoped read — cannot be asserted anywhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Plan {
-    /// Read just the slice rooted at this node.
-    Scoped(Uuid),
+    /// Read just the slice rooted at this node, with the node's kind as the
+    /// index recorded it — `None` when the index predates kinds (`node_info`
+    /// is `#[serde(default)]` for exactly that back-compat) or has no entry.
+    /// Carried here rather than re-read so the id and the kind come from ONE
+    /// snapshot; two loads can straddle a concurrent `pull`.
+    Scoped { id: Uuid, kind: Option<String> },
     /// Fetch the whole branch and filter locally, for the stated reason.
     WholeGraph(Fallback),
 }
@@ -68,9 +72,26 @@ pub(crate) fn plan(
         return Ok(Plan::WholeGraph(Fallback::NoIndex));
     };
     match index.entries.get(&format!("node:{path}")) {
-        Some(id) => Ok(Plan::Scoped(*id)),
+        Some(id) => Ok(Plan::Scoped {
+            id: *id,
+            kind: index.node_info.get(id).map(|info| info.kind.clone()),
+        }),
         None => Ok(Plan::WholeGraph(Fallback::PathNotInIndex)),
     }
+}
+
+/// Kinds this build knows. A token outside this set means the index was
+/// written by a newer CLI, so the local check DEFERS rather than rejecting —
+/// the same posture [`unaddressable_label`] takes for an unrecognised reason.
+/// Guessing here would block a legal request with no way past it.
+const KNOWN_KINDS: [&str; 5] = ["behavior", "boundary", "state", "io", "interface"];
+
+/// Whether the index's recorded `kind` is a RECOGNISED non-boundary.
+///
+/// `false` for a boundary, and `false` for anything this build doesn't know —
+/// both mean "don't reject locally; let the server answer".
+pub(crate) fn is_known_non_boundary(kind: &str) -> bool {
+    KNOWN_KINDS.contains(&kind) && kind != "boundary"
 }
 
 /// The working-copy root, or `None` when this directory is not one. `show`
@@ -211,7 +232,7 @@ mod tests {
         let dir = write_index(&[("node:Api.Rater", id)]);
         assert_eq!(
             plan(Some(dir.path()), "Api.Rater", true).unwrap(),
-            Plan::Scoped(id),
+            Plan::Scoped { id, kind: None },
         );
     }
 
@@ -254,5 +275,66 @@ mod tests {
         assert_eq!(sanitize("Api.Rater"), "Api.Rater");
         assert_eq!(sanitize("a\nb"), "a\u{fffd}b");
         assert_eq!(sanitize("caf\u{e9}"), "caf\u{e9}");
+    }
+
+    #[test]
+    fn the_plan_carries_the_kind_from_the_same_snapshot() {
+        // id and kind must come from ONE read: two loads can straddle a
+        // concurrent `pull` and combine facts from different snapshots.
+        let id = Uuid::from_u128(3);
+        let dir = write_index_with_kind(&[("node:Api", id)], id, "behavior");
+        match plan(Some(dir.path()), "Api", true).unwrap() {
+            Plan::Scoped { id: got, kind } => {
+                assert_eq!(got, id);
+                assert_eq!(kind.as_deref(), Some("behavior"));
+            }
+            other => panic!("expected Scoped, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_index_without_node_info_yields_no_kind() {
+        // `node_info` is #[serde(default)] for back-compat with older pulls.
+        let id = Uuid::from_u128(4);
+        let dir = write_index(&[("node:Api", id)]);
+        match plan(Some(dir.path()), "Api", true).unwrap() {
+            Plan::Scoped { kind, .. } => assert_eq!(kind, None),
+            other => panic!("expected Scoped, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_recognised_non_boundary_kinds_are_rejected_locally() {
+        for k in ["behavior", "state", "io", "interface"] {
+            assert!(is_known_non_boundary(k), "{k} should reject locally");
+        }
+        assert!(!is_known_non_boundary("boundary"));
+        // A kind this build predates must DEFER, not reject — the same posture
+        // `unaddressable_label` takes for an unrecognised reason. Rejecting
+        // would block a legal request with no way past it.
+        assert!(!is_known_non_boundary("hyperboundary"));
+        assert!(!is_known_non_boundary(""));
+    }
+
+    fn write_index_with_kind(entries: &[(&str, Uuid)], id: Uuid, kind: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let hy = dir.path().join(".hydrate");
+        std::fs::create_dir_all(&hy).unwrap();
+        let map: std::collections::BTreeMap<String, Uuid> = entries
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), *v))
+            .collect();
+        let index = serde_json::json!({
+            "version": 2,
+            "entries": map,
+            "node_info": {
+                id.to_string(): {
+                    "kind": kind, "inputs": [], "outputs": [], "config": []
+                }
+            },
+            "edges": {},
+        });
+        std::fs::write(hy.join("index.json"), index.to_string()).unwrap();
+        dir
     }
 }

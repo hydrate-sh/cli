@@ -27,7 +27,7 @@ hydrate init                 Write a pointer to `hydrate guide` into this direct
 hydrate projects             List the projects on your account (ids for --project)
 hydrate fork <name>          Fork a working branch from main, bind this directory to it
 hydrate branches             List your working branches
-hydrate show [path]          Print a read-only view of a branch's graph
+hydrate show [path] [--depth N]          Print a read-only view of a branch's graph
 hydrate walk <path>          Read one node's scoped context (node + neighborhood)
 hydrate pull                 Refresh the local view of the branch's graph
 hydrate node add ...         Stage a node (behavior or boundary)
