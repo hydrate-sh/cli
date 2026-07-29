@@ -13,12 +13,19 @@ Binary `hydrate`, with the short alias `hyd`. Both share one entry point
 
 ## This repository is PUBLIC
 
-- **No internal references.** Do not introduce internal planning paths, milestone
-  or feature codenames, ticket ids, or internal review labels into code,
-  comments, commit messages, docs, or tests. This repo is the product's public
-  face; keep it free of internal process vocabulary.
-- Public-facing text (help strings, errors, README) is user documentation — write
-  it for someone who has never seen the internals.
+Not just the published crate and the README — the source, the commit messages,
+the pull request titles and bodies, and the branch names are all world-readable.
+
+So keep all of it **about the product**: what the software does, what a user can
+do with it, and why a change is correct. A commit message explaining a behaviour
+is right; one explaining where the work sat in someone's queue is not.
+
+Before pushing, read your commit message and PR body as a stranger who has only
+ever run `hydrate`. Anything that tells them something other than how the
+product behaves does not belong in this repository.
+
+Public-facing text (help strings, errors, `guide`, README) is user documentation
+— write it for someone who has never seen how any of it is built.
 
 ## Rules
 
