@@ -80,6 +80,7 @@ pub fn run(
             &project.name,
             &branch_name,
             args.path.as_deref(),
+            args.depth,
             mode
         )?
     );
@@ -131,6 +132,11 @@ struct View {
     /// `edges` (the other end is out of view), but surfaced as a loud count so a
     /// filtered inspection never drops a wire without a word. Always 0 unfiltered.
     cross_boundary: usize,
+    /// Whether `--depth` cut nodes off the bottom of this view. Reported for the
+    /// same reason the scoped read reports it: a bounded slice is a PARTIAL
+    /// answer, and a reader who cannot tell partial from complete will treat a
+    /// truncated graph as the whole graph.
+    truncated: bool,
 }
 
 /// Render the branch graph in `mode`, optionally filtered to one node's subtree.
@@ -141,9 +147,14 @@ fn render(
     project_name: &str,
     branch_name: &str,
     filter: Option<&str>,
+    // The `--depth` the user asked for, when they asked for one. The fallback
+    // path must honour it: dropping it here would silently return the whole
+    // subtree to someone who explicitly bounded their read — the exact
+    // context blow-up `--depth` exists to prevent, with no signal.
+    depth: Option<u32>,
     mode: OutputMode,
 ) -> Result<String, CliError> {
-    let view = build_view(graph, filter, None, None)?;
+    let view = build_view(graph, filter, depth, None, None)?;
     Ok(render_view(&view, project_name, branch_name, mode))
 }
 
@@ -157,6 +168,7 @@ fn render_view(view: &View, project_name: &str, branch_name: &str, mode: OutputM
             "nodes": view.nodes,
             "edges": view.edges,
             "cross_boundary_edges": view.cross_boundary,
+            "truncated": view.truncated,
         })
         .to_string(),
         OutputMode::Human => human(view, project_name, branch_name),
@@ -169,6 +181,10 @@ fn render_view(view: &View, project_name: &str, branch_name: &str, mode: OutputM
 fn build_view(
     graph: &GraphResponse,
     filter: Option<&str>,
+    // Levels below `filter` to keep, mirroring the server's `depth`. `None`
+    // keeps the whole subtree. Only meaningful with a filter, which is why
+    // `--depth` requires a path.
+    depth: Option<u32>,
     // Server-rendered paths, when the caller has them. A SCOPED read cannot
     // reconstruct paths locally: the slice does not contain the ancestors a
     // dotted path is built from, so `node_paths` fails with "references a
@@ -213,9 +229,24 @@ fn build_view(
         }
     }
 
-    // Which node paths are in scope (the filter subtree, or all).
+    // Which node paths are in scope: the filter subtree, bounded by `depth`
+    // levels below it when one was asked for. Counting segments is the same
+    // rule the server applies, so a fallback answers with the same node set a
+    // scoped read would have — the note tells the user the FETCH was unscoped,
+    // and that must remain the only difference.
     let in_scope = |path: &str| match filter {
-        Some(f) => path == f || path.starts_with(&format!("{f}.")),
+        Some(f) => {
+            if path == f {
+                return true;
+            }
+            let Some(rest) = path.strip_prefix(&format!("{f}.")) else {
+                return false;
+            };
+            match depth {
+                Some(d) => rest.matches('.').count() < d as usize,
+                None => true,
+            }
+        }
         None => true,
     };
 
@@ -260,10 +291,23 @@ fn build_view(
     }
     edges.sort_by(|a, b| (a.from.as_str(), a.to.as_str()).cmp(&(b.from.as_str(), b.to.as_str())));
 
+    // A node under the filter that `depth` excluded means there is more below.
+    let truncated = match (filter, depth) {
+        (Some(f), Some(_)) => {
+            let prefix = format!("{f}.");
+            graph
+                .nodes
+                .iter()
+                .any(|n| paths[&n.id].starts_with(&prefix) && !in_scope(&paths[&n.id]))
+        }
+        _ => false,
+    };
+
     Ok(View {
         nodes,
         edges,
         cross_boundary,
+        truncated,
     })
 }
 
@@ -301,11 +345,20 @@ fn human(view: &View, project_name: &str, branch_name: &str) -> String {
         }
     }
     if view.cross_boundary > 0 {
-        let plural = if view.cross_boundary == 1 { "" } else { "s" };
+        let (plural, verb) = if view.cross_boundary == 1 {
+            ("", "crosses")
+        } else {
+            ("s", "cross")
+        };
         out.push_str(&format!(
-            "\n{} edge{plural} cross out of this subtree — run `hydrate show` for the full graph",
+            "\n{} edge{plural} {verb} out of this subtree — run `hydrate show` for the full graph",
             view.cross_boundary
         ));
+    }
+    if view.truncated {
+        out.push_str(
+            "\n(cut at the requested depth — there are more nodes below; raise --depth to see them)",
+        );
     }
     out
 }
@@ -368,7 +421,13 @@ fn render_subtree(
     // No local filter: the SERVER already scoped this response to the slice,
     // and filtering by path prefix would drop exactly the nodes it could not
     // give a path — the ones the user most needs to see in order to fix them.
-    let mut view = build_view(&graph, None, Some(&server_paths), Some(&unaddressable))?;
+    let mut view = build_view(
+        &graph,
+        None,
+        None,
+        Some(&server_paths),
+        Some(&unaddressable),
+    )?;
     // The server counted the edges leaving this slice; we cannot.
     view.cross_boundary = subtree.cross_boundary_edges.len();
     let rendered = render_view(&view, project_name, branch_name, mode);
@@ -525,6 +584,100 @@ mod tests {
         }
     }
 
+    /// Three levels: `Api` > `Api.Inner` > `Api.Inner.Leaf`, plus `Api.Direct`.
+    /// `sample_graph` is only two deep, so it cannot tell "depth 1" from "the
+    /// whole subtree" — the exact confusion the fallback bug hid behind.
+    fn deep_graph() -> GraphResponse {
+        use models::wire_node::Kind;
+        GraphResponse {
+            branch: Box::new(BranchRef::new(Uuid::from_u128(2), 1)),
+            project_id: Uuid::from_u128(0xFEED),
+            version: "1".to_string(),
+            nodes: vec![
+                node(0x20, "Api", Kind::Boundary, None, vec![], vec![]),
+                node(0x21, "Inner", Kind::Boundary, Some(0x20), vec![], vec![]),
+                node(0x22, "Leaf", Kind::Behavior, Some(0x21), vec![], vec![]),
+                node(0x23, "Direct", Kind::Behavior, Some(0x20), vec![], vec![]),
+            ],
+            edges: vec![],
+        }
+    }
+
+    #[test]
+    fn fallback_render_honours_depth() {
+        // The whole-graph path is what `show --depth` falls back to when there is
+        // no usable index. Dropping the bound there returns the WHOLE subtree to
+        // someone who explicitly asked for one level — a silent context blow-up
+        // in the one case `--depth` exists to prevent.
+        let g = deep_graph();
+
+        let d1 = render(&g, "proj", "main", Some("Api"), Some(1), OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&d1).unwrap();
+        let paths: Vec<&str> = v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec!["Api", "Api.Direct", "Api.Inner"], "{d1}");
+        assert_eq!(v["truncated"], true, "{d1}");
+
+        // Depth 2 reaches the leaf and is then complete.
+        let d2 = render(&g, "proj", "main", Some("Api"), Some(2), OutputMode::Json).unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&d2).unwrap();
+        assert_eq!(v2["nodes"].as_array().unwrap().len(), 4, "{d2}");
+        assert_eq!(v2["truncated"], false, "{d2}");
+
+        // No depth: the whole subtree, and nothing claims truncation.
+        let all = render(&g, "proj", "main", Some("Api"), None, OutputMode::Json).unwrap();
+        let va: serde_json::Value = serde_json::from_str(&all).unwrap();
+        assert_eq!(va["nodes"].as_array().unwrap().len(), 4, "{all}");
+        assert_eq!(va["truncated"], false, "{all}");
+    }
+
+    #[test]
+    fn truncated_fallback_says_so_in_human_output() {
+        // JSON consumers get `truncated`; a human reading the terminal needs the
+        // same signal, or a cut graph reads as the whole graph.
+        let g = deep_graph();
+        let human = render(&g, "proj", "main", Some("Api"), Some(1), OutputMode::Human).unwrap();
+        assert!(human.contains("cut at the requested depth"), "{human}");
+        assert!(human.contains("--depth"), "{human}");
+        assert!(!human.contains("Api.Inner.Leaf"), "{human}");
+
+        let complete = render(&g, "proj", "main", Some("Api"), Some(2), OutputMode::Human).unwrap();
+        assert!(!complete.contains("cut at"), "{complete}");
+    }
+
+    #[test]
+    fn depth_without_a_filter_is_inert() {
+        // `--depth` requires a path at the CLI layer; if that ever relaxes, an
+        // unfiltered render must not silently start cutting the graph.
+        let g = deep_graph();
+        let json = render(&g, "proj", "main", None, Some(1), OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["nodes"].as_array().unwrap().len(), 4, "{json}");
+        assert_eq!(v["truncated"], false, "{json}");
+    }
+
+    #[test]
+    fn crossing_edge_count_agrees_with_its_verb() {
+        // "1 edge cross out" reads as broken English and undermines a line whose
+        // whole job is to be believed.
+        let g = sample_graph();
+        let one = render(
+            &g,
+            "proj",
+            "main",
+            Some("Api.Rater"),
+            None,
+            OutputMode::Human,
+        )
+        .unwrap();
+        assert!(one.contains("1 edge crosses out"), "{one}");
+        assert!(!one.contains("1 edge cross out"), "{one}");
+    }
+
     #[test]
     fn branch_flag_overrides_binding_overrides_main() {
         let branches = [
@@ -582,10 +735,10 @@ mod tests {
             edges: vec![],
         };
 
-        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         assert!(human.contains("Ports  [interface]"), "{human}");
 
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let n = v["nodes"].as_array().unwrap();
         assert_eq!(n.len(), 1);
@@ -623,10 +776,10 @@ mod tests {
 
         // Both modes render without panicking, and the port is still surfaced by
         // its name/type (the extra fields are accepted, not required to appear).
-        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         assert!(human.contains("hook:Payload"), "{human}");
 
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["nodes"].as_array().unwrap().len(), 1);
         // the port survives into JSON too (by name), not just Human mode
@@ -636,7 +789,7 @@ mod tests {
     #[test]
     fn render_tree_human_and_json_parity() {
         let g = sample_graph();
-        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         // The tree carries every node path (as nested leaves), kinds, ports, edge.
         assert!(human.contains("Api  [boundary]"), "{human}");
         assert!(human.contains("Maker  [behavior]"), "{human}");
@@ -652,7 +805,7 @@ mod tests {
         assert!(lead(rater_indent) > lead(api_indent), "{human}");
 
         // JSON carries the same information.
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["project"], "proj");
         assert_eq!(v["branch"], "main");
@@ -687,7 +840,7 @@ mod tests {
             r#type: None,
         }]);
 
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let rater = v["nodes"]
             .as_array()
@@ -700,7 +853,7 @@ mod tests {
         assert_eq!(rater["verifications"][0]["text"], "score is within 0..=10");
         assert_eq!(rater["verifications"][0]["author"], "user");
 
-        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         assert!(human.contains("Rate a hot dog on a 0-10 scale."), "{human}");
         assert!(human.contains("deterministic"), "{human}");
         assert!(human.contains("score is within 0..=10"), "{human}");
@@ -715,13 +868,13 @@ mod tests {
         // Api is the boundary node (index 0 in sample_graph).
         g.nodes[0].data.language = Some(Some("python".to_string()));
 
-        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         assert!(
             human.contains("Api  [boundary]  (python)"),
             "human view must annotate the boundary's language: {human}"
         );
 
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let api = v["nodes"]
             .as_array()
@@ -738,7 +891,7 @@ mod tests {
         // either mode. The sample graph carries no language on any node.
         let g = sample_graph();
 
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         for n in v["nodes"].as_array().unwrap() {
             assert!(
@@ -748,7 +901,7 @@ mod tests {
         }
         assert!(!json.contains("language"), "{json}");
 
-        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         // The language annotation is the only `]  (` sequence show emits (it rides
         // right after a node's `[kind]`); assert that exact signature is absent
         // rather than any stray `(`, so unrelated future output can't false-trip.
@@ -762,16 +915,24 @@ mod tests {
     fn position_field_is_omitted() {
         // The graph endpoint's placeholder position must never surface in show.
         let g = sample_graph();
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         assert!(!json.contains("position"), "{json}");
-        let human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         assert!(!human.to_lowercase().contains("position"), "{human}");
     }
 
     #[test]
     fn path_filter_narrows_to_subtree() {
         let g = sample_graph();
-        let json = render(&g, "proj", "main", Some("Api.Rater"), OutputMode::Json).unwrap();
+        let json = render(
+            &g,
+            "proj",
+            "main",
+            Some("Api.Rater"),
+            None,
+            OutputMode::Json,
+        )
+        .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let nodes = v["nodes"].as_array().unwrap();
         // Only Rater is in the subtree; Maker and Api are excluded.
@@ -788,25 +949,41 @@ mod tests {
         // out of scope). That must be counted and reported, never silently dropped.
         let g = sample_graph();
         // JSON: an explicit cross-boundary count.
-        let json = render(&g, "proj", "main", Some("Api.Rater"), OutputMode::Json).unwrap();
+        let json = render(
+            &g,
+            "proj",
+            "main",
+            Some("Api.Rater"),
+            None,
+            OutputMode::Json,
+        )
+        .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["cross_boundary_edges"], 1, "{json}");
         // Human: a loud footnote naming the escape hatch.
-        let human = render(&g, "proj", "main", Some("Api.Rater"), OutputMode::Human).unwrap();
+        let human = render(
+            &g,
+            "proj",
+            "main",
+            Some("Api.Rater"),
+            None,
+            OutputMode::Human,
+        )
+        .unwrap();
         assert!(human.contains("1 edge cross"), "{human}");
         assert!(human.contains("hydrate show"), "{human}");
         // The whole-graph view has nothing crossing out.
-        let full = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let full = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let fv: serde_json::Value = serde_json::from_str(&full).unwrap();
         assert_eq!(fv["cross_boundary_edges"], 0, "{full}");
-        let full_human = render(&g, "proj", "main", None, OutputMode::Human).unwrap();
+        let full_human = render(&g, "proj", "main", None, None, OutputMode::Human).unwrap();
         assert!(!full_human.contains("cross out"), "{full_human}");
     }
 
     #[test]
     fn unknown_path_filter_fails_loud() {
         let g = sample_graph();
-        let err = render(&g, "proj", "main", Some("Nope"), OutputMode::Json).unwrap_err();
+        let err = render(&g, "proj", "main", Some("Nope"), None, OutputMode::Json).unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
     }
 
@@ -815,7 +992,7 @@ mod tests {
         // A dangling edge handle is corruption, not a silently-dropped edge.
         let mut g = sample_graph();
         g.edges[0].source_handle = Some(Uuid::from_u128(0xBEEF));
-        let err = render(&g, "proj", "main", None, OutputMode::Json).unwrap_err();
+        let err = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
     }
 
@@ -825,7 +1002,7 @@ mod tests {
         // than skip the edge and under-report the graph's connections.
         let mut g = sample_graph();
         g.edges[0].source_handle = None;
-        let err = render(&g, "proj", "main", None, OutputMode::Json).unwrap_err();
+        let err = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
         assert!(err.to_string().contains("missing a port handle"), "{err}");
     }
@@ -838,7 +1015,7 @@ mod tests {
         // total transform of ONLY that input: every graph node appears, and
         // nothing not derivable from the graph leaks in.
         let g = sample_graph();
-        let json = render(&g, "proj", "main", None, OutputMode::Json).unwrap();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         // Exactly the graph's nodes are rendered (a pure projection of the input).
         assert_eq!(v["nodes"].as_array().unwrap().len(), g.nodes.len());
@@ -931,9 +1108,10 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let full: serde_json::Value =
-            serde_json::from_str(&render(&g, "proj", "br", Some("Api"), OutputMode::Json).unwrap())
-                .unwrap();
+        let full: serde_json::Value = serde_json::from_str(
+            &render(&g, "proj", "br", Some("Api"), None, OutputMode::Json).unwrap(),
+        )
+        .unwrap();
         for key in full.as_object().unwrap().keys() {
             assert!(scoped.get(key).is_some(), "scoped view dropped '{key}'");
         }

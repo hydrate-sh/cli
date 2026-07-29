@@ -1421,8 +1421,16 @@ pub enum OpSummary {
         constraints: Vec<String>,
         /// Plain-text verifications staged on the node.
         verifications: Vec<String>,
+        /// Boundary classifier, or a state node's kind, if staged.
+        user_kind: Option<String>,
+        /// Boundary path prefix, if staged.
+        path_prefix: Option<String>,
+        /// Boundary codegen language, if staged.
+        language: Option<String>,
         /// Whether the node was marked external.
         external: bool,
+        /// The external system's kind, if staged.
+        external_kind: Option<String>,
         /// External-system protocol, if staged.
         protocol: Option<String>,
         /// Documentation URL, if staged.
@@ -1569,7 +1577,11 @@ pub fn summarize(stage: &Stage, index: Option<&Index>) -> Result<StageSummary, C
                         .into_iter()
                         .map(|v| v.text)
                         .collect(),
+                    user_kind: data.user_kind.flatten(),
+                    path_prefix: data.path_prefix.flatten(),
+                    language: data.language.flatten(),
                     external: data.is_external.unwrap_or(false),
+                    external_kind: data.external_kind.flatten(),
                     protocol: data.protocol.flatten(),
                     doc_url: data.documentation_url.flatten(),
                     is_test_node: data.is_test_node.unwrap_or(false),
