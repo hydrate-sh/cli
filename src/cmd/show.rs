@@ -57,7 +57,7 @@ pub fn run(
     if let (Some(depth), Some(path)) = (args.depth, args.path.as_deref()) {
         let on_bound_branch = bound == Some(branch_id);
         match scoped::plan(scoped::base_dir().as_deref(), path, on_bound_branch)? {
-            scoped::Plan::Scoped(node_id) => {
+            scoped::Plan::Scoped { id: node_id, .. } => {
                 let subtree = client.fetch_branch_subtree(branch_id, node_id, depth)?;
                 println!(
                     "{}",

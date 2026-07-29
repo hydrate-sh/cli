@@ -40,21 +40,28 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
     // pulled index supplies; `walk` always reads the branch it is bound to, so
     // the index (which records no branch identity of its own) applies.
     match scoped::plan(Some(&base), &args.path, true)? {
-        scoped::Plan::Scoped(node_id) => {
-            // Reject a non-boundary BEFORE the request. The server 404s such an
-            // id, and the check further down (inside the renderer) can never
-            // run because the request fails first — so without this the user
-            // gets a bare `service error (404)` where the whole-graph path
-            // tells them what the node actually is.
+        scoped::Plan::Scoped { id: node_id, kind } => {
+            // Reject a recognised non-boundary BEFORE the request. The server
+            // 404s such an id, so the check inside the renderer never runs —
+            // it is the /boundary route's contract that a non-boundary is not
+            // found, not a generic property. An UNRECOGNISED kind defers: the
+            // index may have been written by a newer CLI.
             if args.boundary {
-                if let Some(kind) = scoped::node_kind(Some(&base), node_id)? {
-                    if kind != "boundary" {
-                        return Err(CliError::InvalidArgument(format!(
-                            "'{path}' is not a boundary (it is a {kind}); run \
-                             `hydrate walk {path}` for its neighborhood",
-                            path = args.path,
-                        )));
+                if let Some(kind) = kind.as_deref() {
+                    if scoped::is_known_non_boundary(kind) {
+                        return Err(not_a_boundary(&args.path, kind));
                     }
+                } else {
+                    // The index resolved the path but carries no kind — an
+                    // index pulled before kinds were recorded. Say so, rather
+                    // than letting the request 404 with no explanation of why
+                    // the local check didn't help.
+                    eprintln!(
+                        "note: this working copy's index has no kind for \
+                         '{}', so --boundary could not be checked locally; \
+                         run `hydrate pull` to refresh it.",
+                        args.path,
+                    );
                 }
             }
             let out = if args.boundary {
@@ -132,6 +139,38 @@ fn label_of(
                     .unwrap_or("unknown"),
             )
         })
+}
+
+/// The "you asked for a boundary and this isn't one" error.
+///
+/// One builder for all three sites (the local preflight, and both renderers'
+/// server-data checks) so the guidance cannot drift between the scoped and
+/// whole-graph paths — which is the divergence this whole line of work exists
+/// to remove.
+///
+/// `from_index` hedges the claim. The preflight reads a SNAPSHOT: a node's
+/// kind is mutable over the wire, so a node that was a behavior at pull time
+/// may be a boundary now. Stating it as present-tense fact would refuse a
+/// legitimate read while asserting something false, with no remedy named.
+fn not_a_boundary_msg(path: &str, kind: &str, from_index: bool) -> String {
+    let kind = scoped::sanitize(kind);
+    if from_index {
+        format!(
+            "'{path}' is not a boundary — this working copy's index has it as \
+             a {kind}. Run `hydrate walk {path}` for its neighborhood, or \
+             `hydrate pull` if the index is behind."
+        )
+    } else {
+        format!(
+            "'{path}' is not a boundary (it is a {kind}); run \
+             `hydrate walk {path}` for its neighborhood"
+        )
+    }
+}
+
+/// The preflight variant: the claim comes from the local index.
+fn not_a_boundary(path: &str, kind: &str) -> CliError {
+    CliError::InvalidArgument(not_a_boundary_msg(path, kind, true))
 }
 
 /// The `unaddressable` map as something a consumer can act on.
@@ -242,12 +281,14 @@ fn render_boundary_scoped(
     mode: OutputMode,
 ) -> Result<String, CliError> {
     if cell.boundary.kind != models::wire_node::Kind::Boundary {
-        // Same guidance the whole-graph path gives. Without this the quality of
-        // the error depends on whether an index happens to exist locally.
-        return Err(CliError::InvalidArgument(format!(
-            "'{path}' is not a boundary (it is a {}); run `hydrate walk {path}` \
-             for its neighborhood",
+        // Defence in depth, and normally unreachable: the /boundary route 404s
+        // a non-boundary id, so a 200 body should always be one. Kept because
+        // it is the only check that does not depend on a local index — if the
+        // route's contract ever widens, this is what still catches a mismatch.
+        return Err(CliError::InvalidArgument(not_a_boundary_msg(
+            path,
             view::kind_str(cell.boundary.kind),
+            false,
         )));
     }
     let paths = &cell.paths;
