@@ -73,6 +73,20 @@ pub(crate) fn plan(
     }
 }
 
+/// The kind of a node, from the pulled index, without a round trip.
+///
+/// `None` when there is no index or it doesn't know this id — the caller then
+/// lets the server answer. Used to reject an obviously-wrong request BEFORE
+/// making it: the server 404s a non-boundary id, and a bare `service error
+/// (404)` is worse guidance than naming what the node actually is.
+pub(crate) fn node_kind(base: Option<&Path>, id: Uuid) -> Result<Option<String>, CliError> {
+    let Some(base) = base else { return Ok(None) };
+    let Some(index) = Index::load(base)? else {
+        return Ok(None);
+    };
+    Ok(index.node_info.get(&id).map(|info| info.kind.clone()))
+}
+
 /// The working-copy root, or `None` when this directory is not one. `show`
 /// deliberately works outside a working copy (it takes `--project`), so a
 /// missing root is an ordinary state rather than an error.

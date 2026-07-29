@@ -41,6 +41,22 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
     // the index (which records no branch identity of its own) applies.
     match scoped::plan(Some(&base), &args.path, true)? {
         scoped::Plan::Scoped(node_id) => {
+            // Reject a non-boundary BEFORE the request. The server 404s such an
+            // id, and the check further down (inside the renderer) can never
+            // run because the request fails first — so without this the user
+            // gets a bare `service error (404)` where the whole-graph path
+            // tells them what the node actually is.
+            if args.boundary {
+                if let Some(kind) = scoped::node_kind(Some(&base), node_id)? {
+                    if kind != "boundary" {
+                        return Err(CliError::InvalidArgument(format!(
+                            "'{path}' is not a boundary (it is a {kind}); run \
+                             `hydrate walk {path}` for its neighborhood",
+                            path = args.path,
+                        )));
+                    }
+                }
+            }
             let out = if args.boundary {
                 let cell = client.fetch_branch_boundary(binding.branch_id, node_id)?;
                 render_boundary_scoped(&cell, &args.path, mode)?

@@ -43,6 +43,25 @@ fn serve_once(body: &'static str) -> (String, mpsc::Receiver<String>) {
     (addr, rx)
 }
 
+/// A working copy whose index also records the node's KIND, as a real pull does.
+fn workdir_with_kind(kind: &str) -> tempfile::TempDir {
+    let dir = workdir();
+    std::fs::write(
+        dir.path().join(".hydrate").join("index.json"),
+        serde_json::json!({
+            "version": 2,
+            "entries": { "node:Api": NODE_ID },
+            "node_info": {
+                NODE_ID: { "kind": kind, "inputs": [], "outputs": [], "config": [] }
+            },
+            "edges": {},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    dir
+}
+
 /// A working copy bound to BOUND_BRANCH whose index knows `Api` -> NODE_ID.
 fn workdir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -158,4 +177,54 @@ fn without_an_index_walk_falls_back_to_the_whole_graph_read() {
         request.contains(&format!("/v1/branches/{BOUND_BRANCH}/graph")),
         "with no index the whole-graph read is correct, got: {request}"
     );
+}
+
+#[test]
+fn walk_boundary_on_a_behavior_fails_before_making_a_request() {
+    // The server 404s a non-boundary id, so a check that runs on the RESPONSE
+    // can never fire — the user just gets `service error (404)`. The guard has
+    // to preempt the request, and the way to prove it did is that no request
+    // ever arrives.
+    let (addr, rx) = serve_once("{}");
+    let dir = workdir_with_kind("behavior");
+    let out = Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["walk", "Api", "--boundary"])
+        .current_dir(dir.path())
+        .env("HYD_BASE_URL", &addr)
+        .env("HYD_API_KEY", "test-key-not-a-real-credential")
+        .output()
+        .expect("binary should run");
+
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        output.contains("is not a boundary") && output.contains("behavior"),
+        "expected the local guidance, got: {output}"
+    );
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(750))
+            .is_err(),
+        "the guard must fire BEFORE the request, but one was sent"
+    );
+}
+
+#[test]
+fn walk_boundary_on_a_real_boundary_still_requests() {
+    let body = r#"{"version":"v1","project_id":"33333333-3333-3333-3333-333333333333",
+        "branch":{"id":"11111111-1111-1111-1111-111111111111","version":1},
+        "boundary":{"id":"22222222-2222-2222-2222-222222222222","kind":"boundary",
+                "parent_id":null,"position":{"x":0,"y":0},
+                "data":{"name":"Api","description":"","status":"idle",
+                        "is_test_node":false,"is_external":false}},
+        "children":[],"edges":[],
+        "paths":{"22222222-2222-2222-2222-222222222222":"Api"},
+        "unaddressable":{}}"#;
+    let (addr, rx) = serve_once(body);
+    let dir = workdir_with_kind("boundary");
+    run_walk(&dir, &addr, &["walk", "Api", "--boundary"]);
+    let request = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(request.contains("/boundary/"), "got: {request}");
 }
