@@ -31,8 +31,11 @@ Inspecting
   hydrate projects             list your projects (and the ids for --project)
   hydrate branches             list the working branches of the selected project
   hydrate show [path]          read-only view of a branch's graph (optionally a subtree)
+  hydrate show <path> --depth N  read only N levels below <path>, fetching just
+                               that slice instead of the whole branch
   hydrate walk <path>          read one node's scoped context (node + neighbors);
                                `--boundary` reads a boundary's children + edges
+                               (it errors on a non-boundary — use the plain walk)
 
 A scriptable agent surface
   Every command reads human-friendly on a terminal and machine-readable JSON when
