@@ -49,6 +49,14 @@ A scriptable agent surface
   even when your change is clean — run `validate` before staging to get a
   baseline.
 
+  A commit is NOT refused for coherence findings. Unwired inputs, dangling
+  edges, and type mismatches are all reported and all committable — a node
+  legitimately exists before the edge that feeds it, so a half-wired graph must
+  stay committable while you design. `validate` is the check you opt into, not
+  a barrier the server imposes. What a commit DOES refuse is a delta it cannot
+  apply: an unresolved path, a name collision, an edge that breaks the state/io
+  connection rules.
+
 If you are a coding agent, run this loop
   Do these in order for every change, so you build from the spec, not a guess:
   1. hydrate walk <area>     Read the scoped spec BEFORE editing — a node and its
@@ -94,6 +102,11 @@ Worked example
   hydrate diff
   hydrate validate
   hydrate commit
+
+Exit codes
+  0 success; 1 failure; 2 usage error (the command never ran, so retrying it
+  unchanged cannot succeed); 4 conflict (the branch moved — re-run to retry);
+  5 `validate` returned a not-coherent verdict; 6 network failure.
 
 Auth
   Set HYD_API_KEY in your environment (or a .env file). It is never written to
@@ -202,6 +215,51 @@ mod tests {
             GUIDE.contains("baseline"),
             "guide offers no way out of inherited findings"
         );
+    }
+
+    #[test]
+    fn guide_never_claims_a_commit_enforces_coherence() {
+        // A commit is accepted with error-severity findings — verified against
+        // the live service. Docs said the opposite for a release, so pin the
+        // absence of gate language here as well as its presence in the docs.
+        for stale in [
+            "hard gate",
+            "is enforced",
+            "blocks the commit",
+            "refuses the commit",
+        ] {
+            assert!(!GUIDE.contains(stale), "guide claims enforcement: {stale}");
+        }
+        assert!(
+            GUIDE.contains("NOT refused for coherence findings"),
+            "guide does not say a commit survives coherence findings"
+        );
+        // And it must say what a commit DOES refuse, or the reader concludes
+        // nothing is checked at all.
+        assert!(
+            GUIDE.contains("DOES refuse"),
+            "guide does not name what a commit refuses"
+        );
+    }
+
+    #[test]
+    fn guide_lists_every_exit_code_the_binary_emits() {
+        // Exit 2 comes from the argument parser and went undocumented through
+        // sixteen releases. A caller branching on exit status needs all of them.
+        assert!(
+            GUIDE.contains("Exit codes"),
+            "guide has no exit-code section"
+        );
+        for code in [
+            "0 success",
+            "1 failure",
+            "2 usage error",
+            "4 conflict",
+            "5 `validate`",
+            "6 network",
+        ] {
+            assert!(GUIDE.contains(code), "guide is missing exit code: {code}");
+        }
     }
 
     #[test]
