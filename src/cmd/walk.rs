@@ -96,10 +96,11 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
 /// Locate the node addressed by `path` in the branch graph, alongside the map of
 /// every node's dotted path. An unknown path fails loud with the same guidance
 /// `show` gives.
-fn locate<'g>(
-    graph: &'g GraphResponse,
-    path: &str,
-) -> Result<(&'g WireNode, HashMap<Uuid, String>), CliError> {
+/// The focal node, every node's dotted path, and `id → reason` for the nodes
+/// that have none — the same split the server's scoped reads return.
+type Located<'g> = (&'g WireNode, HashMap<Uuid, String>, HashMap<String, String>);
+
+fn locate<'g>(graph: &'g GraphResponse, path: &str) -> Result<Located<'g>, CliError> {
     // Report rather than abort: an unnamed node is legal while designing, and
     // the scoped path renders it. See `node_paths_reporting`.
     let (mut paths, unaddressable) = view::node_paths_reporting(&graph.nodes)?;
@@ -113,6 +114,18 @@ fn locate<'g>(
             )
         });
     }
+    // A placeholder is a LABEL, not an address. It is written into the same map
+    // this search reads, and every unaddressable node gets the same text — so
+    // without this, a label whose own words say "give it a name to address it"
+    // would be accepted as a path, and with several such nodes the first in
+    // graph order would win silently. A dotted path is a slug; refuse anything
+    // that could not be one.
+    if path.starts_with('<') {
+        return Err(CliError::InvalidArgument(format!(
+            "'{path}' is a placeholder for a node that has no addressable path, \
+             not a path you can read. Give the node a name to address it"
+        )));
+    }
     let node = graph
         .nodes
         .iter()
@@ -122,7 +135,7 @@ fn locate<'g>(
                 "no node '{path}' on this branch; run `hydrate show` to see the whole graph"
             ))
         })?;
-    Ok((node, paths))
+    Ok((node, paths, unaddressable))
 }
 
 /// Render a node + its 1-hop neighborhood computed from the branch graph: the
@@ -359,7 +372,7 @@ fn render_neighborhood(
     path: &str,
     mode: OutputMode,
 ) -> Result<String, CliError> {
-    let (target, paths) = locate(graph, path)?;
+    let (target, paths, unaddressable) = locate(graph, path)?;
 
     // A boundary's scope is read with `--boundary`; a plain walk still returns its
     // neighborhood, but point the caller at the richer read.
@@ -415,6 +428,11 @@ fn render_neighborhood(
             "neighbors": neighbors,
             "edges": edges,
             "version": graph.version,
+            // The fallback renders unaddressable nodes as placeholder labels, so
+            // it owes the same degradation channel the scoped read has. Without
+            // it a consumer sees a placeholder sitting where a dotted path
+            // belongs, with nothing in the payload saying anything degraded.
+            "unaddressable": unaddressable_report(&unaddressable),
         })
         .to_string(),
         OutputMode::Human => {
@@ -430,6 +448,7 @@ fn render_neighborhood(
                 out.push_str(&n.human(0));
             }
             out.push_str(&edge_lines(&edges));
+            out.push_str(&unaddressable_summary(&unaddressable));
             out
         }
     })
@@ -443,7 +462,7 @@ fn render_boundary(
     path: &str,
     mode: OutputMode,
 ) -> Result<String, CliError> {
-    let (target, paths) = locate(graph, path)?;
+    let (target, paths, unaddressable) = locate(graph, path)?;
 
     // `--boundary` only makes sense on a boundary; a friendly local check beats an
     // empty or confusing scope on any other kind.
@@ -493,6 +512,7 @@ fn render_boundary(
             "children": children,
             "edges": edges,
             "version": graph.version,
+            "unaddressable": unaddressable_report(&unaddressable),
         })
         .to_string(),
         OutputMode::Human => {
@@ -508,6 +528,7 @@ fn render_boundary(
                 out.push_str(&c.human(1));
             }
             out.push_str(&edge_lines(&edges));
+            out.push_str(&unaddressable_summary(&unaddressable));
             out
         }
     })
@@ -688,6 +709,41 @@ mod tests {
         assert!(human.contains("Maker  [behavior]"), "{human}");
         assert!(human.contains("Rater  [behavior]"), "{human}");
         assert!(human.contains("Api.Maker.dog -> Api.Rater.raw"), "{human}");
+    }
+
+    #[test]
+    fn a_placeholder_label_is_not_an_address() {
+        // Every unaddressable node gets the SAME label, written into the very
+        // map `locate` searches. Without a guard, a label whose own words say
+        // "give it a name to address it" is accepted as a path, and with
+        // several such nodes the first in graph order wins — silently, with a
+        // real answer about an arbitrary node.
+        let mut g = sample_graph();
+        g.nodes[1].data.name = String::new();
+        let label = scoped::unaddressable_label("empty_name");
+        let err = render_neighborhood(&g, &label, OutputMode::Json).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("placeholder"), "{msg}");
+        assert!(msg.contains("Give the node a name"), "{msg}");
+    }
+
+    #[test]
+    fn the_fallback_reports_unaddressable_nodes_too() {
+        // The fallback renders placeholders, so it owes the same degradation
+        // channel the scoped read has. Otherwise a consumer sees a placeholder
+        // where a dotted path belongs and nothing says anything degraded.
+        let mut g = sample_graph();
+        g.nodes[1].data.name = String::new();
+
+        let json = render_neighborhood(&g, "Api.Rater", OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let un = v["unaddressable"].as_array().expect("unaddressable array");
+        assert_eq!(un.len(), 1, "{json}");
+        assert!(un[0]["label"].is_string(), "{json}");
+        assert!(un[0]["reason"] == "empty_name", "{json}");
+
+        let human = render_neighborhood(&g, "Api.Rater", OutputMode::Human).unwrap();
+        assert!(human.contains("no addressable path"), "{human}");
     }
 
     #[test]

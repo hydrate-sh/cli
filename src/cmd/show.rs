@@ -1239,6 +1239,23 @@ mod scoped_subtree_tests {
     }
 
     #[test]
+    fn an_unnamed_node_renders_instead_of_panicking() {
+        // `paths` is deliberately not total, and `build_view` indexes it. The
+        // fill-in that labels unaddressable nodes is therefore load-bearing
+        // against a panic, not cosmetic — and it shipped with no test, so
+        // removing it broke nothing.
+        let mut g = sample_graph();
+        g.nodes[1].data.name = String::new();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json)
+            .expect("must render, not panic");
+        assert!(json.contains("<unnamed"), "{json}");
+
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human)
+            .expect("must render, not panic");
+        assert!(human.contains("<unnamed"), "{human}");
+    }
+
+    #[test]
     fn a_non_uuid_path_key_fails_loud() {
         let mut st = real_subtree(vec![], 0);
         st.paths.insert("not-a-uuid".to_string(), "X".to_string());
