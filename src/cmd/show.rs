@@ -200,7 +200,21 @@ fn build_view(
     // node id -> dotted path (local reconstruction for the whole-graph read).
     let mut paths = match server_paths {
         Some(p) => p.clone(),
-        None => view::node_paths(&graph.nodes)?,
+        // Same leniency as the scoped path: report an unaddressable node
+        // rather than failing the whole read on it.
+        None => {
+            let (mut p, un) = view::node_paths_reporting(&graph.nodes)?;
+            for node in &graph.nodes {
+                p.entry(node.id).or_insert_with(|| {
+                    scoped::unaddressable_label(
+                        un.get(&node.id.to_string())
+                            .map(String::as_str)
+                            .unwrap_or("unknown"),
+                    )
+                });
+            }
+            p
+        }
     };
     // Fill in a label for every node the server could not path, so the map is
     // total from here down and nothing has to guess whether indexing is safe.
@@ -1222,6 +1236,23 @@ mod scoped_subtree_tests {
         .unwrap();
         // The server counted them; we report its count rather than re-deriving.
         assert_eq!(v["cross_boundary_edges"], 1);
+    }
+
+    #[test]
+    fn an_unnamed_node_renders_instead_of_panicking() {
+        // `paths` is deliberately not total, and `build_view` indexes it. The
+        // fill-in that labels unaddressable nodes is therefore load-bearing
+        // against a panic, not cosmetic — and it shipped with no test, so
+        // removing it broke nothing.
+        let mut g = sample_graph();
+        g.nodes[1].data.name = String::new();
+        let json = render(&g, "proj", "main", None, None, OutputMode::Json)
+            .expect("must render, not panic");
+        assert!(json.contains("<unnamed"), "{json}");
+
+        let human = render(&g, "proj", "main", None, None, OutputMode::Human)
+            .expect("must render, not panic");
+        assert!(human.contains("<unnamed"), "{human}");
     }
 
     #[test]
