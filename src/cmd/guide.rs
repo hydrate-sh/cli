@@ -24,7 +24,7 @@ The authoring loop
   3. hydrate node add ...    stage nodes (with --description)
      hydrate edge add ...    connect an output port to an input port
   4. hydrate diff            review what is staged; nothing has hit the server yet
-  5. hydrate validate        check the branch as it would be; read the findings
+  5. hydrate validate        read the findings your change adds
   6. hydrate commit          apply the staged changeset to the branch
 
 Inspecting
@@ -42,12 +42,11 @@ A scriptable agent surface
   piped (or with --json), so an agent can drive the whole loop. `walk` reads the
   WHOLE node — its description (its prompt), constraints, and verifications — for
   just the node in question, without pulling the entire graph into context.
-  `validate` reports the coherence of the branch as your staged change would
-  leave it, and exits nonzero when it is not coherent, so a loop can gate on it:
-  `hydrate validate && hydrate commit`. The verdict covers the WHOLE branch, not
-  only your change, so on a branch that already has findings the gate will hold
-  even when your change is clean — run `validate` before staging to get a
-  baseline.
+  `validate` reports the coherence findings YOUR staged change adds, and exits
+  nonzero when it adds an error-severity one, so a loop can gate on it:
+  `hydrate validate && hydrate commit`. Findings already on the branch are
+  listed but do not gate, so the gate works on a branch that is not yet clean.
+  `--whole-branch` grades the whole graph instead.
 
   A commit is NOT refused for coherence findings. Unwired inputs, dangling
   edges, and type mismatches are all reported and all committable — a node
@@ -64,10 +63,10 @@ If you are a coding agent, run this loop
                              — so you build from intent, not a guess.
   2. author as you build     Record each decision: `hydrate node add` /
                              `hydrate node set`, `hydrate edge add`.
-  3. hydrate validate        Run it BEFORE committing and fix the findings your
-                             change caused. The verdict covers the whole branch,
-                             so compare against a baseline taken before you
-                             staged — do not try to fix findings you inherited.
+  3. hydrate validate        Run it BEFORE committing and fix the findings it
+                             attributes to your change. Findings you inherited
+                             are listed separately and do not gate, so there is
+                             nothing to compare by hand.
   4. hydrate commit          Commit once your own findings are clear.
 
 Editing in place
@@ -204,16 +203,27 @@ mod tests {
     }
 
     #[test]
-    fn guide_says_the_validate_verdict_covers_the_whole_branch() {
-        // Without this, an agent on a branch with inherited findings loops
-        // forever "fixing" a changeset that was already clean.
+    fn guide_scopes_the_validate_verdict_to_the_users_change() {
+        // The verdict used to cover the whole branch, which sent an agent on an
+        // imported graph into an endless loop fixing findings it did not cause.
+        // The guide must now say whose findings gate, and name the escape hatch
+        // for the branch-health question the old default answered.
         assert!(
-            GUIDE.contains("WHOLE branch") || GUIDE.contains("whole branch"),
-            "guide does not scope the validate verdict"
+            GUIDE.contains("YOUR staged change") || GUIDE.contains("your staged change"),
+            "guide does not scope the verdict to the user's change"
         );
         assert!(
-            GUIDE.contains("baseline"),
-            "guide offers no way out of inherited findings"
+            GUIDE.contains("do not gate"),
+            "guide does not say inherited findings are non-gating"
+        );
+        assert!(
+            GUIDE.contains("--whole-branch"),
+            "guide does not name the whole-branch probe"
+        );
+        // And it must not still teach the manual baseline the flag replaces.
+        assert!(
+            !GUIDE.contains("baseline"),
+            "guide still teaches a manual baseline comparison"
         );
     }
 

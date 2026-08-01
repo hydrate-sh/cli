@@ -46,8 +46,9 @@ Public-facing text (help strings, errors, `guide`, README) is user documentation
   level.
 - **Stable exit codes.** `0` success, `1` generic failure, `2` usage error (the
   command never ran, so retrying it unchanged cannot succeed), `4` conflict, `5`
-  validation-found-errors (`hydrate validate` on a non-`valid` server verdict — a
-  shell-gateable pass/fail outcome, not a failure sub-variety), `6` network.
+  validation-found-errors (`hydrate validate` when your staged change adds an
+  error-severity finding — a shell-gateable pass/fail outcome, not a failure
+  sub-variety; `--whole-branch` grades the whole graph instead), `6` network.
   Richer machine detail rides in the `--json` output, not in new codes.
 - **Dual output.** Human-readable on a TTY, JSON when piped; `--json` / `--human`
   override. The two must carry the same information.

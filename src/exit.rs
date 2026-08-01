@@ -12,8 +12,10 @@ pub const GENERIC: u8 = 1;
 /// Optimistic-concurrency conflict — the branch moved under us. Retryable.
 pub const CONFLICT: u8 = 4;
 
-/// `hydrate validate` found error-severity coherence findings in the staged
-/// change. Distinct from a transport/parse failure so an agent can gate a loop
+/// `hydrate validate` found error-severity coherence findings **that your
+/// staged change introduced**. Findings already on the branch are reported but
+/// do not set this code; `--whole-branch` grades everything instead and follows
+/// the server's verdict verbatim. Distinct from a transport/parse failure so an agent can gate a loop
 /// (`hydrate validate && hydrate commit`): the findings themselves still print;
 /// this code is only the pass/fail signal, not an error reaching the service.
 pub const VALIDATION: u8 = 5;
