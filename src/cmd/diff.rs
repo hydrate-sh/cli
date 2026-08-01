@@ -33,7 +33,7 @@ fn render(summary: &StageSummary, mode: OutputMode) -> String {
     }
 }
 
-fn op_line(op: &OpSummary) -> String {
+pub(super) fn op_line(op: &OpSummary) -> String {
     match op {
         OpSummary::Node {
             kind,

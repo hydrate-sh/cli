@@ -68,6 +68,15 @@ fn ensure_dir(base: &Path) -> Result<PathBuf, CliError> {
 /// intact rather than a truncated one — staged work is never half-written away.
 /// The temp file is a sibling so the rename stays within one filesystem (where
 /// it is atomic), and the rename replaces any existing target in a single step.
+/// Write an arbitrary file into `base/.hydrate/`, atomically.
+///
+/// Used by `stage discard` for its recovery slot. Deliberately takes a file
+/// NAME, not a path, so a caller cannot reach outside the state directory.
+pub fn write_state_file(base: &Path, name: &str, body: &[u8]) -> Result<(), CliError> {
+    let dir = ensure_dir(base)?;
+    atomic_write(&dir.join(name), body)
+}
+
 fn atomic_write(path: &Path, body: &[u8]) -> Result<(), CliError> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
