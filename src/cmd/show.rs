@@ -200,7 +200,21 @@ fn build_view(
     // node id -> dotted path (local reconstruction for the whole-graph read).
     let mut paths = match server_paths {
         Some(p) => p.clone(),
-        None => view::node_paths(&graph.nodes)?,
+        // Same leniency as the scoped path: report an unaddressable node
+        // rather than failing the whole read on it.
+        None => {
+            let (mut p, un) = view::node_paths_reporting(&graph.nodes)?;
+            for node in &graph.nodes {
+                p.entry(node.id).or_insert_with(|| {
+                    scoped::unaddressable_label(
+                        un.get(&node.id.to_string())
+                            .map(String::as_str)
+                            .unwrap_or("unknown"),
+                    )
+                });
+            }
+            p
+        }
     };
     // Fill in a label for every node the server could not path, so the map is
     // total from here down and nothing has to guess whether indexing is safe.

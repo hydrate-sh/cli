@@ -100,7 +100,19 @@ fn locate<'g>(
     graph: &'g GraphResponse,
     path: &str,
 ) -> Result<(&'g WireNode, HashMap<Uuid, String>), CliError> {
-    let paths = view::node_paths(&graph.nodes)?;
+    // Report rather than abort: an unnamed node is legal while designing, and
+    // the scoped path renders it. See `node_paths_reporting`.
+    let (mut paths, unaddressable) = view::node_paths_reporting(&graph.nodes)?;
+    for node in &graph.nodes {
+        paths.entry(node.id).or_insert_with(|| {
+            scoped::unaddressable_label(
+                unaddressable
+                    .get(&node.id.to_string())
+                    .map(String::as_str)
+                    .unwrap_or("unknown"),
+            )
+        });
+    }
     let node = graph
         .nodes
         .iter()
@@ -318,7 +330,7 @@ fn render_boundary_scoped(
             "children": child_views,
             "edges": edges,
             "version": cell.version,
-            "unaddressable": un,
+            "unaddressable": unaddressable_report(un),
         })
         .to_string(),
         OutputMode::Human => {
@@ -862,5 +874,70 @@ mod scoped_tests {
         let out = render_boundary_scoped(&cell, "Cell", OutputMode::Human)
             .expect("must render, not panic");
         assert!(out.contains("share a name"), "{out}");
+
+        // And the JSON payload must not name the node by id. The neighborhood
+        // path has had a reporter for this since it shipped; the boundary path
+        // emitted the raw map, keyed by UUID, straight into --boundary --json.
+        // Ids in output an author consumes are the thing this product exists to
+        // hide, and there was no test on this side to catch it.
+        let json = render_boundary_scoped(&cell, "Cell", OutputMode::Json).unwrap();
+        assert!(
+            !json.contains(&child.to_string()),
+            "raw node id leaked into --boundary --json:\n{json}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let un = v["unaddressable"].as_array().expect("unaddressable array");
+        assert_eq!(un.len(), 1, "{json}");
+        assert!(un[0]["label"].is_string(), "{json}");
+        assert!(un[0]["reason"].is_string(), "{json}");
+    }
+
+    #[test]
+    fn both_scoped_payloads_shape_unaddressable_the_same_way() {
+        // A consumer switching between `walk X` and `walk X --boundary` must not
+        // meet two different shapes for the same degradation channel.
+        let b = Uuid::from_u128(1);
+        let child = Uuid::from_u128(2);
+        let mut paths = HashMap::new();
+        paths.insert(b.to_string(), "Cell".to_string());
+        let mut un = HashMap::new();
+        un.insert(child.to_string(), "empty_name".to_string());
+        let cell = BoundaryResponse {
+            version: "v1".to_string(),
+            project_id: Uuid::from_u128(9),
+            branch: Box::new(models::BranchRef {
+                id: Uuid::from_u128(8),
+                version: 1,
+            }),
+            boundary: Box::new(node_of_kind(b, "Cell", models::wire_node::Kind::Boundary)),
+            children: vec![node(child, "")],
+            edges: vec![],
+            paths: paths.clone(),
+            unaddressable: un.clone(),
+        };
+        let bj: serde_json::Value =
+            serde_json::from_str(&render_boundary_scoped(&cell, "Cell", OutputMode::Json).unwrap())
+                .unwrap();
+
+        let mut np = HashMap::new();
+        np.insert(Uuid::from_u128(1).to_string(), "Focus".to_string());
+        let mut nu = HashMap::new();
+        nu.insert(Uuid::from_u128(2).to_string(), "empty_name".to_string());
+        let nj: serde_json::Value = serde_json::from_str(
+            &render_neighborhood_scoped(&hood(np, nu), "Focus", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+
+        let keys = |v: &serde_json::Value| -> Vec<String> {
+            let mut k: Vec<String> = v["unaddressable"][0]
+                .as_object()
+                .expect("object entries")
+                .keys()
+                .cloned()
+                .collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&bj), keys(&nj), "boundary={bj}\nneighborhood={nj}");
     }
 }
