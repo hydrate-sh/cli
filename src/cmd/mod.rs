@@ -22,6 +22,7 @@ mod fork;
 mod guide;
 mod init;
 mod node;
+mod partition;
 mod projects;
 mod pull;
 mod scoped;
@@ -62,7 +63,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         },
         Command::Status => finish(status::run(mode), mode),
         Command::Diff => finish(diff::run(mode), mode),
-        Command::Validate => finish_with_code(validate::run(mode), mode),
+        Command::Validate(args) => finish_with_code(validate::run(args, mode), mode),
         Command::Commit => finish(commit::run(mode), mode),
     }
 }
