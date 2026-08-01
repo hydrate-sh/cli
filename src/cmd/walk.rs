@@ -65,10 +65,14 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
                 }
             }
             let out = if args.boundary {
-                let cell = client.fetch_branch_boundary(binding.branch_id, node_id)?;
+                let cell = client
+                    .fetch_branch_boundary(binding.branch_id, node_id)
+                    .map_err(|e| stale_index_error(e, &args.path))?;
                 render_boundary_scoped(&cell, &args.path, mode)?
             } else {
-                let hood = client.fetch_branch_node(binding.branch_id, node_id)?;
+                let hood = client
+                    .fetch_branch_node(binding.branch_id, node_id)
+                    .map_err(|e| stale_index_error(e, &args.path))?;
                 render_neighborhood_scoped(&hood, &args.path, mode)?
             };
             println!("{out}");
@@ -91,6 +95,26 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
     };
     println!("{out}");
     Ok(())
+}
+
+/// Translate a scoped read's `404` into the guidance the whole-graph path gives.
+///
+/// The id came from this working copy's index. A `404` therefore means the index
+/// resolved a path to a node the branch no longer has — deleted since the last
+/// `pull` — and the raw `service error (404)` says nothing a caller can act on,
+/// while the same lookup through the whole-graph path says `no node 'X' on this
+/// branch`. Two paths answering one question must not differ in what the user
+/// can do next.
+///
+/// Only `404` is remapped: every other status keeps its own meaning.
+fn stale_index_error(err: CliError, path: &str) -> CliError {
+    match err {
+        CliError::Service { status: 404, .. } => CliError::InvalidArgument(format!(
+            "no node '{path}' on this branch; this working copy's index still \
+             has it, so run `hydrate pull` to refresh it"
+        )),
+        other => other,
+    }
 }
 
 /// Locate the node addressed by `path` in the branch graph, alongside the map of
@@ -604,6 +628,47 @@ mod tests {
                 target: Uuid::from_u128(0x12),
                 target_handle: Some(rater_in.id),
             }],
+        }
+    }
+
+    #[test]
+    fn a_scoped_404_reads_as_a_stale_index_not_a_service_error() {
+        // The id came from the local index, so a 404 means the index resolved a
+        // path the branch no longer has. The raw `service error (404)` gives a
+        // caller nothing to do; the whole-graph path for the same lookup says
+        // `no node 'X' on this branch`. Two paths, one question, one remedy.
+        let err = stale_index_error(
+            CliError::Service {
+                status: 404,
+                kind: "not_found".to_string(),
+                reason: None,
+            },
+            "Api.Gone",
+        );
+        let msg = err.to_string();
+        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(msg.contains("no node 'Api.Gone' on this branch"), "{msg}");
+        assert!(msg.contains("hydrate pull"), "{msg}");
+        assert!(!msg.contains("service error"), "{msg}");
+    }
+
+    #[test]
+    fn other_statuses_keep_their_own_meaning() {
+        // Remapping everything would turn a 500 or a 403 into "run pull",
+        // which is worse than the bare status it replaced.
+        for status in [403u16, 422, 500] {
+            let err = stale_index_error(
+                CliError::Service {
+                    status,
+                    kind: "boom".to_string(),
+                    reason: Some("upstream".to_string()),
+                },
+                "Api.Rater",
+            );
+            assert!(
+                matches!(err, CliError::Service { status: s, .. } if s == status),
+                "status {status} was remapped: {err:?}"
+            );
         }
     }
 
