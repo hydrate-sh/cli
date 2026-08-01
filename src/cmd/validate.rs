@@ -299,14 +299,16 @@ fn render(
                 let errors = error_findings(response).len();
                 if errors > 0 {
                     out.push_str(&format!(
-                        "\nInvalid: {} on branch '{}'; not safe to commit.",
+                        "\nInvalid: {} on branch '{}'. A commit would still be \
+                         accepted; this check is the gate.",
                         plural(errors, "coherence error"),
                         binding.branch_name
                     ));
                 } else {
                     // Server said invalid with no error-severity finding to show.
                     out.push_str(&format!(
-                        "\nInvalid: branch '{}' is not coherent; not safe to commit.",
+                        "\nInvalid: branch '{}' is not coherent. A commit would still \
+                         be accepted; this check is the gate.",
                         binding.branch_name
                     ));
                 }
@@ -621,6 +623,49 @@ mod tests {
         }));
         stage.save(tmp.path()).unwrap();
         tmp
+    }
+
+    #[test]
+    fn verdict_line_never_claims_a_commit_is_blocked() {
+        // The verdict read "not safe to commit" for sixteen releases. A commit
+        // is accepted with error findings, so that line told an agent the
+        // server would stop it when nothing would. This is the string an agent
+        // reads, so it matters more than the prose in `guide`.
+        let port = Uuid::from_u128(91);
+        let r = response(
+            false,
+            vec![finding(
+                Code::UnsatisfiedInput,
+                Severity::Error,
+                &port.to_string(),
+                &format!("input port {port} has no incoming edge"),
+            )],
+        );
+        let human = render(
+            &r,
+            &binding(),
+            &locators_knowing(port, "Api.Rater:in:key"),
+            OutputMode::Human,
+        );
+        assert!(!human.contains("not safe to commit"), "{human}");
+        assert!(human.contains("Invalid:"), "{human}");
+        assert!(
+            human.contains("would still be") || human.contains("still be accepted"),
+            "verdict does not say a commit is accepted anyway:\n{human}"
+        );
+
+        // The OTHER invalid arm: server says invalid with no error-severity
+        // finding to show. Unreachable today (the server derives `valid` from
+        // exactly those findings), but it carries the same string, and a review
+        // proved the old claim could be restored there with every test passing.
+        let bare = render(
+            &response(false, vec![]),
+            &binding(),
+            &Locators::new(None, &crate::state::Stage::empty()),
+            OutputMode::Human,
+        );
+        assert!(!bare.contains("not safe to commit"), "{bare}");
+        assert!(bare.contains("Invalid:"), "{bare}");
     }
 
     #[test]
