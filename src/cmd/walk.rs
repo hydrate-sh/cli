@@ -65,10 +65,14 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
                 }
             }
             let out = if args.boundary {
-                let cell = client.fetch_branch_boundary(binding.branch_id, node_id)?;
+                let cell = client
+                    .fetch_branch_boundary(binding.branch_id, node_id)
+                    .map_err(|e| boundary_404_error(e, &args.path))?;
                 render_boundary_scoped(&cell, &args.path, mode)?
             } else {
-                let hood = client.fetch_branch_node(binding.branch_id, node_id)?;
+                let hood = client
+                    .fetch_branch_node(binding.branch_id, node_id)
+                    .map_err(|e| stale_index_error(e, &args.path))?;
                 render_neighborhood_scoped(&hood, &args.path, mode)?
             };
             println!("{out}");
@@ -93,14 +97,84 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
     Ok(())
 }
 
+/// Translate a scoped read's `404` into the guidance the whole-graph path gives.
+///
+/// The id came from this working copy's index. A `404` therefore means the index
+/// resolved a path to a node the branch no longer has — deleted since the last
+/// `pull` — and the raw `service error (404)` says nothing a caller can act on,
+/// while the same lookup through the whole-graph path says `no node 'X' on this
+/// branch`. Two paths answering one question must not differ in what the user
+/// can do next.
+///
+/// Only `404` is remapped: every other status keeps its own meaning.
+fn stale_index_error(err: CliError, path: &str) -> CliError {
+    match err {
+        CliError::Service { status: 404, .. } => CliError::StaleView(format!(
+            "no node '{path}' on this branch; this working copy's index still \
+             has it, so run `hydrate pull` to refresh it"
+        )),
+        other => other,
+    }
+}
+
+/// The same translation for the `--boundary` read, which has a second cause.
+///
+/// A `404` from the boundary route does NOT mean the node is gone: it is that
+/// route's contract that a **non-boundary** is not found (see the pre-flight
+/// check above, which exists precisely because of it). The pre-flight catches
+/// that when the index records a kind — but when it records none, or records an
+/// unrecognised one, the request goes out and this is where it lands. Claiming
+/// a stale index there would be a confident wrong diagnosis on a node that is
+/// present and perfectly healthy.
+///
+/// A 404 is also the authorization answer — the service returns an identical
+/// body whether a resource is missing or not accessible — so the message names
+/// what it cannot distinguish rather than picking one.
+fn boundary_404_error(err: CliError, path: &str) -> CliError {
+    match err {
+        CliError::Service { status: 404, .. } => CliError::StaleView(format!(
+            "could not read '{path}' as a boundary. It may not be a boundary, it \
+             may no longer be on this branch, or this key may not have access to \
+             it. Run `hydrate walk {path}` for its neighborhood, or \
+             `hydrate pull` if this working copy is behind"
+        )),
+        other => other,
+    }
+}
+
 /// Locate the node addressed by `path` in the branch graph, alongside the map of
 /// every node's dotted path. An unknown path fails loud with the same guidance
 /// `show` gives.
-fn locate<'g>(
-    graph: &'g GraphResponse,
-    path: &str,
-) -> Result<(&'g WireNode, HashMap<Uuid, String>), CliError> {
-    let paths = view::node_paths(&graph.nodes)?;
+/// The focal node, every node's dotted path, and `id → reason` for the nodes
+/// that have none — the same split the server's scoped reads return.
+type Located<'g> = (&'g WireNode, HashMap<Uuid, String>, HashMap<String, String>);
+
+fn locate<'g>(graph: &'g GraphResponse, path: &str) -> Result<Located<'g>, CliError> {
+    // Report rather than abort: an unnamed node is legal while designing, and
+    // the scoped path renders it. See `node_paths_reporting`.
+    let (mut paths, unaddressable) = view::node_paths_reporting(&graph.nodes)?;
+    for node in &graph.nodes {
+        paths.entry(node.id).or_insert_with(|| {
+            scoped::unaddressable_label(
+                unaddressable
+                    .get(&node.id.to_string())
+                    .map(String::as_str)
+                    .unwrap_or("unknown"),
+            )
+        });
+    }
+    // A placeholder is a LABEL, not an address. It is written into the same map
+    // this search reads, and every unaddressable node gets the same text — so
+    // without this, a label whose own words say "give it a name to address it"
+    // would be accepted as a path, and with several such nodes the first in
+    // graph order would win silently. A dotted path is a slug; refuse anything
+    // that could not be one.
+    if path.starts_with('<') {
+        return Err(CliError::InvalidArgument(format!(
+            "'{path}' is a placeholder for a node that has no addressable path, \
+             not a path you can read. Give the node a name to address it"
+        )));
+    }
     let node = graph
         .nodes
         .iter()
@@ -110,7 +184,7 @@ fn locate<'g>(
                 "no node '{path}' on this branch; run `hydrate show` to see the whole graph"
             ))
         })?;
-    Ok((node, paths))
+    Ok((node, paths, unaddressable))
 }
 
 /// Render a node + its 1-hop neighborhood computed from the branch graph: the
@@ -318,7 +392,7 @@ fn render_boundary_scoped(
             "children": child_views,
             "edges": edges,
             "version": cell.version,
-            "unaddressable": un,
+            "unaddressable": unaddressable_report(un),
         })
         .to_string(),
         OutputMode::Human => {
@@ -347,7 +421,7 @@ fn render_neighborhood(
     path: &str,
     mode: OutputMode,
 ) -> Result<String, CliError> {
-    let (target, paths) = locate(graph, path)?;
+    let (target, paths, unaddressable) = locate(graph, path)?;
 
     // A boundary's scope is read with `--boundary`; a plain walk still returns its
     // neighborhood, but point the caller at the richer read.
@@ -403,6 +477,11 @@ fn render_neighborhood(
             "neighbors": neighbors,
             "edges": edges,
             "version": graph.version,
+            // The fallback renders unaddressable nodes as placeholder labels, so
+            // it owes the same degradation channel the scoped read has. Without
+            // it a consumer sees a placeholder sitting where a dotted path
+            // belongs, with nothing in the payload saying anything degraded.
+            "unaddressable": unaddressable_report(&unaddressable),
         })
         .to_string(),
         OutputMode::Human => {
@@ -418,6 +497,7 @@ fn render_neighborhood(
                 out.push_str(&n.human(0));
             }
             out.push_str(&edge_lines(&edges));
+            out.push_str(&unaddressable_summary(&unaddressable));
             out
         }
     })
@@ -431,7 +511,7 @@ fn render_boundary(
     path: &str,
     mode: OutputMode,
 ) -> Result<String, CliError> {
-    let (target, paths) = locate(graph, path)?;
+    let (target, paths, unaddressable) = locate(graph, path)?;
 
     // `--boundary` only makes sense on a boundary; a friendly local check beats an
     // empty or confusing scope on any other kind.
@@ -481,6 +561,7 @@ fn render_boundary(
             "children": children,
             "edges": edges,
             "version": graph.version,
+            "unaddressable": unaddressable_report(&unaddressable),
         })
         .to_string(),
         OutputMode::Human => {
@@ -496,6 +577,7 @@ fn render_boundary(
                 out.push_str(&c.human(1));
             }
             out.push_str(&edge_lines(&edges));
+            out.push_str(&unaddressable_summary(&unaddressable));
             out
         }
     })
@@ -608,6 +690,78 @@ mod tests {
     }
 
     #[test]
+    fn a_scoped_404_reads_as_a_stale_index_not_a_service_error() {
+        // The id came from the local index, so a 404 means the index resolved a
+        // path the branch no longer has. The raw `service error (404)` gives a
+        // caller nothing to do; the whole-graph path for the same lookup says
+        // `no node 'X' on this branch`. Two paths, one question, one remedy.
+        let err = stale_index_error(
+            CliError::Service {
+                status: 404,
+                kind: "not_found".to_string(),
+                reason: None,
+            },
+            "Api.Gone",
+        );
+        let msg = err.to_string();
+        assert!(matches!(err, CliError::StaleView(_)), "got {err:?}");
+        assert!(msg.contains("no node 'Api.Gone' on this branch"), "{msg}");
+        // A distinct kind, so a consumer can tell "the branch no longer has
+        // this" from "you typed a bad path" — they want different recovery.
+        assert_eq!(err.kind(), "stale_view", "{msg}");
+        assert!(msg.contains("hydrate pull"), "{msg}");
+        assert!(!msg.contains("service error"), "{msg}");
+    }
+
+    #[test]
+    fn the_boundary_404_names_every_cause_it_cannot_tell_apart() {
+        // The /boundary route 404s a NON-BOUNDARY as its contract — the
+        // pre-flight above exists because of it. When the index records no kind
+        // the request goes out and lands here, on a node that is present and
+        // healthy. Telling that caller their index is stale is a confident
+        // wrong diagnosis. A 404 is also the authz answer, which is
+        // indistinguishable by design.
+        let err = boundary_404_error(
+            CliError::Service {
+                status: 404,
+                kind: "not_found".to_string(),
+                reason: None,
+            },
+            "Api.Rater",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("may not be a boundary"), "{msg}");
+        assert!(msg.contains("no longer be on this branch"), "{msg}");
+        assert!(msg.contains("access"), "{msg}");
+        // It must NOT assert the stale-index cause as fact, which is what the
+        // neighborhood path says and what this one may not.
+        assert!(
+            !msg.contains("index still has it"),
+            "boundary 404 states a stale index as fact: {msg}"
+        );
+    }
+
+    #[test]
+    fn other_statuses_keep_their_own_meaning() {
+        // Remapping everything would turn a 500 or a 403 into "run pull",
+        // which is worse than the bare status it replaced.
+        for status in [403u16, 422, 500] {
+            let err = stale_index_error(
+                CliError::Service {
+                    status,
+                    kind: "boom".to_string(),
+                    reason: Some("upstream".to_string()),
+                },
+                "Api.Rater",
+            );
+            assert!(
+                matches!(err, CliError::Service { status: s, .. } if s == status),
+                "status {status} was remapped: {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn neighborhood_reads_the_branch_slice_around_the_node() {
         let json = render_neighborhood(&sample_graph(), "Api.Rater", OutputMode::Json).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -679,7 +833,44 @@ mod tests {
     }
 
     #[test]
+    fn a_placeholder_label_is_not_an_address() {
+        // Every unaddressable node gets the SAME label, written into the very
+        // map `locate` searches. Without a guard, a label whose own words say
+        // "give it a name to address it" is accepted as a path, and with
+        // several such nodes the first in graph order wins — silently, with a
+        // real answer about an arbitrary node.
+        let mut g = sample_graph();
+        g.nodes[1].data.name = String::new();
+        let label = scoped::unaddressable_label("empty_name");
+        let err = render_neighborhood(&g, &label, OutputMode::Json).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("placeholder"), "{msg}");
+        assert!(msg.contains("Give the node a name"), "{msg}");
+    }
+
+    #[test]
+    fn the_fallback_reports_unaddressable_nodes_too() {
+        // The fallback renders placeholders, so it owes the same degradation
+        // channel the scoped read has. Otherwise a consumer sees a placeholder
+        // where a dotted path belongs and nothing says anything degraded.
+        let mut g = sample_graph();
+        g.nodes[1].data.name = String::new();
+
+        let json = render_neighborhood(&g, "Api.Rater", OutputMode::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let un = v["unaddressable"].as_array().expect("unaddressable array");
+        assert_eq!(un.len(), 1, "{json}");
+        assert!(un[0]["label"].is_string(), "{json}");
+        assert!(un[0]["reason"] == "empty_name", "{json}");
+
+        let human = render_neighborhood(&g, "Api.Rater", OutputMode::Human).unwrap();
+        assert!(human.contains("no addressable path"), "{human}");
+    }
+
+    #[test]
     fn unknown_path_fails_loud() {
+        // The whole-graph path genuinely has no such node, which is a bad
+        // argument — not a stale view of a node that exists elsewhere.
         let err = render_neighborhood(&sample_graph(), "Nope", OutputMode::Json).unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
     }
@@ -862,5 +1053,70 @@ mod scoped_tests {
         let out = render_boundary_scoped(&cell, "Cell", OutputMode::Human)
             .expect("must render, not panic");
         assert!(out.contains("share a name"), "{out}");
+
+        // And the JSON payload must not name the node by id. The neighborhood
+        // path has had a reporter for this since it shipped; the boundary path
+        // emitted the raw map, keyed by UUID, straight into --boundary --json.
+        // Ids in output an author consumes are the thing this product exists to
+        // hide, and there was no test on this side to catch it.
+        let json = render_boundary_scoped(&cell, "Cell", OutputMode::Json).unwrap();
+        assert!(
+            !json.contains(&child.to_string()),
+            "raw node id leaked into --boundary --json:\n{json}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let un = v["unaddressable"].as_array().expect("unaddressable array");
+        assert_eq!(un.len(), 1, "{json}");
+        assert!(un[0]["label"].is_string(), "{json}");
+        assert!(un[0]["reason"].is_string(), "{json}");
+    }
+
+    #[test]
+    fn both_scoped_payloads_shape_unaddressable_the_same_way() {
+        // A consumer switching between `walk X` and `walk X --boundary` must not
+        // meet two different shapes for the same degradation channel.
+        let b = Uuid::from_u128(1);
+        let child = Uuid::from_u128(2);
+        let mut paths = HashMap::new();
+        paths.insert(b.to_string(), "Cell".to_string());
+        let mut un = HashMap::new();
+        un.insert(child.to_string(), "empty_name".to_string());
+        let cell = BoundaryResponse {
+            version: "v1".to_string(),
+            project_id: Uuid::from_u128(9),
+            branch: Box::new(models::BranchRef {
+                id: Uuid::from_u128(8),
+                version: 1,
+            }),
+            boundary: Box::new(node_of_kind(b, "Cell", models::wire_node::Kind::Boundary)),
+            children: vec![node(child, "")],
+            edges: vec![],
+            paths: paths.clone(),
+            unaddressable: un.clone(),
+        };
+        let bj: serde_json::Value =
+            serde_json::from_str(&render_boundary_scoped(&cell, "Cell", OutputMode::Json).unwrap())
+                .unwrap();
+
+        let mut np = HashMap::new();
+        np.insert(Uuid::from_u128(1).to_string(), "Focus".to_string());
+        let mut nu = HashMap::new();
+        nu.insert(Uuid::from_u128(2).to_string(), "empty_name".to_string());
+        let nj: serde_json::Value = serde_json::from_str(
+            &render_neighborhood_scoped(&hood(np, nu), "Focus", OutputMode::Json).unwrap(),
+        )
+        .unwrap();
+
+        let keys = |v: &serde_json::Value| -> Vec<String> {
+            let mut k: Vec<String> = v["unaddressable"][0]
+                .as_object()
+                .expect("object entries")
+                .keys()
+                .cloned()
+                .collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&bj), keys(&nj), "boundary={bj}\nneighborhood={nj}");
     }
 }

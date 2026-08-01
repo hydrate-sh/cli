@@ -21,7 +21,9 @@ pub enum CliError {
     /// Transport failure reaching the service (connect/timeout/DNS/TLS). Retryable.
     Network(String),
     /// Optimistic-concurrency conflict — the branch moved (409). Retryable.
-    VersionConflict { current_version: Option<i64> },
+    VersionConflict {
+        current_version: Option<i64>,
+    },
     /// The service returned an error response (non-409).
     Service {
         status: u16,
@@ -33,12 +35,18 @@ pub enum CliError {
     /// A command argument failed a client-side shape check (e.g. branch name).
     InvalidArgument(String),
     /// A staging/inspection verb was run outside a bound `.hydrate/` workdir.
+    /// A scoped read's `404`, translated. Distinct from `InvalidArgument` so a
+    /// consumer can tell "the branch no longer has this" from "you typed a bad
+    /// path" — the two want different recovery, and folding them lost that.
+    StaleView(String),
     NotInWorkdir,
     /// The single-project rule found no project to act on.
     NoProject,
     /// The single-project rule found more than one project, so the target is
     /// ambiguous and must be disambiguated rather than guessed.
-    AmbiguousProject { count: usize },
+    AmbiguousProject {
+        count: usize,
+    },
     /// `init` refused to edit `AGENTS.md` to avoid destroying the user's content
     /// (a malformed/ambiguous hydrate block, or a symlink at the target).
     InitRefused(String),
@@ -70,6 +78,7 @@ impl CliError {
             CliError::Service { kind, .. } => kind,
             CliError::State(_) => "state_error",
             CliError::InvalidArgument(_) => "invalid_argument",
+            CliError::StaleView(_) => "stale_view",
             CliError::NotInWorkdir => "not_in_workdir",
             CliError::NoProject => "no_project",
             CliError::AmbiguousProject { .. } => "ambiguous_project",
@@ -102,6 +111,7 @@ impl fmt::Display for CliError {
             CliError::Service { status, .. } => write!(f, "service error ({status})"),
             CliError::State(detail) => write!(f, "{detail}"),
             CliError::InvalidArgument(detail) => write!(f, "{detail}"),
+            CliError::StaleView(m) => write!(f, "{m}"),
             CliError::NotInWorkdir => write!(
                 f,
                 "not inside a hydrate working copy; run `hydrate fork <name>` first"

@@ -33,7 +33,7 @@ fn render(summary: &StageSummary, mode: OutputMode) -> String {
     }
 }
 
-fn op_line(op: &OpSummary) -> String {
+pub(super) fn op_line(op: &OpSummary) -> String {
     match op {
         OpSummary::Node {
             kind,
@@ -203,7 +203,7 @@ fn join_ports(ports: &[NamedType]) -> String {
         .join(", ")
 }
 
-fn op_json(op: &OpSummary) -> serde_json::Value {
+pub(super) fn op_json(op: &OpSummary) -> serde_json::Value {
     match op {
         OpSummary::Node {
             kind,

@@ -305,18 +305,49 @@ fn join_ports(ports: &[PortView]) -> String {
 /// missing parent or a `parent_id` cycle is corruption in the server response —
 /// surfaced loudly, never silently dropping a node. Shared by the read verbs so
 /// `show` (whole graph) and `walk` (a scoped slice) address nodes identically.
-pub fn node_paths(nodes: &[WireNode]) -> Result<HashMap<Uuid, String>, CliError> {
+/// Dotted paths by node id, plus `id → reason` for the nodes that have none.
+///
+/// Mirrors the shape the server's scoped reads return, so the whole-graph
+/// fallback and the scoped path describe an unaddressable node identically.
+pub type NodePaths = (HashMap<Uuid, String>, HashMap<String, String>);
+
+/// Reconstruct every node's dotted path, reporting the ones that have none
+/// rather than aborting.
+///
+/// A node whose name is empty, or contains the path separator, cannot be
+/// path-addressed — but it is **legal while designing**, and the server says so:
+/// its scoped reads return exactly this split, a `paths` map plus an
+/// `unaddressable` map of id → reason. This mirrors that contract so the
+/// whole-graph fallback answers with the same shape the scoped read does.
+///
+/// Failing the whole command instead — which this did — meant `walk` worked with
+/// an index and hard-failed without one, on the same graph.
+///
+/// Genuine corruption stays fatal: a `parent_id` cycle and a missing parent are
+/// not "this node has no name", they are a graph that cannot be walked.
+pub fn node_paths_reporting(nodes: &[WireNode]) -> Result<NodePaths, CliError> {
     let by_id: HashMap<Uuid, &WireNode> = nodes.iter().map(|n| (n.id, n)).collect();
     let mut paths = HashMap::with_capacity(nodes.len());
+    let mut unaddressable = HashMap::new();
     for node in nodes {
-        paths.insert(node.id, node_path(node, &by_id)?);
+        match node_path(node, &by_id)? {
+            Ok(path) => {
+                paths.insert(node.id, path);
+            }
+            Err(reason) => {
+                unaddressable.insert(node.id.to_string(), reason.to_string());
+            }
+        }
     }
-    Ok(paths)
+    Ok((paths, unaddressable))
 }
 
 /// Reconstruct one node's dotted path by walking the `parent_id` chain to the
 /// root. See [`node_paths`] for the failure modes.
-fn node_path(node: &WireNode, by_id: &HashMap<Uuid, &WireNode>) -> Result<String, CliError> {
+fn node_path(
+    node: &WireNode,
+    by_id: &HashMap<Uuid, &WireNode>,
+) -> Result<Result<String, &'static str>, CliError> {
     let mut parts = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut current = node;
@@ -327,10 +358,11 @@ fn node_path(node: &WireNode, by_id: &HashMap<Uuid, &WireNode>) -> Result<String
             ));
         }
         let name = &current.data.name;
-        if name.is_empty() || name.contains('.') {
-            return Err(CliError::State(format!(
-                "the branch graph has a node name that can't be path-addressed: {name:?}"
-            )));
+        if name.is_empty() {
+            return Ok(Err("empty_name"));
+        }
+        if name.contains('.') {
+            return Ok(Err("reserved_separator"));
         }
         parts.push(name.clone());
         match current.parent_id {
@@ -346,7 +378,7 @@ fn node_path(node: &WireNode, by_id: &HashMap<Uuid, &WireNode>) -> Result<String
         }
     }
     parts.reverse();
-    Ok(parts.join("."))
+    Ok(Ok(parts.join(".")))
 }
 
 /// Build a `port UUID → owner label` map over a labeled node set, where each
@@ -581,5 +613,65 @@ mod tests {
         let err = resolve_edges(&labels, &[edge]).unwrap_err();
         assert!(matches!(err, CliError::State(_)), "got {err:?}");
         assert!(err.to_string().contains("missing a port handle"), "{err}");
+    }
+    /// A minimal node with the given name and no parent.
+    fn named(id: u128, name: &str) -> WireNode {
+        let data = WireNodeData::new(
+            String::new(),
+            false,
+            false,
+            name.to_string(),
+            "idle".to_string(),
+        );
+        WireNode {
+            data: Box::new(data),
+            id: Uuid::from_u128(id),
+            kind: models::wire_node::Kind::Behavior,
+            parent_id: None,
+            position: Box::new(Position::new(0.0, 0.0)),
+        }
+    }
+
+    #[test]
+    fn an_unaddressable_name_is_reported_not_fatal() {
+        // An unnamed node is legal while designing, and the scoped read renders
+        // it. Aborting here made `walk` work with an index and hard-fail
+        // without one, on the same graph.
+        let nodes = vec![named(1, "Fine"), named(2, ""), named(3, "has.dot")];
+        let (paths, un) = node_paths_reporting(&nodes).expect("must report, not fail");
+
+        assert_eq!(
+            paths.get(&Uuid::from_u128(1)).map(String::as_str),
+            Some("Fine")
+        );
+        assert!(!paths.contains_key(&Uuid::from_u128(2)));
+        assert!(!paths.contains_key(&Uuid::from_u128(3)));
+
+        assert_eq!(
+            un.get(&Uuid::from_u128(2).to_string()).map(String::as_str),
+            Some("empty_name")
+        );
+        assert_eq!(
+            un.get(&Uuid::from_u128(3).to_string()).map(String::as_str),
+            Some("reserved_separator")
+        );
+    }
+
+    #[test]
+    fn real_corruption_is_still_fatal() {
+        // A cycle and a missing parent are not "this node has no name" — they
+        // are a graph that cannot be walked, and quietly labelling them would
+        // hide a server bug behind a placeholder.
+        let mut a = named(1, "A");
+        let mut b = named(2, "B");
+        a.parent_id = Some(Uuid::from_u128(2));
+        b.parent_id = Some(Uuid::from_u128(1));
+        let err = node_paths_reporting(&[a, b]).unwrap_err();
+        assert!(err.to_string().contains("cycle"), "{err}");
+
+        let mut orphan = named(3, "C");
+        orphan.parent_id = Some(Uuid::from_u128(0xDEAD));
+        let err = node_paths_reporting(&[orphan]).unwrap_err();
+        assert!(err.to_string().contains("missing parent"), "{err}");
     }
 }

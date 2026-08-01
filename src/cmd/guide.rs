@@ -73,6 +73,9 @@ Editing in place
   hydrate node set <path> ...  edit a node's description, constraints, or ports
   hydrate node rm <path>...    remove nodes (cascades the subtree)
   hydrate clear                stage removal of every top-level node, then commit
+  hydrate stage discard        throw away everything staged (local; keeps a
+                               recoverable copy). NOT the same as `clear`, which
+                               stages deletions rather than undoing your edits
 
 Choosing a project
   Commands resolve the project from --project <name|id>, else the HYD_PROJECT
