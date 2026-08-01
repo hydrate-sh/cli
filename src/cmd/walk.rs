@@ -67,7 +67,7 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
             let out = if args.boundary {
                 let cell = client
                     .fetch_branch_boundary(binding.branch_id, node_id)
-                    .map_err(|e| stale_index_error(e, &args.path))?;
+                    .map_err(|e| boundary_404_error(e, &args.path))?;
                 render_boundary_scoped(&cell, &args.path, mode)?
             } else {
                 let hood = client
@@ -109,9 +109,34 @@ pub fn run(args: crate::cli::WalkArgs, mode: OutputMode) -> Result<(), CliError>
 /// Only `404` is remapped: every other status keeps its own meaning.
 fn stale_index_error(err: CliError, path: &str) -> CliError {
     match err {
-        CliError::Service { status: 404, .. } => CliError::InvalidArgument(format!(
+        CliError::Service { status: 404, .. } => CliError::StaleView(format!(
             "no node '{path}' on this branch; this working copy's index still \
              has it, so run `hydrate pull` to refresh it"
+        )),
+        other => other,
+    }
+}
+
+/// The same translation for the `--boundary` read, which has a second cause.
+///
+/// A `404` from the boundary route does NOT mean the node is gone: it is that
+/// route's contract that a **non-boundary** is not found (see the pre-flight
+/// check above, which exists precisely because of it). The pre-flight catches
+/// that when the index records a kind — but when it records none, or records an
+/// unrecognised one, the request goes out and this is where it lands. Claiming
+/// a stale index there would be a confident wrong diagnosis on a node that is
+/// present and perfectly healthy.
+///
+/// A 404 is also the authorization answer — the service returns an identical
+/// body whether a resource is missing or not accessible — so the message names
+/// what it cannot distinguish rather than picking one.
+fn boundary_404_error(err: CliError, path: &str) -> CliError {
+    match err {
+        CliError::Service { status: 404, .. } => CliError::StaleView(format!(
+            "could not read '{path}' as a boundary. It may not be a boundary, it \
+             may no longer be on this branch, or this key may not have access to \
+             it. Run `hydrate walk {path}` for its neighborhood, or \
+             `hydrate pull` if this working copy is behind"
         )),
         other => other,
     }
@@ -646,10 +671,41 @@ mod tests {
             "Api.Gone",
         );
         let msg = err.to_string();
-        assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
+        assert!(matches!(err, CliError::StaleView(_)), "got {err:?}");
         assert!(msg.contains("no node 'Api.Gone' on this branch"), "{msg}");
+        // A distinct kind, so a consumer can tell "the branch no longer has
+        // this" from "you typed a bad path" — they want different recovery.
+        assert_eq!(err.kind(), "stale_view", "{msg}");
         assert!(msg.contains("hydrate pull"), "{msg}");
         assert!(!msg.contains("service error"), "{msg}");
+    }
+
+    #[test]
+    fn the_boundary_404_names_every_cause_it_cannot_tell_apart() {
+        // The /boundary route 404s a NON-BOUNDARY as its contract — the
+        // pre-flight above exists because of it. When the index records no kind
+        // the request goes out and lands here, on a node that is present and
+        // healthy. Telling that caller their index is stale is a confident
+        // wrong diagnosis. A 404 is also the authz answer, which is
+        // indistinguishable by design.
+        let err = boundary_404_error(
+            CliError::Service {
+                status: 404,
+                kind: "not_found".to_string(),
+                reason: None,
+            },
+            "Api.Rater",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("may not be a boundary"), "{msg}");
+        assert!(msg.contains("no longer be on this branch"), "{msg}");
+        assert!(msg.contains("access"), "{msg}");
+        // It must NOT assert the stale-index cause as fact, which is what the
+        // neighborhood path says and what this one may not.
+        assert!(
+            !msg.contains("index still has it"),
+            "boundary 404 states a stale index as fact: {msg}"
+        );
     }
 
     #[test]
@@ -745,6 +801,8 @@ mod tests {
 
     #[test]
     fn unknown_path_fails_loud() {
+        // The whole-graph path genuinely has no such node, which is a bad
+        // argument — not a stale view of a node that exists elsewhere.
         let err = render_neighborhood(&sample_graph(), "Nope", OutputMode::Json).unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)), "got {err:?}");
     }
