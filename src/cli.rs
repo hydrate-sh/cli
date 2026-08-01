@@ -116,8 +116,9 @@ pub enum Command {
 
     /// Dry-run the staged changeset on the bound branch and report the server's
     /// coherence findings, without committing or clearing the stage. Exits
-    /// nonzero when there are error-severity findings, so an agent can gate
-    /// `hydrate validate && hydrate commit`.
+    /// nonzero when YOUR CHANGE adds an error-severity finding, so an agent can
+    /// gate `hydrate validate && hydrate commit` on a branch that already has
+    /// findings. Pass `--whole-branch` to grade the whole graph instead.
     Validate(ValidateArgs),
 
     /// Commit the staged changeset to the bound branch.
@@ -460,11 +461,11 @@ pub struct EdgeRmArgs {
 
 #[derive(Debug, Args)]
 pub struct ValidateArgs {
-    /// Report only the findings your staged change introduced, and gate on
-    /// those alone. Inherited findings are still listed but do not affect the
-    /// exit code.
+    /// Grade the whole branch instead of your change: report every finding on
+    /// the resulting graph and gate on all of them, including any that were
+    /// already there. Use this as a branch-health probe.
     #[arg(long)]
-    pub introduced: bool,
+    pub whole_branch: bool,
 }
 
 #[derive(Debug, Subcommand)]

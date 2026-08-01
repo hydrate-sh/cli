@@ -548,3 +548,93 @@ fn a_scoped_404_is_translated_on_both_read_paths() {
         drop(handle);
     }
 }
+
+/// The breaking change must leave a runtime trace, and the default must be the
+/// partitioned path.
+///
+/// A review deleted the stderr note, and separately forced `whole_branch` on,
+/// and the entire suite still passed both times — so nothing pinned either the
+/// signal or the flag dispatch. This runs the real binary against a server whose
+/// baseline and staged reports are identical: a caller who used to get exit 5
+/// now gets 0, which is exactly the transition the note exists to announce.
+#[test]
+fn inherited_only_findings_exit_zero_and_say_so_on_stderr() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(8) {
+            let mut s = match stream {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let req = String::from_utf8_lossy(&buf).to_string();
+            let body = if req.contains("/validate") {
+                // Same finding in both reports: inherited, nothing introduced.
+                r#"{"valid":false,"project_id":"00000000-0000-0000-0000-000000000001","version":"v1","branch":{"id":"00000000-0000-0000-0000-000000000002","version":4},"findings":[{"code":"unsatisfied_input","locator":"00000000-0000-0000-0000-0000000000cc","message":"input port has no incoming edge","severity":"error"}]}"#.to_string()
+            } else if req.contains("/branches") {
+                r#"{"branches":[{"id":"00000000-0000-0000-0000-000000000002","name":"demo","is_main":false,"version":4}]}"#.to_string()
+            } else {
+                r#"{"projects":[{"id":"00000000-0000-0000-0000-000000000001","name":"proj","is_archived":false}]}"#.to_string()
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(
+        hydrate.join("config.toml"),
+        "project_id = \"00000000-0000-0000-0000-000000000001\"\n\
+         project_name = \"proj\"\n\
+         branch_id = \"00000000-0000-0000-0000-000000000002\"\n\
+         branch_name = \"demo\"\n",
+    )
+    .unwrap();
+    // A NON-empty stage, so the baseline call actually happens.
+    std::fs::write(
+        hydrate.join("stage.json"),
+        r#"{"deltas":[{"type":"add_node","node":{"id":"00000000-0000-0000-0000-0000000000aa","kind":"behavior","parent_id":null,"data":{"name":"Rater","inputs":[],"outputs":[],"config":[]}}}],"aliases":{}}"#,
+    )
+    .unwrap();
+
+    let run = |extra: &[&str]| {
+        let mut args = vec!["validate", "--human"];
+        args.extend_from_slice(extra);
+        std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+            .args(&args)
+            .current_dir(base)
+            .env("HYD_API_KEY", "hyd_live_test")
+            .env("HYD_BASE_URL", format!("http://127.0.0.1:{port}"))
+            .output()
+            .expect("run hydrate")
+    };
+
+    // Default: the partitioned path. Nothing introduced, so exit 0 — and the
+    // note must fire, because this is a caller whose answer just changed.
+    let out = run(&[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(
+        stderr.contains("pre-existing coherence finding"),
+        "the breaking change left no runtime trace\nstderr: {stderr}"
+    );
+    assert!(stderr.contains("--whole-branch"), "stderr: {stderr}");
+
+    // The escape hatch keeps the old verdict, which is the whole point of it.
+    let whole = run(&["--whole-branch"]);
+    assert_eq!(
+        whole.status.code(),
+        Some(5),
+        "--whole-branch did not follow the server verdict\nstdout: {}",
+        String::from_utf8_lossy(&whole.stdout)
+    );
+}

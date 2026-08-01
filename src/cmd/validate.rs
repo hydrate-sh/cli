@@ -6,9 +6,15 @@
 //! applies the batch and — critically — **never clears the stage**. It exists so
 //! an agent can gate a loop, `hydrate validate && hydrate commit`.
 //!
-//! Exit code: `0` when the server's authoritative `valid` verdict is true,
-//! [`exit::VALIDATION`] when it is false. The server is the sole authority for
-//! validation; this client never re-derives the verdict from the findings. The
+//! Exit code: `0` when your staged change adds no error-severity finding,
+//! [`exit::VALIDATION`] when it does. With `--whole-branch`, it follows the
+//! server's authoritative `valid` verdict verbatim instead.
+//!
+//! The narrowed rule: **the server owns each verdict; this client owns only
+//! which verdict it gates on.** Every finding here is the server's — the client
+//! partitions them by comparing two server answers and never decides whether
+//! something is a finding, nor re-implements a rule. What it does choose is
+//! which of the two verdicts the exit code reports. The
 //! findings themselves always print (in both modes); the exit code is only the
 //! pass/fail signal. A transport or parse failure keeps its own existing code (it
 //! never masquerades as "found errors").
@@ -29,8 +35,10 @@ use crate::staging::lower;
 use crate::state::{Binding, Index, Stage};
 
 /// Run `validate`: prepare the request from the stage (read-only), POST it, print
-/// the findings, and return the process exit code (`0` when the server verdict is
-/// `valid`, [`exit::VALIDATION`] when it is not). Returns `Err` only for a real
+/// the findings, and return the process exit code — `0` when your staged change
+/// adds no error-severity finding, [`exit::VALIDATION`] when it does. With
+/// `--whole-branch` it follows the server's `valid` verdict verbatim instead.
+/// Returns `Err` only for a real
 /// failure (no workdir, unbound, transport, parse) — those keep their own exit
 /// codes.
 pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliError> {
@@ -55,16 +63,22 @@ pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliEr
     // diffed. Both calls must succeed and describe the same branch version;
     // anything else falls back to the whole-branch verdict, loudly. A partial
     // verdict is never presented.
-    let partition = if args.introduced {
-        partition_against_baseline(&client, &binding, &response, &stage)?
-    } else {
+    // 94 keeps the inverted default; 93 supplies the extracted helper with the
+    // retry-then-conflict guard and the empty-stage short circuit.
+    let partition = if args.whole_branch {
         None
+    } else {
+        partition_against_baseline(&client, &binding, &response, &stage)?
     };
 
     // Fail loud on a server-verdict / severity disagreement rather than silently
     // trusting one side. It goes to stderr so it is loud in BOTH output modes
     // without polluting the stdout contract (the verbatim JSON, or the human
     // report). The server verdict still governs the exit code below.
+    // Cross-checks the STAGED response only. The baseline is a probe used to
+    // attribute findings, not a verdict anyone gates on, so a disagreement there
+    // would not mislead a caller — and reporting it would be noise about a
+    // request the user did not ask for.
     if let Some(warning) = disagreement_warning(&response) {
         eprintln!("{warning}");
     }
@@ -90,6 +104,32 @@ pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliEr
 
     match &partition {
         Some(p) => {
+            let computed = if p.introduced_errors().is_empty() {
+                exit::SUCCESS
+            } else {
+                exit::VALIDATION
+            };
+            // A caller who ran bare `validate` as a branch-health check used to
+            // get a non-zero exit here and now gets 0. That is a changed answer
+            // to the same command, so it must leave a trace at RUNTIME — a
+            // release note is not a runtime signal, and a CI log is where
+            // someone will look. stderr, so both output modes carry it without
+            // touching the stdout contract.
+            // Fire whenever the answer CHANGED, not merely when the introduced
+            // set is empty. Two 5→0 transitions escape the narrower condition:
+            // an introduced set holding only warning-severity findings, and a
+            // `valid:false` report with no findings to bucket. Neither is
+            // reachable against today's server, but the warning arm is kept in
+            // the contract deliberately, so the guard must not assume it away.
+            let changed = exit_code(&response) != computed && !p.inherited.is_empty();
+            if changed {
+                eprintln!(
+                    "note: {} on this branch, none caused by your staged change, \
+                     so they do not affect the exit code. Run \
+                     `hydrate validate --whole-branch` to grade the whole graph.",
+                    plural(p.inherited.len(), "pre-existing coherence finding")
+                );
+            }
             println!(
                 "{}",
                 render_partitioned(p, &response, &binding, &locators, mode)
@@ -97,11 +137,7 @@ pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliEr
             // The gate is the introduced set. Everything else is reported but
             // does not decide the exit code — that is the whole point of the
             // flag.
-            Ok(if p.introduced_errors().is_empty() {
-                exit::SUCCESS
-            } else {
-                exit::VALIDATION
-            })
+            Ok(computed)
         }
         None => {
             println!("{}", render(&response, &binding, &locators, mode));
@@ -290,7 +326,8 @@ fn render_partitioned(
             }
             if !p.inherited.is_empty() {
                 out.push_str(&format!(
-                    "\n\n{} already on branch '{}', not caused by your change.",
+                    "\n\n{} already on branch '{}', not caused by your change. \
+                     Run `hydrate validate --whole-branch` to list them.",
                     plural(p.inherited.len(), "coherence finding"),
                     binding.branch_name
                 ));
@@ -315,8 +352,9 @@ fn render_partitioned(
     }
 }
 
-/// The error-severity findings in the report. Used only for the displayed count
-/// and to cross-check the server verdict — NOT to derive it. `warning`-severity
+/// The error-severity findings in the report. Used for the displayed count, to
+/// cross-check the server verdict, and — under `--whole-branch` — never to
+/// derive it: that path reports `response.valid` verbatim. `warning`-severity
 /// findings are advisory.
 fn error_findings(response: &ValidateResponse) -> Vec<&models::Finding> {
     response
@@ -1067,6 +1105,50 @@ mod tests {
             out.contains("99 coherence findings already on branch"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn whole_branch_still_follows_the_server_verdict_verbatim() {
+        // The escape hatch must keep the OLD contract exactly: the server owns
+        // that verdict and the client does not re-derive it. If this drifted,
+        // the flag would not actually answer the branch-health question it
+        // exists for.
+        let r = response(false, vec![]);
+        assert_eq!(exit_code(&r), exit::VALIDATION);
+        let ok = response(true, vec![]);
+        assert_eq!(exit_code(&ok), exit::SUCCESS);
+    }
+
+    #[test]
+    fn inherited_only_findings_do_not_gate_but_are_announced() {
+        // A caller running bare `validate` as a branch-health check used to get
+        // a non-zero exit and now gets 0. Same command, different answer, so it
+        // must leave a runtime trace — a release note is not one.
+        let port = Uuid::from_u128(71);
+        let f = finding(
+            Code::UnsatisfiedInput,
+            Severity::Error,
+            &port.to_string(),
+            "inherited",
+        );
+        let p = Partition {
+            introduced: vec![],
+            inherited: vec![f.clone()],
+            resolved: vec![],
+        };
+        assert!(
+            p.introduced_errors().is_empty(),
+            "an inherited-only report must not gate"
+        );
+
+        let out = render_partitioned(
+            &p,
+            &response(false, vec![f]),
+            &binding(),
+            &Locators::new(None, &crate::state::Stage::empty()),
+            OutputMode::Human,
+        );
+        assert!(out.contains("not caused by your change"), "{out}");
     }
 
     #[test]
