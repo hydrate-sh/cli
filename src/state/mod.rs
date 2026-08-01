@@ -63,20 +63,33 @@ fn ensure_dir(base: &Path) -> Result<PathBuf, CliError> {
     Ok(dir)
 }
 
+/// Write a named file into `base/.hydrate/`, atomically.
+///
+/// `name` must be a bare file name. A separator or `..` is rejected rather than
+/// joined — `Path::join` silently accepts both, and an absolute path replaces
+/// the base entirely, so the containment this function is supposed to provide
+/// has to be checked rather than assumed. `.hydrate/` holds the binding and the
+/// pulled index, and sits beside whatever else is in the working copy.
+pub fn write_state_file(base: &Path, name: &str, body: &[u8]) -> Result<(), CliError> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || Path::new(name).is_absolute()
+    {
+        return Err(CliError::State(format!(
+            "refusing to write state file {name:?}: not a bare file name"
+        )));
+    }
+    let dir = ensure_dir(base)?;
+    atomic_write(&dir.join(name), body)
+}
+
 /// Write `body` to `path` atomically: write a sibling temp file, then `rename`
 /// it into place. A crash or full disk mid-write leaves the previous file
 /// intact rather than a truncated one — staged work is never half-written away.
 /// The temp file is a sibling so the rename stays within one filesystem (where
 /// it is atomic), and the rename replaces any existing target in a single step.
-/// Write an arbitrary file into `base/.hydrate/`, atomically.
-///
-/// Used by `stage discard` for its recovery slot. Deliberately takes a file
-/// NAME, not a path, so a caller cannot reach outside the state directory.
-pub fn write_state_file(base: &Path, name: &str, body: &[u8]) -> Result<(), CliError> {
-    let dir = ensure_dir(base)?;
-    atomic_write(&dir.join(name), body)
-}
-
 fn atomic_write(path: &Path, body: &[u8]) -> Result<(), CliError> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
@@ -640,6 +653,30 @@ mod tests {
 
     // The richer index must survive a real save → load round trip with the new
     // fields populated.
+    #[test]
+    fn write_state_file_refuses_anything_but_a_bare_name() {
+        // The doc claimed containment that `Path::join` does not provide: a
+        // review proved "../escaped.json" landed beside `.hydrate/` and an
+        // absolute path replaced the base outright. Asserting a security
+        // property is how the next caller gets it wrong.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        for bad in ["../escaped.json", "a/b.json", "/tmp/abs.json", "..", ""] {
+            let err = write_state_file(base, bad, b"x").unwrap_err();
+            assert!(
+                err.to_string().contains("not a bare file name"),
+                "{bad:?} was accepted: {err}"
+            );
+        }
+        assert!(
+            !base.join("escaped.json").exists(),
+            "a rejected name still wrote outside .hydrate"
+        );
+        // A bare name still works.
+        write_state_file(base, "ok.json", b"x").unwrap();
+        assert!(base.join(".hydrate/ok.json").exists());
+    }
+
     #[test]
     fn index_round_trips_with_node_info_and_edges() {
         let tmp = TempDir::new().unwrap();

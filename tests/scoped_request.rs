@@ -352,11 +352,15 @@ fn stage_discard_clears_the_stage_and_leaves_a_recovery_copy() {
         .output()
         .expect("run hydrate");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
 
-    // The op list is the record of what was thrown away.
-    assert!(stdout.contains("Rater"), "{stdout}");
-    assert!(stdout.contains("Score it."), "{stdout}");
+    // The op list is the record of what was thrown away. It prints BEFORE the
+    // delete, on stderr, so it survives a failure part-way through and leaves
+    // stdout carrying only the verdict.
+    assert!(stderr.contains("Rater"), "stderr: {stderr}");
+    assert!(stderr.contains("Score it."), "stderr: {stderr}");
+    assert!(stdout.contains("Discarded"), "stdout: {stdout}");
 
     // The stage is gone, the recovery copy is there, the neighbours survive.
     let now: serde_json::Value =
@@ -387,5 +391,66 @@ fn stage_discard_clears_the_stage_and_leaves_a_recovery_copy() {
         String::from_utf8_lossy(&again.stdout).contains("nothing to discard"),
         "{}",
         String::from_utf8_lossy(&again.stdout)
+    );
+}
+
+/// A failed discard must not print a past-tense success.
+///
+/// The report used to be emitted before the work, so with a read-only
+/// `.hydrate/` stdout carried "Discarded 1 staged operation" and "Recoverable
+/// from …" while the stage was untouched and no recovery file existed. An agent
+/// reading stdout — the documented machine channel — would conclude the stage
+/// was empty, author on top of the old batch, and commit both.
+#[cfg(unix)]
+#[test]
+fn a_failed_discard_reports_no_success_and_keeps_the_stage() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(
+        hydrate.join("config.toml"),
+        "project_id = \"00000000-0000-0000-0000-000000000001\"\n\
+         project_name = \"proj\"\n\
+         branch_id = \"00000000-0000-0000-0000-000000000002\"\n\
+         branch_name = \"demo\"\n",
+    )
+    .unwrap();
+    let staged = r#"{"deltas":[{"type":"add_node","node":{"id":"00000000-0000-0000-0000-0000000000aa","kind":"behavior","parent_id":null,"data":{"name":"Rater","description":"Score it.","inputs":[],"outputs":[],"config":[]}}}],"aliases":{"node:Rater":"00000000-0000-0000-0000-0000000000aa"}}"#;
+    std::fs::write(hydrate.join("stage.json"), staged).unwrap();
+
+    let mut perms = std::fs::metadata(&hydrate).unwrap().permissions();
+    perms.set_mode(0o555); // read + execute, no write
+    std::fs::set_permissions(&hydrate, perms).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "discard", "--json"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+
+    // Restore before asserting, so a failure doesn't leave an undeletable dir.
+    let mut perms = std::fs::metadata(&hydrate).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&hydrate, perms).unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_ne!(out.status.code(), Some(0), "a failed discard exited 0");
+    assert!(
+        !stdout.contains("discarded"),
+        "stdout claimed success on a failed discard:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("recovery_file"),
+        "stdout named a recovery file that was never written:\n{stdout}"
+    );
+
+    // And the work is still there.
+    let still = std::fs::read_to_string(hydrate.join("stage.json")).unwrap();
+    assert!(
+        still.contains("Score it."),
+        "the stage was destroyed anyway"
     );
 }

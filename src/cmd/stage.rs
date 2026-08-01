@@ -33,11 +33,32 @@ pub fn discard(mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
     let binding = Binding::load(&base)?;
     let stage = Stage::load(&base)?;
-    println!("{}", render(&stage, binding.as_ref(), mode)?);
-    if !stage.deltas.is_empty() {
-        park(&base, &stage)?;
-        Stage::empty().save(&base)?;
+    let summary = crate::staging::summarize(&stage, None)?;
+
+    if stage.deltas.is_empty() {
+        println!("{}", render_empty(binding.as_ref(), mode));
+        return Ok(());
     }
+
+    // The op listing is the RECORD of what is about to be destroyed, so it goes
+    // out before the destruction — it must survive a failure part-way through.
+    // In human mode it goes to stderr so the stdout contract stays the verdict
+    // alone; in JSON there is one document, emitted after the work.
+    if let OutputMode::Human = mode {
+        for op in &summary.ops {
+            eprintln!("{}", diff::op_line(op));
+        }
+    }
+
+    // Nothing is reported as done until it IS done. Printing the report first
+    // meant a park failure left a past-tense success on stdout — "Discarded 1
+    // staged operation", "Recoverable from …" — while the stage was untouched
+    // and no recovery file existed. An agent reading stdout would then author on
+    // top of a stage it believed was empty and commit both.
+    park(&base, &stage)?;
+    Stage::empty().save(&base)?;
+
+    println!("{}", render_done(&stage, &summary, binding.as_ref(), mode));
     Ok(())
 }
 
@@ -51,37 +72,37 @@ fn park(base: &Path, stage: &Stage) -> Result<(), CliError> {
     crate::state::write_state_file(base, DISCARDED_FILE, body.as_bytes())
 }
 
-/// Render the discard report. Returned rather than printed so both modes are
-/// directly testable, and built from the same [`OpSummary`] projection `status`
-/// and `diff` use — including its nouns — so the three cannot drift on what a
-/// stage contains.
-///
-/// [`OpSummary`]: crate::staging::OpSummary
-fn render(stage: &Stage, binding: Option<&Binding>, mode: OutputMode) -> Result<String, CliError> {
-    let branch = binding.map(|b| b.branch_name.as_str());
-    let summary = crate::staging::summarize(stage, None)?;
-
-    if stage.deltas.is_empty() {
-        return Ok(match mode {
-            OutputMode::Json => serde_json::json!({
-                "discarded": 0,
-                "deltas": [],
-            })
-            .to_string(),
-            OutputMode::Human => match branch {
-                Some(b) => format!("Nothing staged on branch '{b}'; nothing to discard."),
-                None => "Nothing staged; nothing to discard.".to_string(),
-            },
-        });
+/// The report for an empty stage. Not an error: `status`, `diff` and `commit`
+/// all succeed on one, and making a no-op loud here would be noise.
+fn render_empty(binding: Option<&Binding>, mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({ "discarded": 0, "ops": [] }).to_string(),
+        OutputMode::Human => match binding.map(|b| b.branch_name.as_str()) {
+            Some(b) => format!("Nothing staged on branch '{b}'; nothing to discard."),
+            None => "Nothing staged; nothing to discard.".to_string(),
+        },
     }
+}
 
-    Ok(match mode {
+/// The report for a completed discard. Called only after the park and the clear
+/// have both succeeded, so every statement in it is true when it prints.
+///
+/// Operations render through the same projection `diff` uses — by dotted path,
+/// never by id. Echoing the raw deltas here would have put node UUIDs into the
+/// output an author consumes, which every sibling verb is careful not to do; the
+/// recovery file is the verbatim source for re-staging, which is its job.
+fn render_done(
+    stage: &Stage,
+    summary: &crate::staging::StageSummary,
+    binding: Option<&Binding>,
+    mode: OutputMode,
+) -> String {
+    let counts = super::status::staged_counts(summary);
+    match mode {
         OutputMode::Json => serde_json::json!({
             "discarded": stage.deltas.len(),
             "recovery_file": format!(".hydrate/{DISCARDED_FILE}"),
-            // The deltas verbatim, so an agent can re-stage without reading the
-            // recovery file off disk.
-            "deltas": stage.deltas,
+            "ops": summary.ops.iter().map(diff::op_json).collect::<Vec<_>>(),
             "summary": {
                 "nodes": summary.nodes, "edges": summary.edges,
                 "updates": summary.updates, "deletes": summary.deletes,
@@ -90,29 +111,19 @@ fn render(stage: &Stage, binding: Option<&Binding>, mode: OutputMode) -> Result<
         })
         .to_string(),
         OutputMode::Human => {
-            let mut out = String::new();
-            // The ops first: this listing is the record of what was thrown away.
-            for op in &summary.ops {
-                out.push_str(&diff::op_line(op));
-                out.push('\n');
-            }
-            let counts = super::status::staged_counts(&summary);
-            match branch {
-                Some(b) => out.push_str(&format!(
+            let head = match binding.map(|b| b.branch_name.as_str()) {
+                Some(b) => format!(
                     "Discarded {} on branch '{b}': {counts}.",
                     super::status::plural(stage.deltas.len(), "staged operation")
-                )),
-                None => out.push_str(&format!(
+                ),
+                None => format!(
                     "Discarded {}: {counts}.",
                     super::status::plural(stage.deltas.len(), "staged operation")
-                )),
-            }
-            out.push_str(&format!(
-                "\nRecoverable from .hydrate/{DISCARDED_FILE} until the next discard."
-            ));
-            out
+                ),
+            };
+            format!("{head}\nRecoverable from .hydrate/{DISCARDED_FILE} until the next discard.")
         }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -152,30 +163,25 @@ mod tests {
     fn empty_stage_is_not_an_error_and_says_so() {
         // Matches `status`, `diff` and `commit`, all of which succeed on an
         // empty stage. Making a no-op loud here would be noise, not safety.
-        let out = render(&Stage::empty(), Some(&binding()), OutputMode::Human).unwrap();
+        let out = render_empty(Some(&binding()), OutputMode::Human);
         assert!(out.contains("Nothing staged"), "{out}");
         assert!(out.contains("nothing to discard"), "{out}");
 
-        let json = render(&Stage::empty(), Some(&binding()), OutputMode::Json).unwrap();
+        let json = render_empty(Some(&binding()), OutputMode::Json);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["discarded"], 0, "{json}");
     }
 
     #[test]
-    fn human_output_lists_the_operations_not_just_counts() {
-        // The listing is the ONLY record of the discarded work: nothing was
-        // committed, so no server copy exists. "1 node" does not tell you what
-        // you lost; `+ behavior Rater` does.
-        let out = render(&staged(), Some(&binding()), OutputMode::Human).unwrap();
-        assert!(
-            out.contains("Rater"),
-            "op list missing the node name:\n{out}"
-        );
-        assert!(
-            out.contains("Score it."),
-            "op list dropped the authored description, which exists nowhere else:\n{out}"
-        );
+    fn the_completed_report_names_the_branch_and_the_counts() {
+        // The op LISTING goes to stderr before the delete (it is the record and
+        // must survive a failure); this is the verdict that follows.
+        let s = staged();
+        let sum = crate::staging::summarize(&s, None).unwrap();
+        let out = render_done(&s, &sum, Some(&binding()), OutputMode::Human);
+        assert!(out.contains("Discarded"), "{out}");
         assert!(out.contains("demo"), "{out}");
+        assert!(out.contains(DISCARDED_FILE), "{out}");
     }
 
     #[test]
@@ -185,7 +191,7 @@ mod tests {
         let stage = staged();
         let summary = crate::staging::summarize(&stage, None).unwrap();
         let counts = super::super::status::staged_counts(&summary);
-        let out = render(&stage, Some(&binding()), OutputMode::Human).unwrap();
+        let out = render_done(&stage, &summary, Some(&binding()), OutputMode::Human);
         assert!(
             out.contains(&counts),
             "discard counts {counts:?} not found in:\n{out}"
@@ -193,18 +199,21 @@ mod tests {
     }
 
     #[test]
-    fn json_echoes_the_deltas_so_an_agent_can_restage() {
-        let json = render(&staged(), Some(&binding()), OutputMode::Json).unwrap();
+    fn json_reports_ops_by_path_never_by_id() {
+        // The first version echoed the raw deltas, which put node UUIDs into
+        // output an author consumes — the one thing every sibling verb is
+        // careful to avoid. The recovery FILE is the verbatim source for
+        // re-staging; that is its job, and it is not the terminal.
+        let s = staged();
+        let sum = crate::staging::summarize(&s, None).unwrap();
+        let json = render_done(&s, &sum, Some(&binding()), OutputMode::Json);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["discarded"], 1, "{json}");
-        let deltas = v["deltas"].as_array().expect("deltas array");
-        assert_eq!(deltas.len(), 1, "{json}");
-        assert_eq!(deltas[0]["type"], "add_node", "{json}");
-        // The authored description must survive into the echo, or the recovery
-        // path loses the same thing the human listing exists to preserve.
-        assert_eq!(
-            deltas[0]["node"]["data"]["description"], "Score it.",
-            "{json}"
+        assert_eq!(v["ops"][0]["node"], "Rater", "{json}");
+        assert!(v["deltas"].is_null(), "raw deltas are still echoed: {json}");
+        assert!(
+            !json.contains(&Uuid::from_u128(0x10).to_string()),
+            "a node id leaked into the report:\n{json}"
         );
         assert!(
             v["recovery_file"]
@@ -219,9 +228,11 @@ mod tests {
     fn both_modes_name_the_recovery_slot() {
         // A discard with no stated way back reads as unrecoverable, which would
         // make callers avoid the verb and hand-delete the file instead.
-        let human = render(&staged(), Some(&binding()), OutputMode::Human).unwrap();
+        let s = staged();
+        let sum = crate::staging::summarize(&s, None).unwrap();
+        let human = render_done(&s, &sum, Some(&binding()), OutputMode::Human);
         assert!(human.contains(DISCARDED_FILE), "{human}");
-        let json = render(&staged(), Some(&binding()), OutputMode::Json).unwrap();
+        let json = render_done(&s, &sum, Some(&binding()), OutputMode::Json);
         assert!(json.contains(DISCARDED_FILE), "{json}");
     }
 

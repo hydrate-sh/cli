@@ -203,7 +203,7 @@ fn join_ports(ports: &[NamedType]) -> String {
         .join(", ")
 }
 
-fn op_json(op: &OpSummary) -> serde_json::Value {
+pub(super) fn op_json(op: &OpSummary) -> serde_json::Value {
     match op {
         OpSummary::Node {
             kind,
