@@ -454,3 +454,97 @@ fn a_failed_discard_reports_no_success_and_keeps_the_stage() {
         "the stage was destroyed anyway"
     );
 }
+
+/// The 404 translation must be WIRED, not merely present.
+///
+/// A review stripped both `map_err` calls from the dispatch — keeping the
+/// helpers and their unit tests — and the entire suite still passed. These run
+/// the real binary against a server that 404s, so the mapping has to be
+/// reachable to satisfy them.
+#[test]
+fn a_scoped_404_is_translated_on_both_read_paths() {
+    for (args, expect) in [
+        (
+            vec!["walk", "Api.Gone"],
+            "no node 'Api.Gone' on this branch",
+        ),
+        (
+            vec!["walk", "Api.Gone", "--boundary"],
+            "may not be a boundary",
+        ),
+    ] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(4) {
+                let mut s = match stream {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                let req = String::from_utf8_lossy(&buf).to_string();
+                // Serve the project/branch lookups, 404 the scoped read.
+                let body = if req.contains("/node/") || req.contains("/boundary/") {
+                    None
+                } else if req.contains("/branches") {
+                    Some(r#"{"branches":[{"id":"00000000-0000-0000-0000-000000000002","name":"demo","is_main":false,"version":1}]}"#.to_string())
+                } else {
+                    Some(r#"{"projects":[{"id":"00000000-0000-0000-0000-000000000001","name":"proj","is_archived":false}]}"#.to_string())
+                };
+                let resp = match body {
+                    Some(b) => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}",
+                        b.len()
+                    ),
+                    None => {
+                        let b = r#"{"detail":"Resource not found or not accessible."}"#;
+                        format!(
+                            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}",
+                            b.len()
+                        )
+                    }
+                };
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let hydrate = base.join(".hydrate");
+        std::fs::create_dir_all(&hydrate).unwrap();
+        std::fs::write(
+            hydrate.join("config.toml"),
+            "project_id = \"00000000-0000-0000-0000-000000000001\"\n\
+             project_name = \"proj\"\n\
+             branch_id = \"00000000-0000-0000-0000-000000000002\"\n\
+             branch_name = \"demo\"\n",
+        )
+        .unwrap();
+        // An index that still resolves the path, which is the whole premise.
+        std::fs::write(
+            hydrate.join("index.json"),
+            r#"{"version":1,"entries":{"node:Api.Gone":"00000000-0000-0000-0000-0000000000ee"},"node_info":{},"edges":{}}"#,
+        )
+        .unwrap();
+
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+            .args(&args)
+            .current_dir(base)
+            .env("HYD_API_KEY", "hyd_live_test")
+            .env("HYD_BASE_URL", format!("http://127.0.0.1:{port}"))
+            .output()
+            .expect("run hydrate");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(expect),
+            "{args:?} did not translate the 404\nstderr: {stderr}"
+        );
+        assert!(
+            !stderr.contains("service error (404)"),
+            "{args:?} leaked the raw status\nstderr: {stderr}"
+        );
+        drop(handle);
+    }
+}
