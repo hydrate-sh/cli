@@ -344,7 +344,11 @@ fn stage_discard_clears_the_stage_and_leaves_a_recovery_copy() {
     let staged = r#"{"deltas":[{"type":"add_node","node":{"id":"00000000-0000-0000-0000-0000000000aa","kind":"behavior","parent_id":null,"data":{"name":"Rater","description":"Score it.","inputs":[],"outputs":[],"config":[]}}}],"aliases":{"node:Rater":"00000000-0000-0000-0000-0000000000aa"}}"#;
     std::fs::write(hydrate.join("stage.json"), staged).unwrap();
     // A sibling file inside .hydrate that must survive.
-    std::fs::write(hydrate.join("index.json"), r#"{"version":1}"#).unwrap();
+    std::fs::write(
+        hydrate.join("index.json"),
+        r#"{"version":1,"entries":{},"node_info":{},"edges":{}}"#,
+    )
+    .unwrap();
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
         .args(["stage", "discard", "--human"])
@@ -636,5 +640,73 @@ fn inherited_only_findings_exit_zero_and_say_so_on_stderr() {
         Some(5),
         "--whole-branch did not follow the server verdict\nstdout: {}",
         String::from_utf8_lossy(&whole.stdout)
+    );
+}
+
+/// `stage discard` must be able to discard the stage a reader is most likely to
+/// want gone: the deletion they just made.
+///
+/// It summarised without the pulled index, so any delta whose rendering needs a
+/// lookup — an edge deletion above all — failed with "a staged edge deletion
+/// targets an edge that isn't in the pulled index", and the work stayed staged.
+/// The verb could not undo the thing it exists to undo.
+#[test]
+fn stage_discard_handles_a_staged_edge_deletion() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(
+        hydrate.join("config.toml"),
+        "project_id = \"00000000-0000-0000-0000-000000000001\"\n\
+         project_name = \"proj\"\n\
+         branch_id = \"00000000-0000-0000-0000-000000000002\"\n\
+         branch_name = \"demo\"\n",
+    )
+    .unwrap();
+    // An index that knows the edge, as a real working copy would after `pull`.
+    std::fs::write(
+        hydrate.join("index.json"),
+        r#"{"version":1,
+            "entries":{"node:A":"00000000-0000-0000-0000-0000000000a1",
+                       "port:A.out":"00000000-0000-0000-0000-0000000000c1",
+                       "node:B":"00000000-0000-0000-0000-0000000000b1",
+                       "port:B.in":"00000000-0000-0000-0000-0000000000c2"},
+            "node_info":{},
+            "edges":{"00000000-0000-0000-0000-0000000000c1:00000000-0000-0000-0000-0000000000c2":
+                     "00000000-0000-0000-0000-0000000000e1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        hydrate.join("stage.json"),
+        r#"{"deltas":[{"type":"delete_edge","edge_id":"00000000-0000-0000-0000-0000000000e1"}],"aliases":{}}"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "discard", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Discarded"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let now: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(hydrate.join("stage.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        now["deltas"].as_array().unwrap().len(),
+        0,
+        "the deletion is still staged"
     );
 }

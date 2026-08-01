@@ -33,7 +33,17 @@ pub fn discard(mode: OutputMode) -> Result<(), CliError> {
     let base = require_workdir()?;
     let binding = Binding::load(&base)?;
     let stage = Stage::load(&base)?;
-    let summary = crate::staging::summarize(&stage, None)?;
+    // Through `summarize_workdir`, which loads the pulled index — the same call
+    // `status` and `diff` make. Summarizing without it fails on any delta whose
+    // rendering needs a lookup, and a staged edge deletion is exactly that:
+    //
+    //     hydrate: a staged edge deletion targets an edge that isn't in the
+    //     pulled index
+    //
+    // So `stage discard` could not discard the one stage a reader is most
+    // likely to want gone — the deletion they made a moment ago — and left the
+    // work staged. Found by using the verb, not by reading it.
+    let summary = crate::staging::summarize_workdir(&base)?;
 
     if stage.deltas.is_empty() {
         println!("{}", render_empty(binding.as_ref(), mode));
