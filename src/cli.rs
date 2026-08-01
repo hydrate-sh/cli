@@ -118,7 +118,7 @@ pub enum Command {
     /// coherence findings, without committing or clearing the stage. Exits
     /// nonzero when there are error-severity findings, so an agent can gate
     /// `hydrate validate && hydrate commit`.
-    Validate,
+    Validate(ValidateArgs),
 
     /// Commit the staged changeset to the bound branch.
     Commit,
@@ -456,6 +456,15 @@ pub struct EdgeRmArgs {
     /// Target port of the edge to remove (`node.port`).
     #[arg(long)]
     pub to: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ValidateArgs {
+    /// Report only the findings your staged change introduced, and gate on
+    /// those alone. Inherited findings are still listed but do not affect the
+    /// exit code.
+    #[arg(long)]
+    pub introduced: bool,
 }
 
 #[derive(Debug, Subcommand)]

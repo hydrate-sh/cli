@@ -22,6 +22,7 @@ use crate::error::CliError;
 use crate::exit;
 use uuid::Uuid;
 
+use super::partition::{self, Partition};
 use crate::locator::Locators;
 use crate::output::OutputMode;
 use crate::staging::lower;
@@ -32,7 +33,7 @@ use crate::state::{Binding, Index, Stage};
 /// `valid`, [`exit::VALIDATION`] when it is not). Returns `Err` only for a real
 /// failure (no workdir, unbound, transport, parse) — those keep their own exit
 /// codes.
-pub fn run(mode: OutputMode) -> Result<u8, CliError> {
+pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliError> {
     let base = require_workdir()?;
     let binding = Binding::load(&base)?.ok_or_else(|| {
         CliError::Other(
@@ -48,6 +49,17 @@ pub fn run(mode: OutputMode) -> Result<u8, CliError> {
     let config = Config::load()?;
     let client = Client::new(&config)?;
     let response = client.validate_deltas(binding.branch_id, body)?;
+
+    // `--introduced` asks which findings THIS stage caused. Answering needs a
+    // second server answer — the branch as it stands — so the two can be
+    // diffed. Both calls must succeed and describe the same branch version;
+    // anything else falls back to the whole-branch verdict, loudly. A partial
+    // verdict is never presented.
+    let partition = if args.introduced {
+        partition_against_baseline(&client, &binding, &response, &stage)?
+    } else {
+        None
+    };
 
     // Fail loud on a server-verdict / severity disagreement rather than silently
     // trusting one side. It goes to stderr so it is loud in BOTH output modes
@@ -76,8 +88,78 @@ pub fn run(mode: OutputMode) -> Result<u8, CliError> {
         eprintln!("{note}");
     }
 
-    println!("{}", render(&response, &binding, &locators, mode));
-    Ok(exit_code(&response))
+    match &partition {
+        Some(p) => {
+            println!(
+                "{}",
+                render_partitioned(p, &response, &binding, &locators, mode)
+            );
+            // The gate is the introduced set. Everything else is reported but
+            // does not decide the exit code — that is the whole point of the
+            // flag.
+            Ok(if p.introduced_errors().is_empty() {
+                exit::SUCCESS
+            } else {
+                exit::VALIDATION
+            })
+        }
+        None => {
+            println!("{}", render(&response, &binding, &locators, mode));
+            Ok(exit_code(&response))
+        }
+    }
+}
+
+/// Fetch the branch's current coherence and split `staged` against it.
+///
+/// The baseline probe is `prepare` over an EMPTY stage: pure, writes nothing,
+/// and already a supported request shape (the server answers an empty batch with
+/// the branch's current coherence). The real stage is never touched, swapped, or
+/// restored.
+///
+/// `Ok(None)` means the split was refused and the caller must fall back to the
+/// whole-branch verdict — and say so, in both output modes.
+fn partition_against_baseline(
+    client: &Client,
+    binding: &Binding,
+    response: &ValidateResponse,
+    stage: &Stage,
+) -> Result<Option<Partition>, CliError> {
+    // An empty stage cannot introduce anything, so the baseline is the staged
+    // report by construction. Skipping the call here matters: `validate` is
+    // write-scope gated and rate-limited per principal, so a second request on
+    // every invocation halves an agent loop's quota — and this is the one case
+    // where it buys nothing at all.
+    if stage.deltas.is_empty() {
+        return Ok(Some(Partition::all_inherited(response)));
+    }
+
+    let baseline = client.validate_deltas(binding.branch_id, prepare(&Stage::empty())?)?;
+    match partition::partition(&baseline, response) {
+        Ok(p) => Ok(Some(p)),
+        Err(partition::Untrusted::BranchMoved { .. }) => {
+            // The branch moved between the two reads. Retry once — a single
+            // concurrent commit is the common case and a second attempt usually
+            // lands on a settled branch.
+            let retry = client.validate_deltas(binding.branch_id, prepare(&Stage::empty())?)?;
+            match partition::partition(&retry, response) {
+                Ok(p) => Ok(Some(p)),
+                Err(why) => {
+                    // Still moving. Refusing to attribute is the honest answer;
+                    // a conflict is what "the branch moved under you" means
+                    // everywhere else in this CLI, and it is retryable.
+                    eprintln!("warning: {why}");
+                    Err(CliError::VersionConflict {
+                        current_version: None,
+                    })
+                }
+            }
+        }
+        Err(why) => {
+            eprintln!("warning: {why}");
+            Ok(None)
+        }
+    }
 }
 
 /// Lower the current stage into the validate request body — a read of the stage,
@@ -89,6 +171,148 @@ fn prepare(stage: &Stage) -> Result<models::V1ValidateBody, CliError> {
     Ok(models::V1ValidateBody {
         deltas: Some(deltas),
     })
+}
+
+/// One rendered finding line, shared by the whole-branch and changeset-relative
+/// reports so the two cannot describe the same finding differently.
+///
+/// Prefers the authored path; falls back to the raw id when the local view
+/// cannot place it, rather than hiding the finding.
+fn finding_line(f: &models::Finding, locators: &Locators) -> String {
+    let locator = locators
+        .resolve(&f.locator)
+        .map(|r| r.label)
+        .unwrap_or_else(|| f.locator.clone());
+    format!(
+        "  [{}] {}  {}: {}",
+        severity_str(f.severity),
+        code_str(f.code),
+        locator,
+        locators.rewrite(&f.message),
+    )
+}
+
+/// One bucket, each finding carrying its own resolved path inline.
+///
+/// Inline rather than a parallel array because a bucketed payload has no single
+/// `findings` list to index into, and the locator cannot serve as a join key —
+/// the same port can carry two findings.
+fn bucket_json(findings: &[models::Finding], locators: &Locators) -> Vec<serde_json::Value> {
+    findings
+        .iter()
+        .map(|f| {
+            let resolved = locators.resolve(&f.locator);
+            serde_json::json!({
+                "code": code_str(f.code),
+                "severity": severity_str(f.severity),
+                "locator": f.locator,
+                "path": resolved.as_ref().map(|r| r.label.clone()),
+                // False when part of `path` is still a raw id, so a consumer can
+                // tell a complete answer from a partial one without sniffing.
+                "path_complete": resolved.as_ref().map(|r| r.complete),
+                "message": locators.rewrite(&f.message),
+            })
+        })
+        .collect()
+}
+
+/// The `located` array: every finding with its id resolved to an authored path.
+fn located_json(response: &ValidateResponse, locators: &Locators) -> Vec<serde_json::Value> {
+    response
+        .findings
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let resolved = locators.resolve(&f.locator);
+            serde_json::json!({
+                "finding_index": i,
+                "code": code_str(f.code),
+                "severity": severity_str(f.severity),
+                "locator": f.locator,
+                "path": resolved.as_ref().map(|r| r.label.clone()),
+                "path_complete": resolved.as_ref().map(|r| r.complete),
+                "message": locators.rewrite(&f.message),
+            })
+        })
+        .collect()
+}
+
+/// Render a changeset-relative report: what your stage introduced, what it
+/// inherited, and what it resolved.
+///
+/// The three buckets are separate arrays in JSON rather than one list with a
+/// flag, so a consumer cannot gate on the wrong set by reading the wrong field.
+/// `valid` is redefined to match the exit code — introduced-relative — and the
+/// server's whole-branch answer keeps its own key rather than silently meaning
+/// something different from the exit status beside it.
+fn render_partitioned(
+    p: &Partition,
+    response: &ValidateResponse,
+    binding: &Binding,
+    locators: &Locators,
+    mode: OutputMode,
+) -> String {
+    let introduced_errors = p.introduced_errors().len();
+    match mode {
+        OutputMode::Json => serde_json::json!({
+            "valid": introduced_errors == 0,
+            "whole_branch_valid": response.valid,
+            // Each bucket carries its own resolved paths. A shared `located`
+            // array keyed by an index into `findings` would be unjoinable here:
+            // this payload has no `findings` array to index into, and the
+            // locator is explicitly not a join key (two findings can share one).
+            "introduced": bucket_json(&p.introduced, locators),
+            "inherited": bucket_json(&p.inherited, locators),
+            "resolved": bucket_json(&p.resolved, locators),
+            "branch": binding.branch_name,
+        })
+        .to_string(),
+        OutputMode::Human => {
+            let mut out = String::new();
+            if p.introduced.is_empty() {
+                out.push_str("No new coherence findings from your staged change.");
+            } else {
+                out.push_str(&format!(
+                    "{} from your staged change:",
+                    plural(p.introduced.len(), "coherence finding")
+                ));
+                for f in &p.introduced {
+                    out.push_str(&format!("\n{}", finding_line(f, locators)));
+                }
+            }
+            if !p.resolved.is_empty() {
+                out.push_str(&format!(
+                    "\n\nYour change resolves {}.",
+                    plural(p.resolved.len(), "existing finding")
+                ));
+            }
+            if !p.inherited.is_empty() {
+                out.push_str(&format!(
+                    "\n\n{} already on branch '{}', not caused by your change.",
+                    plural(p.inherited.len(), "coherence finding"),
+                    binding.branch_name
+                ));
+            }
+            out.push_str(&format!(
+                "\n\n{}",
+                if introduced_errors == 0 {
+                    format!(
+                        "Valid: your change adds no coherence errors on branch '{}'.",
+                        binding.branch_name
+                    )
+                } else {
+                    format!(
+                        "Invalid: your change adds {} on branch '{}'.",
+                        plural(introduced_errors, "coherence error"),
+                        binding.branch_name
+                    )
+                }
+            ));
+            out
+        }
+    }
 }
 
 /// The error-severity findings in the report. Used only for the displayed count
@@ -240,28 +464,7 @@ fn render(
             // finding without a lookup per id. `path` is null when the local
             // view can't place the id (stale index — see the hint in `run`).
             "findings": findings,
-            "located": findings
-                .iter()
-                .enumerate()
-                .map(|(i, f)| {
-                    let resolved = locators.resolve(&f.locator);
-                    serde_json::json!({
-                        // Two findings can share a locator (an input can be both
-                        // unsatisfied and type-mismatched), so the locator is not
-                        // a join key — the index into `findings` is.
-                        "finding_index": i,
-                        "code": code_str(f.code),
-                        "severity": severity_str(f.severity),
-                        "locator": f.locator,
-                        "path": resolved.as_ref().map(|r| r.label.clone()),
-                        // False when part of `path` is still a raw id, so a
-                        // consumer can tell a complete answer from a partial one
-                        // without string-sniffing for a UUID.
-                        "path_complete": resolved.as_ref().map(|r| r.complete),
-                        "message": locators.rewrite(&f.message),
-                    })
-                })
-                .collect::<Vec<_>>(),
+            "located": located_json(response, locators),
         })
         .to_string(),
         OutputMode::Human => {
@@ -271,19 +474,7 @@ fn render(
             } else {
                 out.push_str(&format!("{}:", plural(findings.len(), "coherence finding")));
                 for f in findings {
-                    // Prefer the authored path; fall back to the raw id when the
-                    // local view can't place it, rather than hiding the finding.
-                    let locator = locators
-                        .resolve(&f.locator)
-                        .map(|r| r.label)
-                        .unwrap_or_else(|| f.locator.clone());
-                    out.push_str(&format!(
-                        "\n  [{}] {}  {}: {}",
-                        severity_str(f.severity),
-                        code_str(f.code),
-                        locator,
-                        locators.rewrite(&f.message),
-                    ));
+                    out.push_str(&format!("\n{}", finding_line(f, locators)));
                 }
                 out.push('\n');
             }
@@ -755,6 +946,127 @@ mod tests {
             vec![finding(Code::DanglingWire, Severity::Error, "e", "m")],
         );
         assert!(disagreement_warning(&r).is_none());
+    }
+
+    #[test]
+    fn partitioned_json_redefines_valid_and_keeps_the_branch_answer_separate() {
+        // The exit code follows the INTRODUCED set. If `valid` kept carrying
+        // the whole-branch answer, the most gateable field in the payload would
+        // disagree with the exit status beside it — on a dirty branch, literally
+        // `valid:false` with exit 0.
+        let port = Uuid::from_u128(55);
+        let inherited = finding(
+            Code::UnsatisfiedInput,
+            Severity::Error,
+            &port.to_string(),
+            "inherited",
+        );
+        let whole = response(false, vec![inherited.clone()]);
+        let p = Partition {
+            introduced: vec![],
+            inherited: vec![inherited],
+            resolved: vec![],
+        };
+        let json = render_partitioned(
+            &p,
+            &whole,
+            &binding(),
+            &Locators::new(None, &crate::state::Stage::empty()),
+            OutputMode::Json,
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["valid"], true, "introduced-relative valid: {json}");
+        assert_eq!(v["whole_branch_valid"], false, "{json}");
+        // Separate arrays, so a consumer cannot gate on the wrong set.
+        assert_eq!(v["introduced"].as_array().unwrap().len(), 0, "{json}");
+        assert_eq!(v["inherited"].as_array().unwrap().len(), 1, "{json}");
+        assert!(v["resolved"].is_array(), "{json}");
+        // Each finding carries its own path. A shared `located` array indexed
+        // into a `findings` list would be unjoinable — this payload has no such
+        // list, and the locator is not a join key.
+        assert!(
+            v["located"].is_null(),
+            "unjoinable located array present: {json}"
+        );
+        let inh = &v["inherited"][0];
+        assert!(inh["path"].is_string() || inh["path"].is_null(), "{json}");
+        assert!(
+            inh["path_complete"].is_boolean() || inh["path_complete"].is_null(),
+            "{json}"
+        );
+        assert!(inh["code"].is_string(), "{json}");
+        assert!(inh["severity"].is_string(), "{json}");
+    }
+
+    #[test]
+    fn partitioned_human_report_separates_the_buckets() {
+        let port = Uuid::from_u128(56);
+        let mine = finding(
+            Code::UnsatisfiedInput,
+            Severity::Error,
+            &port.to_string(),
+            "mine",
+        );
+        let theirs = finding(
+            Code::TypeMismatch,
+            Severity::Error,
+            &Uuid::from_u128(57).to_string(),
+            "theirs",
+        );
+        let p = Partition {
+            introduced: vec![mine.clone()],
+            inherited: vec![theirs.clone()],
+            resolved: vec![],
+        };
+        let out = render_partitioned(
+            &p,
+            &response(false, vec![mine, theirs]),
+            &binding(),
+            &Locators::new(None, &crate::state::Stage::empty()),
+            OutputMode::Human,
+        );
+        assert!(out.contains("from your staged change"), "{out}");
+        assert!(out.contains("not caused by your change"), "{out}");
+        assert!(out.contains("Invalid: your change adds"), "{out}");
+        // The old whole-branch phrasing must not survive here: it would claim
+        // the branch is the subject when the verdict is about the change.
+        assert!(!out.contains("no coherence errors on branch"), "{out}");
+    }
+
+    #[test]
+    fn a_clean_change_on_a_dirty_branch_reads_as_valid() {
+        // The acceptance case for the whole feature.
+        let inherited: Vec<models::Finding> = (0..99)
+            .map(|i| {
+                finding(
+                    Code::UnsatisfiedInput,
+                    Severity::Error,
+                    &Uuid::from_u128(1000 + i).to_string(),
+                    "inherited",
+                )
+            })
+            .collect();
+        let p = Partition {
+            introduced: vec![],
+            inherited: inherited.clone(),
+            resolved: vec![],
+        };
+        let out = render_partitioned(
+            &p,
+            &response(false, inherited),
+            &binding(),
+            &Locators::new(None, &crate::state::Stage::empty()),
+            OutputMode::Human,
+        );
+        assert!(out.contains("No new coherence findings"), "{out}");
+        assert!(
+            out.contains("Valid: your change adds no coherence errors"),
+            "{out}"
+        );
+        assert!(
+            out.contains("99 coherence findings already on branch"),
+            "{out}"
+        );
     }
 
     #[test]
