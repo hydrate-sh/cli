@@ -14,6 +14,27 @@ pub fn run(mode: OutputMode) -> Result<(), CliError> {
     Ok(())
 }
 
+/// The human noun-phrase for what a stage contains: `2 nodes, 1 edge, 1 edit`.
+///
+/// Shared with `stage discard`, which reports the same file. Two verbs
+/// describing one stage in different words would make one of them wrong about
+/// what the user is about to lose.
+pub(super) fn staged_counts(summary: &StageSummary) -> String {
+    let mut parts = vec![plural(summary.nodes, "node"), plural(summary.edges, "edge")];
+    if summary.updates > 0 {
+        parts.push(plural(summary.updates, "edit"));
+    }
+    if summary.deletes > 0 {
+        parts.push(plural(summary.deletes, "removal"));
+    }
+    // Only surfaces for a delta kind this version doesn't itemize; shown so the
+    // displayed counts never silently undershoot total.
+    if summary.other > 0 {
+        parts.push(plural(summary.other, "other op"));
+    }
+    parts.join(", ")
+}
+
 fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -> String {
     match mode {
         OutputMode::Json => serde_json::json!({
@@ -40,26 +61,14 @@ fn render(binding: Option<&Binding>, summary: &StageSummary, mode: OutputMode) -
             if summary.is_empty() {
                 out.push_str("\nNothing staged.");
             } else {
-                let mut parts = vec![plural(summary.nodes, "node"), plural(summary.edges, "edge")];
-                if summary.updates > 0 {
-                    parts.push(plural(summary.updates, "edit"));
-                }
-                if summary.deletes > 0 {
-                    parts.push(plural(summary.deletes, "removal"));
-                }
-                // Only surfaces for a delta kind this version doesn't itemize;
-                // shown so the displayed counts never silently undershoot total.
-                if summary.other > 0 {
-                    parts.push(plural(summary.other, "other op"));
-                }
-                out.push_str(&format!("\nStaged: {}.", parts.join(", ")));
+                out.push_str(&format!("\nStaged: {}.", staged_counts(summary)));
             }
             out
         }
     }
 }
 
-fn plural(n: usize, noun: &str) -> String {
+pub(super) fn plural(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("{n} {noun}")
     } else {
