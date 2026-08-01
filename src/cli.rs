@@ -102,6 +102,12 @@ pub enum Command {
         action: BoundaryAction,
     },
 
+    /// Operate on the staged changeset itself.
+    Stage {
+        #[command(subcommand)]
+        action: StageAction,
+    },
+
     /// Show the bound branch and a summary of staged operations.
     Status,
 
@@ -459,6 +465,14 @@ pub struct ValidateArgs {
     /// exit code.
     #[arg(long)]
     pub introduced: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StageAction {
+    /// Throw away every staged operation, leaving the branch untouched. Lists
+    /// what it discarded first, and parks a recoverable copy in
+    /// `.hydrate/stage.discarded.json`. Purely local: no network call.
+    Discard,
 }
 
 #[derive(Debug, Subcommand)]
