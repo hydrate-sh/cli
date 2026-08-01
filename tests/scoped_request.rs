@@ -344,7 +344,7 @@ fn stage_discard_clears_the_stage_and_leaves_a_recovery_copy() {
     let staged = r#"{"deltas":[{"type":"add_node","node":{"id":"00000000-0000-0000-0000-0000000000aa","kind":"behavior","parent_id":null,"data":{"name":"Rater","description":"Score it.","inputs":[],"outputs":[],"config":[]}}}],"aliases":{"node:Rater":"00000000-0000-0000-0000-0000000000aa"}}"#;
     std::fs::write(hydrate.join("stage.json"), staged).unwrap();
     // A sibling file inside .hydrate that must survive.
-    std::fs::write(hydrate.join("index.json"), r#"{"version":1}"#).unwrap();
+    std::fs::write(hydrate.join("index.json"), r#"{"version":1,"entries":{}}"#).unwrap();
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
         .args(["stage", "discard", "--human"])
@@ -391,6 +391,77 @@ fn stage_discard_clears_the_stage_and_leaves_a_recovery_copy() {
         String::from_utf8_lossy(&again.stdout).contains("nothing to discard"),
         "{}",
         String::from_utf8_lossy(&again.stdout)
+    );
+}
+
+/// `stage discard` must succeed even when the staged batch includes an edge
+/// between two already-COMMITTED ports (both handles are in the pulled index,
+/// neither in the stage's own alias table).
+///
+/// This is the exact shape `summarize(&stage, None)` cannot render: without the
+/// index, neither handle resolves to a path, and the old `discard` failed loud
+/// on the very delta it was trying to throw away — a real discard would be
+/// unable to complete, and unable to report what it destroyed, whenever the
+/// stage referenced anything outside itself. `discard` must thread the pulled
+/// index through (`summarize_workdir`), the same as `status`/`diff` already do.
+#[test]
+fn stage_discard_succeeds_on_a_cross_commit_edge() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(
+        hydrate.join("config.toml"),
+        "project_id = \"00000000-0000-0000-0000-000000000001\"\n\
+         project_name = \"proj\"\n\
+         branch_id = \"00000000-0000-0000-0000-000000000002\"\n\
+         branch_name = \"demo\"\n",
+    )
+    .unwrap();
+    let src = "00000000-0000-0000-0000-0000000000c1";
+    let tgt = "00000000-0000-0000-0000-0000000000c2";
+    std::fs::write(
+        hydrate.join("index.json"),
+        serde_json::json!({
+            "version": 3,
+            "entries": {
+                "port:Api.Rater:out:score": src,
+                "port:Sink:in:rating": tgt,
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        hydrate.join("stage.json"),
+        serde_json::json!({
+            "deltas": [{
+                "type": "add_edge",
+                "edge": {
+                    "id": "00000000-0000-0000-0000-0000000000c3",
+                    "source_handle": src,
+                    "target_handle": tgt,
+                }
+            }],
+            "aliases": {},
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "discard", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
+    // The op listing rendered the edge by PATH, proving the index was
+    // actually consulted rather than the delta being skipped.
+    assert!(
+        stderr.contains("Api.Rater.score") && stderr.contains("Sink.rating"),
+        "stderr: {stderr}"
     );
 }
 
@@ -453,6 +524,174 @@ fn a_failed_discard_reports_no_success_and_keeps_the_stage() {
         still.contains("Score it."),
         "the stage was destroyed anyway"
     );
+}
+
+const RESTORE_CONFIG: &str = "project_id = \"00000000-0000-0000-0000-000000000001\"\n\
+     project_name = \"proj\"\n\
+     branch_id = \"00000000-0000-0000-0000-000000000002\"\n\
+     branch_name = \"demo\"\n";
+const RESTORE_STAGED: &str = r#"{"deltas":[{"type":"add_node","node":{"id":"00000000-0000-0000-0000-0000000000aa","kind":"behavior","parent_id":null,"data":{"name":"Rater","description":"Score it.","inputs":[],"outputs":[],"config":[]}}}],"aliases":{"node:Rater":"00000000-0000-0000-0000-0000000000aa"}}"#;
+
+/// `stage discard` then `stage restore`, against the real binary in a real
+/// working copy: the recovery slot `discard` promises must actually be
+/// readable back by a CLI verb, not just a file the user hand-copies.
+#[test]
+fn stage_restore_puts_back_exactly_what_was_discarded() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(hydrate.join("config.toml"), RESTORE_CONFIG).unwrap();
+
+    // Nothing has ever been discarded yet: a fresh bound workdir with no
+    // recovery file. Not an error — the same posture `discard` takes on an
+    // empty stage.
+    let fresh = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "restore", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    assert_eq!(fresh.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&fresh.stdout).contains("No discarded stage"),
+        "{}",
+        String::from_utf8_lossy(&fresh.stdout)
+    );
+
+    std::fs::write(hydrate.join("stage.json"), RESTORE_STAGED).unwrap();
+
+    let discard = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "discard", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    assert_eq!(discard.status.code(), Some(0));
+    assert!(hydrate.join("stage.discarded.json").exists());
+
+    let restore = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "restore", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    let stdout = String::from_utf8_lossy(&restore.stdout);
+    let stderr = String::from_utf8_lossy(&restore.stderr);
+    assert_eq!(restore.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("Restored"), "stdout: {stdout}");
+
+    // The stage is back — byte-identical to what was originally staged,
+    // description included — and the recovery slot is consumed.
+    let now = std::fs::read_to_string(hydrate.join("stage.json")).unwrap();
+    let now_v: serde_json::Value = serde_json::from_str(&now).unwrap();
+    let orig_v: serde_json::Value = serde_json::from_str(RESTORE_STAGED).unwrap();
+    assert_eq!(
+        now_v, orig_v,
+        "restored stage differs from what was discarded"
+    );
+    assert!(
+        !hydrate.join("stage.discarded.json").exists(),
+        "recovery file was not consumed"
+    );
+
+    // Restoring again now finds the (just-restored) stage non-empty and
+    // refuses rather than silently no-op'ing over live work.
+    let again = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "restore", "--json"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    assert_ne!(again.status.code(), Some(0));
+}
+
+/// `restore` must refuse rather than clobber live staged work — the same
+/// carefulness `discard` applies in the other direction (park before clear).
+#[test]
+fn stage_restore_refuses_over_a_non_empty_stage() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(hydrate.join("config.toml"), RESTORE_CONFIG).unwrap();
+    std::fs::write(hydrate.join("stage.json"), RESTORE_STAGED).unwrap();
+
+    // Park a recovery copy, then stage something new (simulating: discard,
+    // then author fresh work without restoring first).
+    std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "discard", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    std::fs::write(hydrate.join("stage.json"), RESTORE_STAGED).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "restore", "--json"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "restore over live work exited 0"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("commit or discard"), "{stderr}");
+
+    // Nothing was touched: the live stage AND the recovery file both survive.
+    let still = std::fs::read_to_string(hydrate.join("stage.json")).unwrap();
+    assert!(still.contains("Score it."), "live stage was disturbed");
+    assert!(
+        hydrate.join("stage.discarded.json").exists(),
+        "recovery file was consumed despite the refusal"
+    );
+}
+
+/// A recovery file parked from one branch must not silently populate the
+/// stage of a workdir now bound to a different one — its alias table mints
+/// ids that mean nothing there.
+#[test]
+fn stage_restore_refuses_across_a_branch_mismatch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(hydrate.join("config.toml"), RESTORE_CONFIG).unwrap();
+    std::fs::write(hydrate.join("stage.json"), RESTORE_STAGED).unwrap();
+
+    std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "discard", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+
+    // Re-bind this workdir to a different branch, the way `fork` would.
+    std::fs::write(
+        hydrate.join("config.toml"),
+        "project_id = \"00000000-0000-0000-0000-000000000001\"\n\
+         project_name = \"proj\"\n\
+         branch_id = \"00000000-0000-0000-0000-000000000099\"\n\
+         branch_name = \"other\"\n",
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "restore", "--json"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "restore across a branch mismatch exited 0"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("demo"), "{stderr}");
+    assert!(stderr.contains("other"), "{stderr}");
+
+    // The mismatched recovery file is left in place, not silently dropped —
+    // an operator can still recover it by re-binding back to 'demo'.
+    assert!(hydrate.join("stage.discarded.json").exists());
+    let still = std::fs::read_to_string(hydrate.join("stage.json")).unwrap();
+    let still_v: serde_json::Value = serde_json::from_str(&still).unwrap();
+    assert_eq!(still_v["deltas"].as_array().unwrap().len(), 0);
 }
 
 /// The 404 translation must be WIRED, not merely present.

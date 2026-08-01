@@ -64,6 +64,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         },
         Command::Stage { action } => match action {
             StageAction::Discard => finish(stage::discard(mode), mode),
+            StageAction::Restore => finish(stage::restore(mode), mode),
         },
         Command::Status => finish(status::run(mode), mode),
         Command::Diff => finish(diff::run(mode), mode),
