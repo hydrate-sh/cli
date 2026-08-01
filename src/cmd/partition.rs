@@ -137,31 +137,66 @@ pub fn partition(
         }
     }
 
-    let staged_total = staged_findings.len();
-    let baseline_total = base_findings.len();
-    if out.introduced.len() + out.inherited.len() != staged_total {
-        return Err(Untrusted::Conservation {
-            detail: format!(
-                "{} introduced + {} inherited != {staged_total} in the staged report",
-                out.introduced.len(),
-                out.inherited.len()
-            ),
-        });
-    }
-    if out.inherited.len() + out.resolved.len() != baseline_total {
-        return Err(Untrusted::Conservation {
-            detail: format!(
-                "{} inherited + {} resolved != {baseline_total} in the baseline report",
-                out.inherited.len(),
-                out.resolved.len()
-            ),
-        });
-    }
-
+    check_conservation(&out, base_findings, staged_findings)?;
     Ok(out)
 }
 
+/// Every finding in each report must be accounted for by the buckets, key for
+/// key.
+///
+/// Compared against **independently re-derived** tallies. Comparing bucket
+/// *lengths* to input lengths would be true by construction — the loops above
+/// push each finding exactly once — so it would detect nothing at all; a review
+/// proved exactly that by rewriting the old check to `> total + 9999` with every
+/// test still passing.
+///
+/// What it catches is a finding dropped, duplicated, or emitted with a key that
+/// is in neither report. It deliberately does NOT catch a finding moved between
+/// `introduced` and `inherited`: those two are summed against the staged report
+/// together, and attribution between them is what the bucket tests cover. Two
+/// different questions, two different guards.
+fn check_conservation(
+    out: &Partition,
+    baseline: &[models::Finding],
+    staged: &[models::Finding],
+) -> Result<(), Untrusted> {
+    let mut got_staged: HashMap<Key, usize> = HashMap::new();
+    for f in out.introduced.iter().chain(out.inherited.iter()) {
+        *got_staged.entry(key(f)).or_insert(0) += 1;
+    }
+    if got_staged != tally(staged) {
+        return Err(Untrusted::Conservation {
+            detail: "the introduced and inherited buckets do not reconstruct the staged report"
+                .to_string(),
+        });
+    }
+
+    let mut got_baseline: HashMap<Key, usize> = HashMap::new();
+    for f in out.inherited.iter().chain(out.resolved.iter()) {
+        *got_baseline.entry(key(f)).or_insert(0) += 1;
+    }
+    if got_baseline != tally(baseline) {
+        return Err(Untrusted::Conservation {
+            detail: "the inherited and resolved buckets do not reconstruct the baseline report"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
 impl Partition {
+    /// Everything on the branch, attributed to nobody's change.
+    ///
+    /// The answer when the stage is empty: an empty changeset cannot introduce
+    /// a finding, so the split is known without asking the server twice.
+    pub fn all_inherited(response: &ValidateResponse) -> Partition {
+        Partition {
+            introduced: Vec::new(),
+            inherited: findings_of(response).to_vec(),
+            resolved: Vec::new(),
+        }
+    }
+
     /// The error-severity findings your stage introduced — what a
     /// changeset-relative verdict is a function of.
     pub fn introduced_errors(&self) -> Vec<&models::Finding> {
@@ -271,11 +306,46 @@ mod tests {
     fn two_codes_on_one_locator_are_distinct_findings() {
         // Identity is (code, locator), not locator alone: the server can report
         // two different problems about the same port.
+        //
+        // The ORDER matters for what this proves. With base=[UNSAT@a] and
+        // staged=[UNSAT@a, MISMATCH@a], multiset counting hands the second
+        // entry to `introduced` whichever key is used — so that arrangement
+        // passes even with `code` dropped entirely, which a review demonstrated.
+        // The discriminating case swaps the code between the two reports: with
+        // the real key that is one resolved and one introduced; keyed on the
+        // locator alone it collapses to a single *inherited* finding, which is
+        // the silent direction.
+        let base = response(7, vec![finding(MISMATCH, "a")]);
+        let staged = response(7, vec![finding(UNSAT, "a")]);
+        let p = partition(&base, &staged).unwrap();
+        assert_eq!(p.introduced.len(), 1, "the new code must be introduced");
+        assert_eq!(p.introduced[0].code, UNSAT);
+        assert_eq!(p.resolved.len(), 1, "the old code must be resolved");
+        assert_eq!(p.resolved[0].code, MISMATCH);
+        assert!(
+            p.inherited.is_empty(),
+            "a different code on the same locator is not the same finding"
+        );
+
+        // And the additive arrangement still behaves.
         let base = response(7, vec![finding(UNSAT, "a")]);
         let staged = response(7, vec![finding(UNSAT, "a"), finding(MISMATCH, "a")]);
         let p = partition(&base, &staged).unwrap();
         assert_eq!(p.introduced.len(), 1);
         assert_eq!(p.introduced[0].code, MISMATCH);
+    }
+
+    #[test]
+    fn a_duplicate_in_the_baseline_is_counted_too() {
+        // The multiset must count both sides. Keyed as a set on the baseline,
+        // two inherited findings on one locator would leave one of them looking
+        // resolved when it was not.
+        let base = response(7, vec![finding(UNSAT, "a"), finding(UNSAT, "a")]);
+        let staged = response(7, vec![finding(UNSAT, "a"), finding(UNSAT, "a")]);
+        let p = partition(&base, &staged).unwrap();
+        assert_eq!(p.inherited.len(), 2, "both copies are inherited");
+        assert!(p.resolved.is_empty(), "nothing was resolved");
+        assert!(p.introduced.is_empty());
     }
 
     #[test]
@@ -307,6 +377,53 @@ mod tests {
         assert_eq!(p.introduced.len(), 2);
         assert_eq!(p.introduced_errors().len(), 1);
         assert_eq!(p.introduced_errors()[0].locator, "e");
+    }
+
+    #[test]
+    fn conservation_catches_a_dropped_or_invented_finding() {
+        // The old check compared bucket lengths to input lengths, which the
+        // loops make true by construction — a review rewrote it to
+        // `> total + 9999` and nothing failed. This exercises it directly, with
+        // buckets that do not reconstruct the reports.
+        let a = finding(UNSAT, "a");
+        let b = finding(UNSAT, "b");
+
+        // Dropped: staged had two, the buckets account for one.
+        let dropped = Partition {
+            introduced: vec![a.clone()],
+            inherited: vec![],
+            resolved: vec![],
+        };
+        let err = check_conservation(&dropped, &[], &[a.clone(), b.clone()]).unwrap_err();
+        assert!(matches!(err, Untrusted::Conservation { .. }), "{err:?}");
+        assert!(err.to_string().contains("does not add up"), "{err}");
+
+        // Invented: a finding in no report at all.
+        let invented = Partition {
+            introduced: vec![a.clone(), b.clone()],
+            inherited: vec![],
+            resolved: vec![],
+        };
+        assert!(check_conservation(&invented, &[], std::slice::from_ref(&a)).is_err());
+
+        // Baseline side: resolved claims something the baseline never had.
+        let bogus = Partition {
+            introduced: vec![],
+            inherited: vec![],
+            resolved: vec![b.clone()],
+        };
+        assert!(check_conservation(&bogus, std::slice::from_ref(&a), &[]).is_err());
+
+        // And a correct split passes. Note an INHERITED finding appears in both
+        // reports by definition, so the staged side must list it too — the
+        // check is strict about that, which is the point.
+        let good = Partition {
+            introduced: vec![b.clone()],
+            inherited: vec![a.clone()],
+            resolved: vec![],
+        };
+        let base_one = [a.clone()];
+        assert!(check_conservation(&good, &base_one, &[a, b]).is_ok());
     }
 
     #[test]

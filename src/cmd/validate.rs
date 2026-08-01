@@ -35,8 +35,10 @@ use crate::staging::lower;
 use crate::state::{Binding, Index, Stage};
 
 /// Run `validate`: prepare the request from the stage (read-only), POST it, print
-/// the findings, and return the process exit code (`0` when the server verdict is
-/// `valid`, [`exit::VALIDATION`] when it is not). Returns `Err` only for a real
+/// the findings, and return the process exit code — `0` when your staged change
+/// adds no error-severity finding, [`exit::VALIDATION`] when it does. With
+/// `--whole-branch` it follows the server's `valid` verdict verbatim instead.
+/// Returns `Err` only for a real
 /// failure (no workdir, unbound, transport, parse) — those keep their own exit
 /// codes.
 pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliError> {
@@ -61,27 +63,22 @@ pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliEr
     // diffed. Both calls must succeed and describe the same branch version;
     // anything else falls back to the whole-branch verdict, loudly. A partial
     // verdict is never presented.
+    // 94 keeps the inverted default; 93 supplies the extracted helper with the
+    // retry-then-conflict guard and the empty-stage short circuit.
     let partition = if args.whole_branch {
         None
     } else {
-        // The baseline probe is `prepare` over an EMPTY stage: pure, writes
-        // nothing, and already a supported request shape (the server answers an
-        // empty batch with the branch's current coherence). The real stage is
-        // never touched, swapped, or restored.
-        let baseline = client.validate_deltas(binding.branch_id, prepare(&Stage::empty())?)?;
-        match partition::partition(&baseline, &response) {
-            Ok(p) => Some(p),
-            Err(why) => {
-                eprintln!("warning: {why}");
-                None
-            }
-        }
+        partition_against_baseline(&client, &binding, &response, &stage)?
     };
 
     // Fail loud on a server-verdict / severity disagreement rather than silently
     // trusting one side. It goes to stderr so it is loud in BOTH output modes
     // without polluting the stdout contract (the verbatim JSON, or the human
     // report). The server verdict still governs the exit code below.
+    // Cross-checks the STAGED response only. The baseline is a probe used to
+    // attribute findings, not a verdict anyone gates on, so a disagreement there
+    // would not mislead a caller — and reporting it would be noise about a
+    // request the user did not ask for.
     if let Some(warning) = disagreement_warning(&response) {
         eprintln!("{warning}");
     }
@@ -107,13 +104,25 @@ pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliEr
 
     match &partition {
         Some(p) => {
+            let computed = if p.introduced_errors().is_empty() {
+                exit::SUCCESS
+            } else {
+                exit::VALIDATION
+            };
             // A caller who ran bare `validate` as a branch-health check used to
             // get a non-zero exit here and now gets 0. That is a changed answer
             // to the same command, so it must leave a trace at RUNTIME — a
             // release note is not a runtime signal, and a CI log is where
             // someone will look. stderr, so both output modes carry it without
             // touching the stdout contract.
-            if p.introduced.is_empty() && !p.inherited.is_empty() {
+            // Fire whenever the answer CHANGED, not merely when the introduced
+            // set is empty. Two 5→0 transitions escape the narrower condition:
+            // an introduced set holding only warning-severity findings, and a
+            // `valid:false` report with no findings to bucket. Neither is
+            // reachable against today's server, but the warning arm is kept in
+            // the contract deliberately, so the guard must not assume it away.
+            let changed = exit_code(&response) != computed && !p.inherited.is_empty();
+            if changed {
                 eprintln!(
                     "note: {} on this branch, none caused by your staged change, \
                      so they do not affect the exit code. Run \
@@ -128,15 +137,63 @@ pub fn run(args: crate::cli::ValidateArgs, mode: OutputMode) -> Result<u8, CliEr
             // The gate is the introduced set. Everything else is reported but
             // does not decide the exit code — that is the whole point of the
             // flag.
-            Ok(if p.introduced_errors().is_empty() {
-                exit::SUCCESS
-            } else {
-                exit::VALIDATION
-            })
+            Ok(computed)
         }
         None => {
             println!("{}", render(&response, &binding, &locators, mode));
             Ok(exit_code(&response))
+        }
+    }
+}
+
+/// Fetch the branch's current coherence and split `staged` against it.
+///
+/// The baseline probe is `prepare` over an EMPTY stage: pure, writes nothing,
+/// and already a supported request shape (the server answers an empty batch with
+/// the branch's current coherence). The real stage is never touched, swapped, or
+/// restored.
+///
+/// `Ok(None)` means the split was refused and the caller must fall back to the
+/// whole-branch verdict — and say so, in both output modes.
+fn partition_against_baseline(
+    client: &Client,
+    binding: &Binding,
+    response: &ValidateResponse,
+    stage: &Stage,
+) -> Result<Option<Partition>, CliError> {
+    // An empty stage cannot introduce anything, so the baseline is the staged
+    // report by construction. Skipping the call here matters: `validate` is
+    // write-scope gated and rate-limited per principal, so a second request on
+    // every invocation halves an agent loop's quota — and this is the one case
+    // where it buys nothing at all.
+    if stage.deltas.is_empty() {
+        return Ok(Some(Partition::all_inherited(response)));
+    }
+
+    let baseline = client.validate_deltas(binding.branch_id, prepare(&Stage::empty())?)?;
+    match partition::partition(&baseline, response) {
+        Ok(p) => Ok(Some(p)),
+        Err(partition::Untrusted::BranchMoved { .. }) => {
+            // The branch moved between the two reads. Retry once — a single
+            // concurrent commit is the common case and a second attempt usually
+            // lands on a settled branch.
+            let retry = client.validate_deltas(binding.branch_id, prepare(&Stage::empty())?)?;
+            match partition::partition(&retry, response) {
+                Ok(p) => Ok(Some(p)),
+                Err(why) => {
+                    // Still moving. Refusing to attribute is the honest answer;
+                    // a conflict is what "the branch moved under you" means
+                    // everywhere else in this CLI, and it is retryable.
+                    eprintln!("warning: {why}");
+                    Err(CliError::VersionConflict {
+                        current_version: None,
+                    })
+                }
+            }
+        }
+        Err(why) => {
+            eprintln!("warning: {why}");
+            Ok(None)
         }
     }
 }
@@ -169,6 +226,30 @@ fn finding_line(f: &models::Finding, locators: &Locators) -> String {
         locator,
         locators.rewrite(&f.message),
     )
+}
+
+/// One bucket, each finding carrying its own resolved path inline.
+///
+/// Inline rather than a parallel array because a bucketed payload has no single
+/// `findings` list to index into, and the locator cannot serve as a join key —
+/// the same port can carry two findings.
+fn bucket_json(findings: &[models::Finding], locators: &Locators) -> Vec<serde_json::Value> {
+    findings
+        .iter()
+        .map(|f| {
+            let resolved = locators.resolve(&f.locator);
+            serde_json::json!({
+                "code": code_str(f.code),
+                "severity": severity_str(f.severity),
+                "locator": f.locator,
+                "path": resolved.as_ref().map(|r| r.label.clone()),
+                // False when part of `path` is still a raw id, so a consumer can
+                // tell a complete answer from a partial one without sniffing.
+                "path_complete": resolved.as_ref().map(|r| r.complete),
+                "message": locators.rewrite(&f.message),
+            })
+        })
+        .collect()
 }
 
 /// The `located` array: every finding with its id resolved to an authored path.
@@ -214,10 +295,13 @@ fn render_partitioned(
         OutputMode::Json => serde_json::json!({
             "valid": introduced_errors == 0,
             "whole_branch_valid": response.valid,
-            "introduced": p.introduced,
-            "inherited": p.inherited,
-            "resolved": p.resolved,
-            "located": located_json(response, locators),
+            // Each bucket carries its own resolved paths. A shared `located`
+            // array keyed by an index into `findings` would be unjoinable here:
+            // this payload has no `findings` array to index into, and the
+            // locator is explicitly not a join key (two findings can share one).
+            "introduced": bucket_json(&p.introduced, locators),
+            "inherited": bucket_json(&p.inherited, locators),
+            "resolved": bucket_json(&p.resolved, locators),
             "branch": binding.branch_name,
         })
         .to_string(),
@@ -242,7 +326,8 @@ fn render_partitioned(
             }
             if !p.inherited.is_empty() {
                 out.push_str(&format!(
-                    "\n\n{} already on branch '{}', not caused by your change.",
+                    "\n\n{} already on branch '{}', not caused by your change. \
+                     Run `hydrate validate --whole-branch` to list them.",
                     plural(p.inherited.len(), "coherence finding"),
                     binding.branch_name
                 ));
@@ -417,28 +502,7 @@ fn render(
             // finding without a lookup per id. `path` is null when the local
             // view can't place the id (stale index — see the hint in `run`).
             "findings": findings,
-            "located": findings
-                .iter()
-                .enumerate()
-                .map(|(i, f)| {
-                    let resolved = locators.resolve(&f.locator);
-                    serde_json::json!({
-                        // Two findings can share a locator (an input can be both
-                        // unsatisfied and type-mismatched), so the locator is not
-                        // a join key — the index into `findings` is.
-                        "finding_index": i,
-                        "code": code_str(f.code),
-                        "severity": severity_str(f.severity),
-                        "locator": f.locator,
-                        "path": resolved.as_ref().map(|r| r.label.clone()),
-                        // False when part of `path` is still a raw id, so a
-                        // consumer can tell a complete answer from a partial one
-                        // without string-sniffing for a UUID.
-                        "path_complete": resolved.as_ref().map(|r| r.complete),
-                        "message": locators.rewrite(&f.message),
-                    })
-                })
-                .collect::<Vec<_>>(),
+            "located": located_json(response, locators),
         })
         .to_string(),
         OutputMode::Human => {
@@ -955,6 +1019,21 @@ mod tests {
         assert_eq!(v["introduced"].as_array().unwrap().len(), 0, "{json}");
         assert_eq!(v["inherited"].as_array().unwrap().len(), 1, "{json}");
         assert!(v["resolved"].is_array(), "{json}");
+        // Each finding carries its own path. A shared `located` array indexed
+        // into a `findings` list would be unjoinable — this payload has no such
+        // list, and the locator is not a join key.
+        assert!(
+            v["located"].is_null(),
+            "unjoinable located array present: {json}"
+        );
+        let inh = &v["inherited"][0];
+        assert!(inh["path"].is_string() || inh["path"].is_null(), "{json}");
+        assert!(
+            inh["path_complete"].is_boolean() || inh["path_complete"].is_null(),
+            "{json}"
+        );
+        assert!(inh["code"].is_string(), "{json}");
+        assert!(inh["severity"].is_string(), "{json}");
     }
 
     #[test]
