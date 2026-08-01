@@ -296,3 +296,28 @@ fn an_unrecognised_kind_defers_rather_than_rejecting() {
         "an unknown kind must defer to the server, got: {request}"
     );
 }
+
+/// Usage errors exit `2`, which the argument parser owns and no constant in
+/// `exit.rs` describes. Documented in `guide` and in the reference; pinned here
+/// against the real binary, because a test comparing one hardcoded list to
+/// another cannot fail when the behaviour changes.
+#[test]
+fn usage_errors_exit_two() {
+    for args in [
+        vec!["--definitely-not-a-flag"],
+        vec!["walk"],                 // required PATH missing
+        vec!["show", "--depth", "1"], // --depth requires PATH
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+            .args(&args)
+            .output()
+            .expect("run hydrate");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {args:?}, got {:?}\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
