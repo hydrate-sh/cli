@@ -27,6 +27,24 @@ The authoring loop
   5. hydrate validate        read the findings your change adds
   6. hydrate commit          apply the staged changeset to the branch
 
+Managing projects
+  hydrate project create <name>       create a project on your account
+  hydrate project archive <name>      hide it from `hydrate projects` without
+                                       deleting it — non-destructive, reversible
+  hydrate project delete <name>       permanently delete it — its branches,
+                                       graph, and stored artifacts go with it;
+                                       this cannot be undone. No confirmation
+                                       prompt (this CLI is scripted), so it
+                                       prints what is about to go before it
+                                       goes. Requires an API key minted with
+                                       the `project:delete` scope, separate
+                                       from `graph:write` — a bare 403 here
+                                       means the key needs re-minting with it.
+  hydrate project rename <old> <new>  rename a project
+  All four address the project by its exact name (never an id), and an
+  ARCHIVED project's name is not resolvable by these verbs today (`hydrate
+  projects` excludes archived projects from the listing they resolve against).
+
 Inspecting
   hydrate projects             list your projects (and the ids for --project)
   hydrate branches             list the working branches of the selected project

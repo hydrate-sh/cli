@@ -12,15 +12,18 @@ use crate::models;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InlineObject6 {
-    #[serde(rename = "detail", skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
+pub struct ProjectPatchResponse {
+    #[serde(rename = "project")]
+    pub project: Box<models::ProjectOut>,
+    #[serde(rename = "version")]
+    pub version: String,
 }
 
-impl InlineObject6 {
-    pub fn new() -> InlineObject6 {
-        InlineObject6 {
-            detail: None,
+impl ProjectPatchResponse {
+    pub fn new(project: models::ProjectOut, version: String) -> ProjectPatchResponse {
+        ProjectPatchResponse {
+            project: Box::new(project),
+            version,
         }
     }
 }

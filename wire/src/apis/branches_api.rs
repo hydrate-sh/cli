@@ -86,12 +86,12 @@ pub struct ValidateBranchDeltasV1BranchesBranchIdValidatePostParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ApplyBranchDeltasV1BranchesBranchIdDeltasPostError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost404Response),
     Status409(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost409Response),
     Status422(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost422Response),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -99,11 +99,11 @@ pub enum ApplyBranchDeltasV1BranchesBranchIdDeltasPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CreateBranchV1ProjectsProjectIdBranchesPostError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -111,11 +111,11 @@ pub enum CreateBranchV1ProjectsProjectIdBranchesPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -123,11 +123,11 @@ pub enum FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchGraphV1BranchesBranchIdGraphGetError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -135,11 +135,11 @@ pub enum FetchBranchGraphV1BranchesBranchIdGraphGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -147,11 +147,11 @@ pub enum FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -159,11 +159,11 @@ pub enum FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ListBranchesV1ProjectsProjectIdBranchesGetError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -171,11 +171,11 @@ pub enum ListBranchesV1ProjectsProjectIdBranchesGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ValidateBranchDeltasV1BranchesBranchIdValidatePostError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status404(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost404Response),
     Status422(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost422Response),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 

@@ -12,15 +12,18 @@ use crate::models;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InlineObject6 {
-    #[serde(rename = "detail", skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
+pub struct InlineObject9Detail {
+    #[serde(rename = "current_version", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<Option<i32>>,
+    #[serde(rename = "error", skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-impl InlineObject6 {
-    pub fn new() -> InlineObject6 {
-        InlineObject6 {
-            detail: None,
+impl InlineObject9Detail {
+    pub fn new() -> InlineObject9Detail {
+        InlineObject9Detail {
+            current_version: None,
+            error: None,
         }
     }
 }

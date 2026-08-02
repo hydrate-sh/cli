@@ -72,6 +72,64 @@ impl Client {
             .map_err(CliError::from)
     }
 
+    /// Create a new project owned by the caller (server-defaulted language and
+    /// intent). The server enforces name uniqueness among your active projects
+    /// (case-insensitive, 409 `name_taken`) — this makes no local check.
+    pub fn create_project(&self, name: &str) -> Result<models::ProjectCreateResponse, CliError> {
+        let params = projects_api::CreateProjectV1ProjectsPostParams {
+            v1_create_project_body: models::V1CreateProjectBody::new(name.to_string()),
+        };
+        self.rt
+            .block_on(projects_api::create_project_v1_projects_post(
+                &self.cfg, params,
+            ))
+            .map_err(CliError::from)
+    }
+
+    /// Permanently delete a project the caller owns, along with its branches,
+    /// graph, and stored artifacts. Irreversible.
+    ///
+    /// Requires the `project:delete` scope — separate from `graph:write` and
+    /// not implied by it, so a 403 here does not mean "not authenticated", it
+    /// means "this key was never minted with permission to delete". Callers
+    /// should map that 403 to [`CliError::MissingScope`] rather than the
+    /// generic `Service` variant (see its doc comment for why that mapping is
+    /// route-specific and fragile).
+    pub fn delete_project(&self, project_id: Uuid) -> Result<(), CliError> {
+        let params = projects_api::DeleteProjectV1ProjectsProjectIdDeleteParams {
+            project_id: project_id.to_string(),
+        };
+        self.rt
+            .block_on(projects_api::delete_project_v1_projects_project_id_delete(
+                &self.cfg, params,
+            ))
+            .map_err(CliError::from)
+    }
+
+    /// Rename a project and/or set its archived state. `name`/`archived` are
+    /// each only sent when `Some`, so an omitted field is left unchanged
+    /// server-side — passing both `None` is a caller bug (the server rejects an
+    /// empty patch with 422 `no_fields`, but callers should not rely on that).
+    pub fn patch_project(
+        &self,
+        project_id: Uuid,
+        name: Option<&str>,
+        archived: Option<bool>,
+    ) -> Result<models::ProjectPatchResponse, CliError> {
+        let params = projects_api::PatchProjectV1ProjectsProjectIdPatchParams {
+            project_id: project_id.to_string(),
+            v1_patch_project_body: models::V1PatchProjectBody {
+                name: name.map(|n| Some(n.to_string())),
+                archived: archived.map(Some),
+            },
+        };
+        self.rt
+            .block_on(projects_api::patch_project_v1_projects_project_id_patch(
+                &self.cfg, params,
+            ))
+            .map_err(CliError::from)
+    }
+
     /// Create a new working branch off main in `project_id`, named `name`.
     ///
     /// The server does not reject a duplicate branch name, so callers that want

@@ -39,12 +39,16 @@ src/models/inline_object_2_detail.rs
 src/models/inline_object_3.rs
 src/models/inline_object_3_detail.rs
 src/models/inline_object_4.rs
+src/models/inline_object_4_detail.rs
 src/models/inline_object_5.rs
+src/models/inline_object_5_detail.rs
 src/models/inline_object_6.rs
-src/models/inline_object_6_detail.rs
-src/models/inline_object_6_detail_one_of.rs
 src/models/inline_object_7.rs
-src/models/inline_object_7_detail.rs
+src/models/inline_object_8.rs
+src/models/inline_object_8_detail.rs
+src/models/inline_object_8_detail_one_of.rs
+src/models/inline_object_9.rs
+src/models/inline_object_9_detail.rs
 src/models/inline_object_detail.rs
 src/models/main_branch_ref.rs
 src/models/mod.rs
@@ -56,6 +60,7 @@ src/models/port.rs
 src/models/position.rs
 src/models/project_create_response.rs
 src/models/project_out.rs
+src/models/project_patch_response.rs
 src/models/projects_list_response.rs
 src/models/recovery_hint.rs
 src/models/reparent_node_delta.rs
@@ -66,6 +71,7 @@ src/models/v1_create_project_body.rs
 src/models/v1_deltas_body.rs
 src/models/v1_deltas_body_deltas_inner.rs
 src/models/v1_node_position.rs
+src/models/v1_patch_project_body.rs
 src/models/v1_validate_body.rs
 src/models/validate_response.rs
 src/models/validation_error.rs

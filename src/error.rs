@@ -50,6 +50,17 @@ pub enum CliError {
     /// `init` refused to edit `AGENTS.md` to avoid destroying the user's content
     /// (a malformed/ambiguous hydrate block, or a symlink at the target).
     InitRefused(String),
+    /// A `/v1` scope gate refused the request (403) on a route where we can
+    /// infer WHICH scope is missing from the route itself — every `/v1` scope
+    /// gate returns the same fixed `{"detail": "forbidden"}` body with no
+    /// `code` or `missing_scope` field, so there is nothing in the response to
+    /// key off. Callers must only construct this where the route is known to
+    /// require exactly one extra scope (documented at each call site); if a
+    /// route ever grows a second scope requirement this mapping becomes
+    /// ambiguous and needs revisiting.
+    MissingScope {
+        scope: String,
+    },
     /// Anything else (a bug, an unexpected response).
     Other(String),
 }
@@ -83,6 +94,7 @@ impl CliError {
             CliError::NoProject => "no_project",
             CliError::AmbiguousProject { .. } => "ambiguous_project",
             CliError::InitRefused(_) => "init_refused",
+            CliError::MissingScope { .. } => "missing_scope",
             CliError::Other(_) => "error",
         }
     }
@@ -127,6 +139,12 @@ impl fmt::Display for CliError {
                  variable (run `hydrate projects` to see the names and ids)"
             ),
             CliError::InitRefused(detail) => write!(f, "{detail}"),
+            CliError::MissingScope { scope } => write!(
+                f,
+                "this API key was not minted with the `{scope}` scope, so it \
+                 cannot do this; mint a new key that includes `{scope}` and set \
+                 it as HYD_API_KEY"
+            ),
             CliError::Other(detail) => write!(f, "{detail}"),
         }
     }
@@ -174,6 +192,14 @@ impl<T> From<WireError<T>> for CliError {
 /// Best-effort extraction of `(error.kind, reason, current_version)` from the
 /// `{"detail": {...}}` error envelope. A body that doesn't parse yields no extra
 /// detail — the HTTP status still drives the exit code, so nothing is swallowed.
+///
+/// The service uses two envelope shapes for the machine-readable kind: the
+/// delta/branch routes carry it as `error` (e.g. `version_conflict`), while the
+/// project routes (and the shared not-found envelope) carry it as `code` (e.g.
+/// `name_taken`, `not_found`). Both are checked so neither family of route loses
+/// its kind here; `error` is tried first only because it was there first, not
+/// because one takes precedence over the other in a body that (today) never
+/// carries both.
 fn parse_detail(body: &str) -> (Option<String>, Option<String>, Option<i64>) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
         return (None, None, None);
@@ -181,6 +207,7 @@ fn parse_detail(body: &str) -> (Option<String>, Option<String>, Option<i64>) {
     let detail = v.get("detail").unwrap_or(&v);
     let kind = detail
         .get("error")
+        .or_else(|| detail.get("code"))
         .and_then(|x| x.as_str())
         .map(str::to_string);
     // The human-readable text rides in `reason` (the delta-error envelope) or
@@ -357,5 +384,54 @@ mod tests {
     #[test]
     fn parse_detail_tolerates_garbage() {
         assert_eq!(parse_detail("not json"), (None, None, None));
+    }
+
+    #[test]
+    fn code_keyed_envelope_maps_to_a_kind_and_message() {
+        // The project routes (create/patch/delete) use `{code, message}`, not
+        // the delta routes' `{error, reason}`. Before this, `kind` came back
+        // `None` for every project 4xx and the CLI fell back to the useless
+        // generic "service_error" token.
+        let e = response_error(
+            409,
+            r#"{"detail":{"code":"name_taken","message":"You already have an active project with this name."}}"#,
+        );
+        match &e {
+            CliError::Service {
+                status,
+                kind,
+                reason,
+            } => {
+                assert_eq!(*status, 409);
+                assert_eq!(kind, "name_taken");
+                assert_eq!(
+                    reason.as_deref(),
+                    Some("You already have an active project with this name.")
+                );
+            }
+            other => panic!("expected Service, got {other:?}"),
+        }
+        assert_eq!(e.kind(), "name_taken");
+    }
+
+    #[test]
+    fn shared_not_found_envelope_maps_to_not_found_kind() {
+        let e = response_error(
+            404,
+            r#"{"detail":{"code":"not_found","message":"Resource not found or not accessible."}}"#,
+        );
+        assert_eq!(e.kind(), "not_found");
+    }
+
+    #[test]
+    fn missing_scope_names_the_scope_and_is_actionable() {
+        let e = CliError::MissingScope {
+            scope: "project:delete".to_string(),
+        };
+        assert_eq!(e.kind(), "missing_scope");
+        assert_eq!(e.exit_code(), exit::GENERIC);
+        let msg = e.to_string();
+        assert!(msg.contains("project:delete"), "{msg}");
+        assert!(msg.contains("HYD_API_KEY"), "{msg}");
     }
 }

@@ -28,6 +28,71 @@ fn live_health_and_authenticated_read() {
         .expect("authenticated projects read failed");
 }
 
+/// End-to-end against a live backend: create a project, rename it, archive it
+/// (which drops it from the default listing), then delete it — the full
+/// `hydrate project` lifecycle this PR adds, exercised at the `Client` layer
+/// (the `hydrate project delete` CLI verb additionally translates a 403 here
+/// into [`hydrate::error::CliError::MissingScope`]; that translation lives in
+/// the command layer, which this crate does not expose to integration tests —
+/// see `cmd::project::translate_delete_error` for its own coverage).
+///
+/// Needs a key with BOTH `graph:write` (create/rename/archive) and
+/// `project:delete` (delete); a key that lacks the latter is an accepted
+/// outcome here too — the delete call comes back a plain 403 `Service` error,
+/// which this test tolerates rather than treats as a hard failure, so the test
+/// still exercises create/rename/archive against a live backend even with an
+/// older key.
+#[test]
+#[ignore = "requires a live backend AND mutates it (creates + deletes a project): run with --ignored"]
+fn live_project_create_rename_archive_delete() {
+    use hydrate::error::CliError;
+
+    let base_url =
+        std::env::var("HYD_BASE_URL").expect("HYD_BASE_URL must be set to run this test");
+    let api_key = std::env::var("HYD_API_KEY").expect("HYD_API_KEY must be set to run this test");
+
+    let client = Client::new(&Config { base_url, api_key }).expect("build client");
+
+    let name = format!("cli-it-{}", std::process::id());
+    let created = client.create_project(&name).expect("create failed");
+    assert_eq!(created.project.name, name);
+
+    let renamed_to = format!("{name}-renamed");
+    let patched = client
+        .patch_project(created.project.id, Some(&renamed_to), None)
+        .expect("rename failed");
+    assert_eq!(patched.project.name, renamed_to);
+
+    let archived = client
+        .patch_project(created.project.id, None, Some(true))
+        .expect("archive failed");
+    assert!(archived.project.archived);
+    // Archiving is the point of this half of the test: the project must now
+    // be invisible to the default listing (server behavior this CLI's name
+    // resolution depends on — see `cmd::project::find_by_name`).
+    assert!(
+        !client
+            .list_projects()
+            .expect("list failed")
+            .projects
+            .iter()
+            .any(|p| p.id == created.project.id),
+        "an archived project must not appear in GET /v1/projects"
+    );
+
+    match client.delete_project(created.project.id) {
+        Ok(()) => {}
+        // The key this test runs with may not have been minted with
+        // project:delete — an accepted, documented outcome (the CLI verb
+        // turns this specific shape into CliError::MissingScope; see its own
+        // unit coverage in cmd::project), not a failure of this test. A key
+        // that does hold the scope reaches the Ok(()) arm above and leaves
+        // nothing behind.
+        Err(CliError::Service { status: 403, .. }) => {}
+        Err(e) => panic!("delete failed with an unexpected error: {e}"),
+    }
+}
+
 #[test]
 #[ignore = "requires a live backend AND mutates it (creates a branch): run with --ignored"]
 fn live_create_branch_then_list_includes_it() {

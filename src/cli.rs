@@ -61,6 +61,13 @@ pub enum Command {
     /// List the projects on your account (archived ones are flagged).
     Projects,
 
+    /// Create, archive, delete, or rename a project. `hydrate projects`
+    /// (plural) is the listing verb; this is the mutating group.
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+
     /// Fork a working branch from main and bind this directory to it.
     Fork(ForkArgs),
 
@@ -129,6 +136,48 @@ pub enum Command {
 pub struct ForkArgs {
     /// Name for the new working branch (a slug: letters, digits, '-', '_').
     pub name: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectAction {
+    /// Create a new project on your account.
+    Create(ProjectCreateArgs),
+
+    /// Archive a project: it stops appearing in `hydrate projects`, but stays
+    /// addressable by name for `project rename` / `project archive` again to
+    /// reverse it (a fresh listing that includes it is not part of this verb
+    /// set — see the command's own help for the current limitation).
+    Archive(ProjectNameArgs),
+
+    /// Permanently delete a project — its branches, graph, and stored
+    /// artifacts go with it. This cannot be undone. Requires an API key minted
+    /// with the `project:delete` scope (separate from `graph:write`).
+    Delete(ProjectNameArgs),
+
+    /// Rename a project.
+    Rename(ProjectRenameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectCreateArgs {
+    /// Project name. Must be unique among your active projects
+    /// (case-insensitive) — the server is the authority on this, not the CLI.
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectNameArgs {
+    /// Project to act on, addressed by its exact name (no partial match).
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectRenameArgs {
+    /// Current project name, exact.
+    pub old_name: String,
+
+    /// New project name.
+    pub new_name: String,
 }
 
 #[derive(Debug, Args)]
@@ -552,5 +601,59 @@ mod tests {
             }
             other => panic!("expected Walk, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn project_create_parses_the_name() {
+        let cli = Cli::parse_from(["hyd", "project", "create", "hotdog-rater"]);
+        match cli.command {
+            Command::Project {
+                action: ProjectAction::Create(args),
+            } => assert_eq!(args.name, "hotdog-rater"),
+            other => panic!("expected Project::Create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_archive_and_delete_take_a_single_exact_name() {
+        let archive = Cli::parse_from(["hyd", "project", "archive", "old-experiment"]);
+        match archive.command {
+            Command::Project {
+                action: ProjectAction::Archive(args),
+            } => assert_eq!(args.name, "old-experiment"),
+            other => panic!("expected Project::Archive, got {other:?}"),
+        }
+
+        let delete = Cli::parse_from(["hyd", "project", "delete", "probe"]);
+        match delete.command {
+            Command::Project {
+                action: ProjectAction::Delete(args),
+            } => assert_eq!(args.name, "probe"),
+            other => panic!("expected Project::Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_rename_takes_old_then_new() {
+        let cli = Cli::parse_from(["hyd", "project", "rename", "old-name", "new-name"]);
+        match cli.command {
+            Command::Project {
+                action: ProjectAction::Rename(args),
+            } => {
+                assert_eq!(args.old_name, "old-name");
+                assert_eq!(args.new_name, "new-name");
+            }
+            other => panic!("expected Project::Rename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_verbs_are_distinct_from_the_plural_listing_verb() {
+        // `hydrate projects` (listing) and `hydrate project <verb>` (mutating)
+        // are deliberately two different top-level commands, not one taking an
+        // optional subcommand — a shipped verb becoming the second-class
+        // spelling of itself was judged a worse trade than the asymmetry.
+        let listing = Cli::parse_from(["hyd", "projects"]);
+        assert!(matches!(listing.command, Command::Projects));
     }
 }

@@ -4,9 +4,9 @@
 
 use std::process::Command;
 
-const VERBS: [&str; 12] = [
-    "init", "projects", "fork", "branches", "show", "walk", "node", "edge", "status", "diff",
-    "validate", "commit",
+const VERBS: [&str; 13] = [
+    "init", "projects", "project", "fork", "branches", "show", "walk", "node", "edge", "status",
+    "diff", "validate", "commit",
 ];
 
 // `CARGO_BIN_EXE_<name>` is provided to integration tests at COMPILE time, so it
@@ -99,6 +99,37 @@ fn edge_add_help_pins_endpoint_flags() {
             "edge add --help missing {flag:?}\n{text}"
         );
     }
+}
+
+#[test]
+fn project_help_lists_every_mutating_verb() {
+    // `hydrate projects` (plural) lists; `hydrate project <verb>` (singular)
+    // mutates. Pin the four sub-verbs so dropping one from the clap tree fails
+    // here rather than silently shrinking the surface.
+    let out = Command::new(HYDRATE_EXE)
+        .args(["project", "--help"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    for verb in ["create", "archive", "delete", "rename"] {
+        assert!(
+            text.contains(verb),
+            "project --help missing {verb:?}\n{text}"
+        );
+    }
+}
+
+#[test]
+fn project_rename_help_pins_two_positional_names() {
+    let out = Command::new(HYDRATE_EXE)
+        .args(["project", "rename", "--help"])
+        .output()
+        .expect("failed to run binary");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("OLD_NAME"), "{text}");
+    assert!(text.contains("NEW_NAME"), "{text}");
 }
 
 #[test]

@@ -12,7 +12,7 @@ use crate::models;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InlineObject6DetailOneOf {
+pub struct InlineObject8DetailOneOf {
     #[serde(rename = "delta_ordinal", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
     pub delta_ordinal: Option<Option<i32>>,
     #[serde(rename = "delta_type", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
@@ -29,9 +29,9 @@ pub struct InlineObject6DetailOneOf {
     pub recovery_hint: Option<Option<String>>,
 }
 
-impl InlineObject6DetailOneOf {
-    pub fn new() -> InlineObject6DetailOneOf {
-        InlineObject6DetailOneOf {
+impl InlineObject8DetailOneOf {
+    pub fn new() -> InlineObject8DetailOneOf {
+        InlineObject8DetailOneOf {
             delta_ordinal: None,
             delta_type: None,
             error: None,
