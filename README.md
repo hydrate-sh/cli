@@ -25,6 +25,11 @@ pulling the entire graph.
 ```
 hydrate init                 Write a pointer to `hydrate guide` into this directory's AGENTS.md
 hydrate projects             List the projects on your account (ids for --project)
+hydrate project create <name>              Create a project on your account
+hydrate project archive <name>             Archive a project (non-destructive)
+hydrate project restore <name>             Reverse an archive
+hydrate project rename <name> --to <new>   Rename a project
+hydrate project delete <name>              Permanently delete a project — cannot be undone
 hydrate fork <name>          Fork a working branch from main, bind this directory to it
 hydrate branches             List your working branches
 hydrate show [path] [--depth N]          Print a read-only view of a branch's graph
@@ -71,6 +76,34 @@ guessed at, `path` is `null`, and a note explains why on stderr.
 
 Run `hydrate guide` for an orientation, or see the full reference at
 [docs.hydrate.sh](https://docs.hydrate.sh).
+
+### Managing projects
+
+`hydrate project create|archive|restore|rename|delete` address a project by
+its exact name (no id, no partial match) — and resolve against both active
+and archived projects, so an already-archived project's name still works.
+
+`archive` is the non-destructive escape hatch: an archived project stops
+appearing in `hydrate projects` but is not gone, and `hydrate project restore
+<name>` reverses it — the round trip is real, not just a server-side
+capability this CLI can't reach. Renaming uses a flag for the new name
+(`rename <name> --to <new-name>`), not a second bare positional, so the
+current and new names can never be silently transposed into a rename in the
+wrong direction.
+
+`delete` is permanent: it removes the project's branches, graph, and stored
+artifacts, and there is no confirmation prompt (this CLI is built to be driven
+non-interactively), so it prints what is about to go before it does the
+irreversible part.
+
+`delete` requires an API key minted with the `project:delete` scope, which is
+separate from `graph:write` and not granted by it — a key that can author a
+graph cannot also erase one unless it was minted with this scope on purpose. If
+your key predates this scope (or was minted without asking for it), `hydrate
+project delete` reports exactly that instead of a bare 403 — unless the 403 is
+for an unrelated reason (e.g. a whitelist-scoped key whose per-key project
+allowlist excludes this project), in which case it reports that instead of
+guessing.
 
 ### Choosing a project
 

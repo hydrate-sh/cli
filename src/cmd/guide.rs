@@ -27,6 +27,31 @@ The authoring loop
   5. hydrate validate        read the findings your change adds
   6. hydrate commit          apply the staged changeset to the branch
 
+Managing projects
+  hydrate project create <name>        create a project on your account
+  hydrate project archive <name>       hide it from `hydrate projects` without
+                                        deleting it — non-destructive
+  hydrate project restore <name>       reverse an archive; it reappears in
+                                        `hydrate projects`
+  hydrate project rename <name> --to <new-name>  rename a project (the new
+                                        name is a flag, not a second bare
+                                        positional, so the two names can never
+                                        be transposed into a silent swap)
+  hydrate project delete <name>        permanently delete it — its branches,
+                                        graph, and stored artifacts go with it;
+                                        this cannot be undone. No confirmation
+                                        prompt (this CLI is scripted), so it
+                                        prints what is about to go before it
+                                        goes. Requires an API key minted with
+                                        the `project:delete` scope, separate
+                                        from `graph:write` — a 403 here that
+                                        names no other cause means the key
+                                        needs re-minting with it.
+  All five address the project by its exact name (never an id), and resolve
+  against BOTH active and archived projects, so an already-archived project's
+  name still works for `archive`/`restore`/`rename`/`delete` — archiving is
+  not a one-way door.
+
 Inspecting
   hydrate projects             list your projects (and the ids for --project)
   hydrate branches             list the working branches of the selected project
@@ -361,6 +386,34 @@ mod tests {
         assert!(
             !GUIDE.contains("HYD_API_KEY="),
             "guide must not show an assigned key value"
+        );
+    }
+
+    #[test]
+    fn guide_documents_the_full_project_lifecycle_as_a_real_round_trip() {
+        // `archive` must not be documented as a dead end: `restore` exists and
+        // is named right beside it, or a reader has no way to know the round
+        // trip is possible at all.
+        for needle in [
+            "hydrate project create",
+            "hydrate project archive",
+            "hydrate project restore",
+            "hydrate project rename",
+            "hydrate project delete",
+            "--to <new-name>",
+        ] {
+            assert!(GUIDE.contains(needle), "guide is missing: {needle}");
+        }
+        // The old, now-false claim that an archived project's name is
+        // unreachable must not still be here — the CLI resolves names
+        // against both active and archived projects.
+        assert!(
+            !GUIDE.contains("is not resolvable"),
+            "guide still claims an archived project's name is unreachable"
+        );
+        assert!(
+            GUIDE.contains("not a one-way door") || GUIDE.contains("reversible"),
+            "guide should say the archive round trip is real"
         );
     }
 

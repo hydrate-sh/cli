@@ -742,6 +742,52 @@ mod tests {
     }
 
     #[test]
+    fn a_real_shared_not_found_body_still_remaps_via_status_not_kind() {
+        // Regression guard for a real change: `error::parse_detail` used to
+        // extract the machine-readable kind ONLY from an `error` key, so
+        // every `/v1` route using the shared `{code, message}` not-found
+        // envelope (this one included) came back `kind = "service_error"`.
+        // Fixing that so project routes report their real `code` also changed
+        // what THIS route's 404 carries as `kind` — from "service_error" to
+        // "not_found". `stale_index_error`/`boundary_404_error` only ever
+        // matched on `status`, not `kind`, so that change is inert here — but
+        // the next person touching `parse_detail` should be able to see that
+        // fact pinned, not have to re-derive it.
+        use hydrate_wire::apis::{Error as WireError, ResponseContent};
+        use reqwest::StatusCode;
+
+        let body =
+            r#"{"detail":{"code":"not_found","message":"Resource not found or not accessible."}}"#;
+        let rc = ResponseContent::<()> {
+            status: StatusCode::from_u16(404).unwrap(),
+            content: body.to_string(),
+            entity: None,
+        };
+        let wire_mapped = CliError::from(WireError::ResponseError(rc));
+        // Confirms the real behavior this test exists to pin: `kind` now
+        // resolves via the shared envelope's `code` field.
+        assert_eq!(wire_mapped.kind(), "not_found");
+
+        let neighborhood = stale_index_error(wire_mapped, "Api.Gone");
+        assert!(
+            matches!(neighborhood, CliError::StaleView(_)),
+            "got {neighborhood:?}"
+        );
+
+        let rc2 = ResponseContent::<()> {
+            status: StatusCode::from_u16(404).unwrap(),
+            content: body.to_string(),
+            entity: None,
+        };
+        let boundary =
+            boundary_404_error(CliError::from(WireError::ResponseError(rc2)), "Api.Rater");
+        assert!(
+            matches!(boundary, CliError::StaleView(_)),
+            "got {boundary:?}"
+        );
+    }
+
+    #[test]
     fn other_statuses_keep_their_own_meaning() {
         // Remapping everything would turn a 500 or a 403 into "run pull",
         // which is worse than the bare status it replaced.

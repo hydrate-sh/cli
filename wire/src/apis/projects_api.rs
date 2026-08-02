@@ -20,11 +20,28 @@ pub struct CreateProjectV1ProjectsPostParams {
     pub v1_create_project_body: models::V1CreateProjectBody
 }
 
+/// struct for passing parameters to the method [`delete_project_v1_projects_project_id_delete`]
+#[derive(Clone, Debug)]
+pub struct DeleteProjectV1ProjectsProjectIdDeleteParams {
+    /// The project to delete.
+    pub project_id: String
+}
+
 /// struct for passing parameters to the method [`list_projects_v1_projects_get`]
 #[derive(Clone, Debug)]
 pub struct ListProjectsV1ProjectsGetParams {
     /// Maximum projects to return. Defaults to 100; max 200.
-    pub limit: Option<u32>
+    pub limit: Option<u32>,
+    /// Include archived projects. Off by default. Needed by name-addressed callers such as the CLI: an archived project that cannot be listed cannot be renamed or restored, which would make archiving a one-way door.
+    pub include_archived: Option<bool>
+}
+
+/// struct for passing parameters to the method [`patch_project_v1_projects_project_id_patch`]
+#[derive(Clone, Debug)]
+pub struct PatchProjectV1ProjectsProjectIdPatchParams {
+    /// The project to modify.
+    pub project_id: String,
+    pub v1_patch_project_body: models::V1PatchProjectBody
 }
 
 
@@ -32,11 +49,23 @@ pub struct ListProjectsV1ProjectsGetParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CreateProjectV1ProjectsPostError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status409(models::InlineObject2),
     Status422(models::InlineObject3),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`delete_project_v1_projects_project_id_delete`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DeleteProjectV1ProjectsProjectIdDeleteError {
+    Status401(models::InlineObject7),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -44,10 +73,23 @@ pub enum CreateProjectV1ProjectsPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ListProjectsV1ProjectsGetError {
-    Status401(models::InlineObject5),
+    Status401(models::InlineObject7),
     Status403(models::InlineObject),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject4),
+    Status429(models::InlineObject6),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`patch_project_v1_projects_project_id_patch`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PatchProjectV1ProjectsProjectIdPatchError {
+    Status401(models::InlineObject7),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status409(models::InlineObject4),
+    Status422(models::InlineObject5),
+    Status429(models::InlineObject6),
     UnknownValue(serde_json::Value),
 }
 
@@ -91,7 +133,34 @@ pub async fn create_project_v1_projects_post(configuration: &configuration::Conf
     }
 }
 
-/// Returns the projects the caller can see. For API-key callers the list is further filtered by the per-key project allowlist (if configured). Archived projects are excluded. An empty list is a normal response when the caller has no visible projects.
+/// Permanently delete a project you own, along with its branches, graph and stored artifacts. This cannot be undone.  Requires the `project:delete` scope, which is **separate from `graph:write` and is not implied by it** — a key that can author a graph cannot erase one unless it was minted with this scope as well. Keys issued before this scope existed do not have it and must be re-minted.  Only the project's owner may delete it. A caller who can see the project but does not own it gets the same `404` a non-existent project gets, so the response never reveals whether a project exists.
+pub async fn delete_project_v1_projects_project_id_delete(configuration: &configuration::Configuration, params: DeleteProjectV1ProjectsProjectIdDeleteParams) -> Result<(), Error<DeleteProjectV1ProjectsProjectIdDeleteError>> {
+
+    let uri_str = format!("{}/v1/projects/{project_id}", configuration.base_path, project_id=crate::apis::urlencode(params.project_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::DELETE, &uri_str);
+
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+
+    if !status.is_client_error() && !status.is_server_error() {
+        Ok(())
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<DeleteProjectV1ProjectsProjectIdDeleteError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
+/// Returns the projects the caller can see. For API-key callers the list is further filtered by the per-key project allowlist (if configured). Archived projects are excluded. An empty list is a normal response when the caller has no visible projects. Archived projects are excluded unless `include_archived=true`.
 pub async fn list_projects_v1_projects_get(configuration: &configuration::Configuration, params: ListProjectsV1ProjectsGetParams) -> Result<models::ProjectsListResponse, Error<ListProjectsV1ProjectsGetError>> {
 
     let uri_str = format!("{}/v1/projects", configuration.base_path);
@@ -99,6 +168,9 @@ pub async fn list_projects_v1_projects_get(configuration: &configuration::Config
 
     if let Some(ref param_value) = params.limit {
         req_builder = req_builder.query(&[("limit", &param_value.to_string())]);
+    }
+    if let Some(ref param_value) = params.include_archived {
+        req_builder = req_builder.query(&[("include_archived", &param_value.to_string())]);
     }
     if let Some(ref user_agent) = configuration.user_agent {
         req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
@@ -128,6 +200,45 @@ pub async fn list_projects_v1_projects_get(configuration: &configuration::Config
     } else {
         let content = resp.text().await?;
         let entity: Option<ListProjectsV1ProjectsGetError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
+/// Rename a project you own, archive it, or restore it. At least one of `name` or `archived` must be present; an empty body is rejected with `422 no_fields` rather than reporting success for a request that changed nothing.  Archiving is the non-destructive alternative to deletion: the project leaves `GET /v1/projects` but remains addressable by id and can be restored. It does **not** free a slot against your project cap — only deletion does.  Requires `graph:write` — deliberately NOT a scope of its own, unlike `project:delete`. That scope exists because deletion is irreversible; both edits here round-trip, so an authoring key holding them cannot destroy anything it cannot also put back. The consequence is that every existing `graph:write` key gains rename and archive when this ships, with no re-mint.  Only the owner may modify a project; a caller who can see it but does not own it gets the same `404` a non-existent project gets.
+pub async fn patch_project_v1_projects_project_id_patch(configuration: &configuration::Configuration, params: PatchProjectV1ProjectsProjectIdPatchParams) -> Result<models::ProjectPatchResponse, Error<PatchProjectV1ProjectsProjectIdPatchError>> {
+
+    let uri_str = format!("{}/v1/projects/{project_id}", configuration.base_path, project_id=crate::apis::urlencode(params.project_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::PATCH, &uri_str);
+
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+    req_builder = req_builder.json(&params.v1_patch_project_body);
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let content_type = super::ContentType::from(content_type);
+
+    if !status.is_client_error() && !status.is_server_error() {
+        let content = resp.text().await?;
+        match content_type {
+            ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::ProjectPatchResponse`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::ProjectPatchResponse`")))),
+        }
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<PatchProjectV1ProjectsProjectIdPatchError> = serde_json::from_str(&content).ok();
         Err(Error::ResponseError(ResponseContent { status, content, entity }))
     }
 }
