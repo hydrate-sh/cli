@@ -50,6 +50,35 @@ pub enum CliError {
     /// `init` refused to edit `AGENTS.md` to avoid destroying the user's content
     /// (a malformed/ambiguous hydrate block, or a symlink at the target).
     InitRefused(String),
+    /// `stage restore` refuses because the live stage is non-empty. Distinct
+    /// kind from `state_error`/`error` so an agent driving `--json` can branch
+    /// on the remediation (commit or discard the live stage) rather than
+    /// treating it as corruption or an unclassified failure.
+    RestoreBlocked {
+        staged: usize,
+        /// The bound branch's name, or `"(unbound)"` — matches the human text.
+        branch: String,
+    },
+    /// `stage restore` refuses because the parked stage was discarded on a
+    /// *different* branch than the one this workdir is bound to now — the
+    /// parked deltas' alias table would not resolve here. Distinct kind from
+    /// `branch_context_missing`: the remediation here is "re-bind to the
+    /// right branch", not "bind one at all".
+    BranchMismatch {
+        parked: String,
+        current: String,
+    },
+    /// `stage restore` refuses because the parked stage records a branch it
+    /// was discarded against, but this workdir is not bound to *any* branch —
+    /// there is no branch context left to validate the parked ids against.
+    /// Distinct kind from `branch_mismatch`: the remediation here is "bind a
+    /// branch", not "re-bind to a different one". A future `unbind`/`clone`
+    /// verb that clears `config.toml` must keep this guard reachable — it is
+    /// exactly what makes the gap reachable today (hand-editing/removing
+    /// `config.toml` is the other way in).
+    BranchContextMissing {
+        parked: String,
+    },
     /// Anything else (a bug, an unexpected response).
     Other(String),
 }
@@ -83,6 +112,9 @@ impl CliError {
             CliError::NoProject => "no_project",
             CliError::AmbiguousProject { .. } => "ambiguous_project",
             CliError::InitRefused(_) => "init_refused",
+            CliError::RestoreBlocked { .. } => "restore_blocked",
+            CliError::BranchMismatch { .. } => "branch_mismatch",
+            CliError::BranchContextMissing { .. } => "branch_context_missing",
             CliError::Other(_) => "error",
         }
     }
@@ -127,6 +159,22 @@ impl fmt::Display for CliError {
                  variable (run `hydrate projects` to see the names and ids)"
             ),
             CliError::InitRefused(detail) => write!(f, "{detail}"),
+            CliError::RestoreBlocked { staged, branch } => write!(
+                f,
+                "refusing to restore: {staged} staged operation(s) are already on branch '{branch}' \
+                 — commit or discard them first"
+            ),
+            CliError::BranchMismatch { parked, current } => write!(
+                f,
+                "refusing to restore: the parked stage was discarded on branch '{parked}', \
+                 but this directory is now bound to '{current}' — its staged ids would not resolve there"
+            ),
+            CliError::BranchContextMissing { parked } => write!(
+                f,
+                "refusing to restore: the parked stage was discarded on branch '{parked}', \
+                 but this directory is not bound to any branch — there is no branch context to \
+                 validate its staged ids against; run `hydrate fork <name>` to bind one"
+            ),
             CliError::Other(detail) => write!(f, "{detail}"),
         }
     }
@@ -357,5 +405,52 @@ mod tests {
     #[test]
     fn parse_detail_tolerates_garbage() {
         assert_eq!(parse_detail("not json"), (None, None, None));
+    }
+
+    #[test]
+    fn restore_blocked_branch_mismatch_and_missing_context_have_distinct_kinds() {
+        // An agent driving `stage restore --json` must be able to branch on
+        // `error.kind` alone: "commit/discard first" vs "re-bind to the right
+        // branch" vs "bind a branch at all" are three different remediations
+        // and must not collapse onto the same machine token, nor onto the
+        // generic `state_error`/`error` kinds already used for corruption.
+        let blocked = CliError::RestoreBlocked {
+            staged: 2,
+            branch: "demo".into(),
+        };
+        let mismatch = CliError::BranchMismatch {
+            parked: "demo".into(),
+            current: "other".into(),
+        };
+        let missing = CliError::BranchContextMissing {
+            parked: "demo".into(),
+        };
+        assert_eq!(blocked.kind(), "restore_blocked");
+        assert_eq!(mismatch.kind(), "branch_mismatch");
+        assert_eq!(missing.kind(), "branch_context_missing");
+        let kinds = [
+            blocked.kind(),
+            mismatch.kind(),
+            missing.kind(),
+            "state_error",
+            "error",
+        ];
+        for (i, a) in kinds.iter().enumerate() {
+            for (j, b) in kinds.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "kinds must all be distinct: {kinds:?}");
+                }
+            }
+        }
+        assert_eq!(blocked.exit_code(), exit::GENERIC);
+        assert_eq!(mismatch.exit_code(), exit::GENERIC);
+        assert_eq!(missing.exit_code(), exit::GENERIC);
+
+        assert!(blocked.to_string().contains("demo"));
+        assert!(blocked.to_string().contains("commit or discard"));
+        assert!(mismatch.to_string().contains("demo"));
+        assert!(mismatch.to_string().contains("other"));
+        assert!(missing.to_string().contains("demo"));
+        assert!(missing.to_string().contains("not bound to any branch"));
     }
 }
