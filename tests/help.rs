@@ -104,7 +104,7 @@ fn edge_add_help_pins_endpoint_flags() {
 #[test]
 fn project_help_lists_every_mutating_verb() {
     // `hydrate projects` (plural) lists; `hydrate project <verb>` (singular)
-    // mutates. Pin the four sub-verbs so dropping one from the clap tree fails
+    // mutates. Pin the five sub-verbs so dropping one from the clap tree fails
     // here rather than silently shrinking the surface.
     let out = Command::new(HYDRATE_EXE)
         .args(["project", "--help"])
@@ -112,7 +112,7 @@ fn project_help_lists_every_mutating_verb() {
         .expect("failed to run binary");
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    for verb in ["create", "archive", "delete", "rename"] {
+    for verb in ["create", "archive", "restore", "delete", "rename"] {
         assert!(
             text.contains(verb),
             "project --help missing {verb:?}\n{text}"
@@ -121,15 +121,20 @@ fn project_help_lists_every_mutating_verb() {
 }
 
 #[test]
-fn project_rename_help_pins_two_positional_names() {
+fn project_rename_help_pins_a_positional_target_and_a_to_flag() {
+    // The target is addressed positionally; the new name is a `--to` flag,
+    // not a second bare positional — that grammar is what stops an agent
+    // transposing the two into a rename in the wrong direction with no
+    // syntax error to catch it.
     let out = Command::new(HYDRATE_EXE)
         .args(["project", "rename", "--help"])
         .output()
         .expect("failed to run binary");
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("OLD_NAME"), "{text}");
-    assert!(text.contains("NEW_NAME"), "{text}");
+    assert!(text.contains("NAME"), "{text}");
+    assert!(text.contains("--to"), "{text}");
+    assert!(!text.contains("NEW_NAME"), "{text}");
 }
 
 #[test]

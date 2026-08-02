@@ -139,7 +139,7 @@
             }
           }
         },
-        "description": "The rename could not be applied because it conflicts with existing state. ``name_taken`` \u2014 an active project of yours already uses this name (case-insensitive); pick another."
+        "description": "The patch could not be applied because it conflicts with an existing active project. `name_taken` \u2014 reachable two ways: renaming to a name an active project of yours already has (case-insensitive), or restoring (`archived: false`) a project whose name was taken by something else while it was archived. Both need the name changed before the request can succeed."
       },
       "ProjectPatchUnprocessable": {
         "content": {
@@ -170,7 +170,7 @@
             }
           }
         },
-        "description": "A field in the request body is not acceptable. ``no_fields`` \u2014 neither ``name`` nor ``archived`` was supplied; at least one is required. ``invalid_name`` \u2014 ``name`` is present but blank after trimming."
+        "description": "A field in the request body is not acceptable. `no_fields` \u2014 neither `name` nor `archived` was supplied; at least one is required. `invalid_name` \u2014 `name` is present but blank after trimming."
       },
       "RateLimited": {
         "content": {
@@ -1447,6 +1447,7 @@
       },
       "ProjectPatchResponse": {
         "additionalProperties": false,
+        "description": "Rename/archive returns the project alone.\n\nNo ``main_branch``, unlike create: the branch is not affected by either\nedit, and echoing it would imply otherwise.",
         "properties": {
           "project": {
             "$ref": "#/components/schemas/ProjectOut"
@@ -1798,7 +1799,7 @@
         "type": "object"
       },
       "V1PatchProjectBody": {
-        "description": "Body for ``PATCH /v1/projects/{project_id}``. At least one of ``name`` / ``archived`` is required; omitted fields are left unchanged.",
+        "description": "Body for ``PATCH /v1/projects/{project_id}``.\n\nDeliberately narrower than the legacy session router's patch body, which\nalso carries ``language``, ``intent`` and ``layout_mode``. Those are\ncreation-time metadata on the agent surface; widening this later is\nadditive, whereas shipping fields the CLI has no verb for is not.",
         "properties": {
           "archived": {
             "anyOf": [
@@ -1809,7 +1810,7 @@
                 "type": "null"
               }
             ],
-            "description": "Set the project's archived state. Archiving hides it from ``GET /v1/projects``; it stays addressable by id.",
+            "description": "Archive or restore. Archived projects drop out of `GET /v1/projects` but stay reachable by id.",
             "title": "Archived"
           },
           "name": {
@@ -1823,7 +1824,7 @@
                 "type": "null"
               }
             ],
-            "description": "New project name. Unique per-user, case-insensitive, among your active projects.",
+            "description": "New name. Must be unique among your active projects (case-insensitive).",
             "title": "Name"
           }
         },
@@ -3227,7 +3228,7 @@
     },
     "/v1/projects": {
       "get": {
-        "description": "Returns the projects the caller can see. For API-key callers the list is further filtered by the per-key project allowlist (if configured). Archived projects are excluded. An empty list is a normal response when the caller has no visible projects.",
+        "description": "Returns the projects the caller can see. For API-key callers the list is further filtered by the per-key project allowlist (if configured). Archived projects are excluded. An empty list is a normal response when the caller has no visible projects. Archived projects are excluded unless `include_archived=true`.",
         "operationId": "list_projects_v1_projects_get",
         "parameters": [
           {
@@ -3242,6 +3243,18 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Include archived projects. Off by default. Needed by name-addressed callers such as the CLI: an archived project that cannot be listed cannot be renamed or restored, which would make archiving a one-way door.",
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Include archived projects. Off by default. Needed by name-addressed callers such as the CLI: an archived project that cannot be listed cannot be renamed or restored, which would make archiving a one-way door.",
+              "title": "Include Archived",
+              "type": "boolean"
             }
           }
         ],
@@ -3329,8 +3342,8 @@
     },
     "/v1/projects/{project_id}": {
       "delete": {
-        "description": "Permanently delete a project you own, along with its branches, graph and stored artifacts. This cannot be undone.\n\nRequires the ``project:delete`` scope, which is separate from ``graph:write`` and is NOT implied by it \u2014 a key that can author a graph cannot erase one unless it was minted with this scope as well. Keys issued before this scope existed do not have it and must be re-minted.\n\nOnly the project's owner may delete it. A caller who can see the project but does not own it gets the same 404 a non-existent project gets, so the response never reveals whether a project exists.",
-        "operationId": "delete_project_v1_projects_project_id_delete",
+        "description": "Permanently delete a project you own, along with its branches, graph and stored artifacts. This cannot be undone.\n\nRequires the `project:delete` scope, which is **separate from `graph:write` and is not implied by it** \u2014 a key that can author a graph cannot erase one unless it was minted with this scope as well. Keys issued before this scope existed do not have it and must be re-minted.\n\nOnly the project's owner may delete it. A caller who can see the project but does not own it gets the same `404` a non-existent project gets, so the response never reveals whether a project exists.",
+        "operationId": "delete_project_v1_projects__project_id__delete",
         "parameters": [
           {
             "description": "The project to delete.",
@@ -3338,6 +3351,7 @@
             "name": "project_id",
             "required": true,
             "schema": {
+              "description": "The project to delete.",
               "format": "uuid",
               "title": "Project Id",
               "type": "string"
@@ -3377,15 +3391,16 @@
         ]
       },
       "patch": {
-        "description": "Rename a project and/or set its archived state. At least one field is required.\n\nArchiving is the non-destructive escape hatch: an archived project stops appearing in ``GET /v1/projects``, but stays addressable by id, and the archive can be reversed by patching ``archived: false``. Requires the ``graph:write`` scope \u2014 unlike delete, this operation is reversible.",
-        "operationId": "patch_project_v1_projects_project_id_patch",
+        "description": "Rename a project you own, archive it, or restore it. At least one of `name` or `archived` must be present; an empty body is rejected with `422 no_fields` rather than reporting success for a request that changed nothing.\n\nArchiving is the non-destructive alternative to deletion: the project leaves `GET /v1/projects` but remains addressable by id and can be restored. It does **not** free a slot against your project cap \u2014 only deletion does.\n\nRequires `graph:write` \u2014 deliberately NOT a scope of its own, unlike `project:delete`. That scope exists because deletion is irreversible; both edits here round-trip, so an authoring key holding them cannot destroy anything it cannot also put back. The consequence is that every existing `graph:write` key gains rename and archive when this ships, with no re-mint.\n\nOnly the owner may modify a project; a caller who can see it but does not own it gets the same `404` a non-existent project gets.",
+        "operationId": "patch_project_v1_projects__project_id__patch",
         "parameters": [
           {
-            "description": "The project to update.",
+            "description": "The project to modify.",
             "in": "path",
             "name": "project_id",
             "required": true,
             "schema": {
+              "description": "The project to modify.",
               "format": "uuid",
               "title": "Project Id",
               "type": "string"

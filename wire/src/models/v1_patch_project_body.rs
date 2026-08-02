@@ -11,7 +11,7 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-/// V1PatchProjectBody : Body for ``PATCH /v1/projects/{project_id}``. At least one of ``name`` / ``archived`` is required; omitted fields are left unchanged.
+/// V1PatchProjectBody : Body for ``PATCH /v1/projects/{project_id}``.  Deliberately narrower than the legacy session router's patch body, which also carries ``language``, ``intent`` and ``layout_mode``. Those are creation-time metadata on the agent surface; widening this later is additive, whereas shipping fields the CLI has no verb for is not.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct V1PatchProjectBody {
     #[serde(rename = "archived", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
@@ -21,7 +21,7 @@ pub struct V1PatchProjectBody {
 }
 
 impl V1PatchProjectBody {
-    /// Body for ``PATCH /v1/projects/{project_id}``. At least one of ``name`` / ``archived`` is required; omitted fields are left unchanged.
+    /// Body for ``PATCH /v1/projects/{project_id}``.  Deliberately narrower than the legacy session router's patch body, which also carries ``language``, ``intent`` and ``layout_mode``. Those are creation-time metadata on the agent surface; widening this later is additive, whereas shipping fields the CLI has no verb for is not.
     pub fn new() -> V1PatchProjectBody {
         V1PatchProjectBody {
             archived: None,

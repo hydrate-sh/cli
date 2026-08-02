@@ -62,9 +62,34 @@ impl Client {
     }
 
     /// List the projects the authenticated principal can see (an authenticated
-    /// read — exercises the Bearer credential).
+    /// read — exercises the Bearer credential). Archived projects are excluded
+    /// — the server's default — matching what `hydrate projects` shows.
     pub fn list_projects(&self) -> Result<models::ProjectsListResponse, CliError> {
-        let params = projects_api::ListProjectsV1ProjectsGetParams { limit: None };
+        let params = projects_api::ListProjectsV1ProjectsGetParams {
+            limit: None,
+            include_archived: None,
+        };
+        self.rt
+            .block_on(projects_api::list_projects_v1_projects_get(
+                &self.cfg, params,
+            ))
+            .map_err(CliError::from)
+    }
+
+    /// Like [`Client::list_projects`], but also includes archived projects.
+    ///
+    /// The name-addressed `project` verbs (`archive`/`restore`/`rename`/
+    /// `delete`) need this: they resolve their target by exact name, and an
+    /// archived project that this listing could never see would be
+    /// unreachable by every one of those verbs — making `archive` a one-way
+    /// door despite `PATCH .../archived:false` existing to reverse it.
+    pub fn list_projects_including_archived(
+        &self,
+    ) -> Result<models::ProjectsListResponse, CliError> {
+        let params = projects_api::ListProjectsV1ProjectsGetParams {
+            limit: None,
+            include_archived: Some(true),
+        };
         self.rt
             .block_on(projects_api::list_projects_v1_projects_get(
                 &self.cfg, params,
@@ -90,11 +115,12 @@ impl Client {
     /// graph, and stored artifacts. Irreversible.
     ///
     /// Requires the `project:delete` scope — separate from `graph:write` and
-    /// not implied by it, so a 403 here does not mean "not authenticated", it
-    /// means "this key was never minted with permission to delete". Callers
-    /// should map that 403 to [`CliError::MissingScope`] rather than the
-    /// generic `Service` variant (see its doc comment for why that mapping is
-    /// route-specific and fragile).
+    /// not implied by it. This route can return a 403 for more than one
+    /// reason (the scope gate, or a whitelist-scoped key's per-key project
+    /// allowlist), and only one of those means "this key needs re-minting" —
+    /// see `cmd::project::translate_delete_error`'s doc comment, which is
+    /// where that distinction is made, for the full reasoning. This method
+    /// itself does no translation; it returns the wire error as-is.
     pub fn delete_project(&self, project_id: Uuid) -> Result<(), CliError> {
         let params = projects_api::DeleteProjectV1ProjectsProjectIdDeleteParams {
             project_id: project_id.to_string(),

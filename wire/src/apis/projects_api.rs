@@ -31,13 +31,15 @@ pub struct DeleteProjectV1ProjectsProjectIdDeleteParams {
 #[derive(Clone, Debug)]
 pub struct ListProjectsV1ProjectsGetParams {
     /// Maximum projects to return. Defaults to 100; max 200.
-    pub limit: Option<u32>
+    pub limit: Option<u32>,
+    /// Include archived projects. Off by default. Needed by name-addressed callers such as the CLI: an archived project that cannot be listed cannot be renamed or restored, which would make archiving a one-way door.
+    pub include_archived: Option<bool>
 }
 
 /// struct for passing parameters to the method [`patch_project_v1_projects_project_id_patch`]
 #[derive(Clone, Debug)]
 pub struct PatchProjectV1ProjectsProjectIdPatchParams {
-    /// The project to update.
+    /// The project to modify.
     pub project_id: String,
     pub v1_patch_project_body: models::V1PatchProjectBody
 }
@@ -131,7 +133,7 @@ pub async fn create_project_v1_projects_post(configuration: &configuration::Conf
     }
 }
 
-/// Permanently delete a project you own, along with its branches, graph and stored artifacts. This cannot be undone.  Requires the ``project:delete`` scope, which is separate from ``graph:write`` and is NOT implied by it — a key that can author a graph cannot erase one unless it was minted with this scope as well. Keys issued before this scope existed do not have it and must be re-minted.  Only the project's owner may delete it. A caller who can see the project but does not own it gets the same 404 a non-existent project gets, so the response never reveals whether a project exists.
+/// Permanently delete a project you own, along with its branches, graph and stored artifacts. This cannot be undone.  Requires the `project:delete` scope, which is **separate from `graph:write` and is not implied by it** — a key that can author a graph cannot erase one unless it was minted with this scope as well. Keys issued before this scope existed do not have it and must be re-minted.  Only the project's owner may delete it. A caller who can see the project but does not own it gets the same `404` a non-existent project gets, so the response never reveals whether a project exists.
 pub async fn delete_project_v1_projects_project_id_delete(configuration: &configuration::Configuration, params: DeleteProjectV1ProjectsProjectIdDeleteParams) -> Result<(), Error<DeleteProjectV1ProjectsProjectIdDeleteError>> {
 
     let uri_str = format!("{}/v1/projects/{project_id}", configuration.base_path, project_id=crate::apis::urlencode(params.project_id));
@@ -158,7 +160,7 @@ pub async fn delete_project_v1_projects_project_id_delete(configuration: &config
     }
 }
 
-/// Returns the projects the caller can see. For API-key callers the list is further filtered by the per-key project allowlist (if configured). Archived projects are excluded. An empty list is a normal response when the caller has no visible projects.
+/// Returns the projects the caller can see. For API-key callers the list is further filtered by the per-key project allowlist (if configured). Archived projects are excluded. An empty list is a normal response when the caller has no visible projects. Archived projects are excluded unless `include_archived=true`.
 pub async fn list_projects_v1_projects_get(configuration: &configuration::Configuration, params: ListProjectsV1ProjectsGetParams) -> Result<models::ProjectsListResponse, Error<ListProjectsV1ProjectsGetError>> {
 
     let uri_str = format!("{}/v1/projects", configuration.base_path);
@@ -166,6 +168,9 @@ pub async fn list_projects_v1_projects_get(configuration: &configuration::Config
 
     if let Some(ref param_value) = params.limit {
         req_builder = req_builder.query(&[("limit", &param_value.to_string())]);
+    }
+    if let Some(ref param_value) = params.include_archived {
+        req_builder = req_builder.query(&[("include_archived", &param_value.to_string())]);
     }
     if let Some(ref user_agent) = configuration.user_agent {
         req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
@@ -199,7 +204,7 @@ pub async fn list_projects_v1_projects_get(configuration: &configuration::Config
     }
 }
 
-/// Rename a project and/or set its archived state. At least one field is required.  Archiving is the non-destructive escape hatch: an archived project stops appearing in ``GET /v1/projects``, but stays addressable by id, and the archive can be reversed by patching ``archived: false``. Requires the ``graph:write`` scope — unlike delete, this operation is reversible.
+/// Rename a project you own, archive it, or restore it. At least one of `name` or `archived` must be present; an empty body is rejected with `422 no_fields` rather than reporting success for a request that changed nothing.  Archiving is the non-destructive alternative to deletion: the project leaves `GET /v1/projects` but remains addressable by id and can be restored. It does **not** free a slot against your project cap — only deletion does.  Requires `graph:write` — deliberately NOT a scope of its own, unlike `project:delete`. That scope exists because deletion is irreversible; both edits here round-trip, so an authoring key holding them cannot destroy anything it cannot also put back. The consequence is that every existing `graph:write` key gains rename and archive when this ships, with no re-mint.  Only the owner may modify a project; a caller who can see it but does not own it gets the same `404` a non-existent project gets.
 pub async fn patch_project_v1_projects_project_id_patch(configuration: &configuration::Configuration, params: PatchProjectV1ProjectsProjectIdPatchParams) -> Result<models::ProjectPatchResponse, Error<PatchProjectV1ProjectsProjectIdPatchError>> {
 
     let uri_str = format!("{}/v1/projects/{project_id}", configuration.base_path, project_id=crate::apis::urlencode(params.project_id));

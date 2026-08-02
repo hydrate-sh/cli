@@ -1,18 +1,21 @@
-//! `project` — create, archive, delete, and rename projects: the mutating
-//! counterpart to the read-only `projects` listing.
+//! `project` — create, archive, restore, delete, and rename projects: the
+//! mutating counterpart to the read-only `projects` listing.
 //!
-//! Every verb here addresses its target by NAME, resolved against
-//! `GET /v1/projects` — never a UUID; ids stay an internal wire detail these
-//! commands don't surface (`hydrate projects` is the one place that shows
-//! them, for `--project`). Two consequences of that choice, both intentional:
+//! Every verb here addresses its target by NAME — never a UUID; ids stay an
+//! internal wire detail these commands don't surface (`hydrate projects` is
+//! the one place that shows them, for `--project`). The match must be EXACT
+//! — no fuzzy/substring matching, so a typo fails loud instead of silently
+//! landing on the wrong project.
 //!
-//! * the match must be EXACT — no fuzzy/substring matching, so a typo fails
-//!   loud instead of silently landing on the wrong project;
-//! * `GET /v1/projects` excludes archived projects (server behavior, not a CLI
-//!   choice — see its own doc comment), so an ALREADY-archived project cannot
-//!   be resolved by name through these verbs today. `archive`/`rename`/`delete`
-//!   on such a name fail with a clear, specific message that says why, rather
-//!   than a bare 404 or a silent no-op. See [`find_by_name`].
+//! `archive`/`restore`/`rename`/`delete` resolve against
+//! `Client::list_projects_including_archived`, not the plain
+//! `Client::list_projects` (which is what `hydrate projects` shows and
+//! excludes archived rows) — otherwise an archived project's name would be
+//! unreachable by every verb that could act on it, making `archive` a
+//! one-way door despite the server's `PATCH .../archived:false` existing to
+//! reverse it. See [`find_by_name`] for how a name that matches both an
+//! active and an archived project (a legal, expected state — archiving does
+//! not reserve the name) is resolved.
 //!
 //! `delete` is the one irreversible verb here. Per `stage discard`'s posture,
 //! there is no confirmation prompt — this CLI is driven non-interactively and
@@ -39,16 +42,34 @@ pub fn create(args: ProjectCreateArgs, mode: OutputMode) -> Result<(), CliError>
 pub fn archive(args: ProjectNameArgs, mode: OutputMode) -> Result<(), CliError> {
     let config = Config::load()?;
     let client = Client::new(&config)?;
-    let project = find_by_name(client.list_projects()?.projects, &args.name)?;
+    let project = find_by_name(
+        client.list_projects_including_archived()?.projects,
+        &args.name,
+    )?;
     let patched = client.patch_project(project.id, None, Some(true))?;
     println!("{}", render_archive(&patched.project, mode));
+    Ok(())
+}
+
+pub fn restore(args: ProjectNameArgs, mode: OutputMode) -> Result<(), CliError> {
+    let config = Config::load()?;
+    let client = Client::new(&config)?;
+    let project = find_by_name(
+        client.list_projects_including_archived()?.projects,
+        &args.name,
+    )?;
+    let patched = client.patch_project(project.id, None, Some(false))?;
+    println!("{}", render_restore(&patched.project, mode));
     Ok(())
 }
 
 pub fn delete(args: ProjectNameArgs, mode: OutputMode) -> Result<(), CliError> {
     let config = Config::load()?;
     let client = Client::new(&config)?;
-    let project = find_by_name(client.list_projects()?.projects, &args.name)?;
+    let project = find_by_name(
+        client.list_projects_including_archived()?.projects,
+        &args.name,
+    )?;
 
     // The record of what's about to go, printed BEFORE the irreversible call —
     // mirrors `stage discard`: no confirmation prompt, so this announcement is
@@ -72,63 +93,114 @@ pub fn delete(args: ProjectNameArgs, mode: OutputMode) -> Result<(), CliError> {
 pub fn rename(args: ProjectRenameArgs, mode: OutputMode) -> Result<(), CliError> {
     let config = Config::load()?;
     let client = Client::new(&config)?;
-    let project = find_by_name(client.list_projects()?.projects, &args.old_name)?;
-    let patched = client.patch_project(project.id, Some(&args.new_name), None)?;
-    println!("{}", render_rename(&args.old_name, &patched.project, mode));
+    let project = find_by_name(
+        client.list_projects_including_archived()?.projects,
+        &args.name,
+    )?;
+    let patched = client.patch_project(project.id, Some(&args.to), None)?;
+    println!("{}", render_rename(&args.name, &patched.project, mode));
     Ok(())
 }
 
-/// A bare 403 from `delete` is an unacceptable UX: this is the ONE `/v1` route
-/// gated by `project:delete` (a scope separate from, and not implied by,
-/// `graph:write`), so a 403 here means specifically "this key was never minted
-/// with permission to delete", not "not authenticated" or some other gate.
+/// A bare 403 from `delete` is an unacceptable UX: `DELETE /v1/projects/{id}`
+/// requires `project:delete`, a scope separate from — and not implied by —
+/// `graph:write`, and every key minted before the scope existed lacks it. So
+/// SOME 403s on this route really do mean "this key needs re-minting", and a
+/// generic service error would leave the reader to guess that.
 ///
-/// This is inferred from the ROUTE alone, not from the response body — every
-/// `/v1` scope gate returns the fixed `{"detail": "forbidden"}` string with no
-/// `code` or `missing_scope` field, so there is nothing in the wire to key off.
-/// That makes the mapping fragile: it is only correct because this call site
-/// hits exactly one route with exactly one extra scope requirement. If
-/// `DELETE /v1/projects/{id}` ever grows a second scope gate, this needs
-/// revisiting — a 403 could then mean either one.
+/// But it is not the ONLY 403 this route can return. Before reaching the
+/// scope gate's outcome, the route also runs the per-key project-allowlist
+/// check (`require_v1_project_viewer`, Layer 3 in `project_gates.py`): a
+/// whitelist-scoped API key whose allowlist excludes this specific project
+/// gets refused there too, with a 403 of its own. A key can legitimately
+/// HOLD `project:delete` and still hit that gate for an unrelated reason —
+/// telling that caller to re-mint with `project:delete` would be a specific,
+/// plausible, WRONG diagnosis: they would mint a broader (and unnecessarily
+/// more privileged) key and the delete would still fail, for the reason this
+/// message never named.
+///
+/// The two are distinguishable in the response body, so we use that instead
+/// of matching on status alone:
+///
+/// * the scope gate returns the fixed, untyped string `{"detail":
+///   "forbidden"}` — no `code` field, so [`crate::error::parse_detail`]'s
+///   extraction comes back empty and `CliError::Service.kind` falls back to
+///   the generic `"service_error"` token;
+/// * the allowlist gate returns a STRUCTURED body, `{"detail": {"code":
+///   "project_not_in_key_whitelist", "message": ...}}`, which `parse_detail`
+///   turns into that real code as `kind`.
+///
+/// So only a 403 whose `kind` is still the generic fallback — meaning the
+/// body carried no structured code at all — is reinterpreted as
+/// `MissingScope`. Any 403 that DID carry a code (this one, or any future
+/// one) passes through as itself. This is still a route-specific inference,
+/// not something the wire format states outright, and still needs revisiting
+/// if this route's 403 shapes change again.
 fn translate_delete_error(err: CliError) -> CliError {
     match err {
-        CliError::Service { status: 403, .. } => CliError::MissingScope {
+        CliError::Service {
+            status: 403,
+            ref kind,
+            ..
+        } if kind == "service_error" => CliError::MissingScope {
             scope: "project:delete".to_string(),
         },
         other => other,
     }
 }
 
-/// Resolve `name` to a project by EXACT match against the given listing (the
-/// caller passes `GET /v1/projects`'s result), which excludes archived
-/// projects — a server behavior, not a choice made here.
+/// Resolve `name` to a project by EXACT match against `projects` (the caller
+/// passes an archived-inclusive listing for every verb but `create`, which
+/// has no need to resolve a name at all).
 ///
-/// Two loud failure modes, deliberately distinct from a panic or a raw 404
+/// An active project's name is unique per caller (server-enforced), but an
+/// active and an archived project CAN legitimately share a name — archiving
+/// does not reserve it, so a fresh project may reuse an archived one's name
+/// at any time. When that happens, the active project wins: "the project
+/// named X" almost always means the one you can currently see and work with,
+/// and falling back to an archived match only when there is no active one
+/// means `archive`/`rename`/`delete` on a plain name keep working exactly as
+/// before this resolved archived rows at all.
+///
+/// Three loud failure modes, deliberately distinct from a panic or a raw 404
 /// passthrough:
 ///
-/// * zero matches — genuinely unknown, OR archived and therefore invisible to
-///   this listing. The two are indistinguishable from here (there is no
-///   archived-inclusive listing route to check against), so the message says
-///   that plainly instead of asserting "no such project" as if it never
-///   existed — an already-archived project must not read as a typo;
-/// * more than one match — the server keeps active project names unique per
-///   caller, so this should not be reachable; refusing instead of silently
-///   picking one avoids acting on the wrong project if that invariant ever
-///   breaks.
+/// * zero matches (active or archived) — genuinely no project by this name;
+/// * more than one ACTIVE match — should not be reachable (the server keeps
+///   active names unique per caller); refusing instead of silently picking
+///   one avoids acting on the wrong project if that invariant ever breaks;
+/// * no active match, but more than one ARCHIVED match — a real, reachable
+///   case (archived rows have no uniqueness constraint against each other),
+///   and there is no id to disambiguate with here, so the caller is told to
+///   resolve the collision elsewhere rather than have one guessed for them.
 fn find_by_name(projects: Vec<ProjectOut>, name: &str) -> Result<ProjectOut, CliError> {
-    let mut matches: Vec<ProjectOut> = projects.into_iter().filter(|p| p.name == name).collect();
-    match matches.len() {
+    let matches: Vec<ProjectOut> = projects.into_iter().filter(|p| p.name == name).collect();
+
+    let mut active: Vec<ProjectOut> = matches.iter().filter(|p| !p.archived).cloned().collect();
+    match active.len() {
+        0 => {}
+        1 => return Ok(active.remove(0)),
+        n => {
+            return Err(CliError::InvalidArgument(format!(
+                "'{name}' is not unique — {n} active projects share that name, which should \
+                 not be possible (the server keeps active project names unique per account); \
+                 refusing to guess which one you mean"
+            )));
+        }
+    }
+
+    let mut archived: Vec<ProjectOut> = matches.into_iter().filter(|p| p.archived).collect();
+    match archived.len() {
         0 => Err(CliError::InvalidArgument(format!(
-            "no active project named '{name}'; run `hydrate projects` to check the exact \
-             spelling. If '{name}' is an ARCHIVED project, this verb can't reach it — \
-             archived projects don't appear in that listing, so their names aren't \
-             resolvable here today; manage it at https://hydrate.sh instead."
+            "no project named '{name}'; run `hydrate projects` to check the exact spelling \
+             of an active project, or `hydrate project restore {name}` if you expected it to \
+             be archived under this name"
         ))),
-        1 => Ok(matches.remove(0)),
+        1 => Ok(archived.remove(0)),
         n => Err(CliError::InvalidArgument(format!(
-            "'{name}' is not unique — {n} active projects share that name, which should \
-             not be possible (the server keeps active project names unique per account); \
-             refusing to guess which one you mean"
+            "{n} archived projects are named '{name}'; this verb can't tell them apart by \
+             name alone (only an active project's name is guaranteed unique) — rename one of \
+             them at https://hydrate.sh, then retry"
         ))),
     }
 }
@@ -157,7 +229,22 @@ fn render_archive(project: &ProjectOut, mode: OutputMode) -> String {
         })
         .to_string(),
         OutputMode::Human => format!(
-            "Archived project '{}'. It will no longer appear in `hydrate projects`.",
+            "Archived project '{}'. It will no longer appear in `hydrate projects` until \
+             you run `hydrate project restore {}`.",
+            project.name, project.name
+        ),
+    }
+}
+
+/// Build the `restore` success output.
+fn render_restore(project: &ProjectOut, mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Json => serde_json::json!({
+            "restored": { "name": project.name, "archived": project.archived }
+        })
+        .to_string(),
+        OutputMode::Human => format!(
+            "Restored project '{}'. It will appear in `hydrate projects` again.",
             project.name
         ),
     }
@@ -220,20 +307,38 @@ mod tests {
     }
 
     #[test]
-    fn find_by_name_no_match_names_the_archived_possibility() {
-        // A name that resolves to nothing must not read as a flat "no such
-        // project" — it might be archived and simply invisible to this
-        // listing, which is a real, current limitation worth stating rather
-        // than leaving the caller to guess why a name they know is real
-        // isn't found.
+    fn find_by_name_resolves_an_archived_only_match() {
+        // The whole point of switching to the archived-inclusive listing: a
+        // name that only an archived project holds must still resolve, or
+        // `archive` is a one-way door regardless of what the CLI's copy
+        // claims.
+        let projects = vec![project("shelved", 1, true)];
+        let found = find_by_name(projects, "shelved").unwrap();
+        assert!(found.archived);
+    }
+
+    #[test]
+    fn find_by_name_prefers_the_active_project_when_names_collide() {
+        // Archiving does not reserve a name, so an active and an archived
+        // project CAN legitimately share one. The active project is what
+        // "the project named X" means by default.
+        let projects = vec![project("dup", 1, true), project("dup", 2, false)];
+        let found = find_by_name(projects, "dup").unwrap();
+        assert_eq!(found.id, Uuid::from_u128(2));
+        assert!(!found.archived);
+    }
+
+    #[test]
+    fn find_by_name_no_match_at_all_points_at_projects_and_restore() {
         let err = find_by_name(vec![], "probe").unwrap_err();
         assert!(matches!(err, CliError::InvalidArgument(_)));
         let msg = err.to_string();
         assert!(msg.contains("probe"), "{msg}");
-        assert!(
-            msg.contains("ARCHIVED") || msg.contains("archived"),
-            "{msg}"
-        );
+        assert!(msg.contains("hydrate projects"), "{msg}");
+        assert!(msg.contains("hydrate project restore"), "{msg}");
+        // No caps-for-emphasis; plain sentence case, matching the rest of
+        // this CLI's error text.
+        assert!(!msg.contains("ARCHIVED"), "{msg}");
     }
 
     #[test]
@@ -242,26 +347,33 @@ mod tests {
         let err = find_by_name(vec![], "nope").unwrap_err();
         let msg = err.to_string();
         assert!(!msg.contains("404"), "{msg}");
-        assert!(msg.contains("hydrate projects"), "{msg}");
     }
 
     #[test]
-    fn find_by_name_refuses_to_guess_among_duplicates() {
-        // Should not be reachable given server-enforced uniqueness, but a
-        // defensive refusal beats silently acting on the wrong project if
-        // that invariant is ever violated.
+    fn find_by_name_refuses_to_guess_among_duplicate_active_projects() {
+        // Should not be reachable given server-enforced uniqueness among
+        // active names, but a defensive refusal beats silently acting on the
+        // wrong project if that invariant is ever violated.
         let projects = vec![project("dup", 1, false), project("dup", 2, false)];
         let err = find_by_name(projects, "dup").unwrap_err();
         assert!(err.to_string().contains("not unique"));
     }
 
     #[test]
+    fn find_by_name_refuses_to_guess_among_duplicate_archived_projects() {
+        // Unlike the active case, this one IS reachable in practice: archived
+        // rows carry no uniqueness constraint against each other. No id
+        // exists here to disambiguate with, so it must refuse rather than
+        // pick one.
+        let projects = vec![project("dup", 1, true), project("dup", 2, true)];
+        let err = find_by_name(projects, "dup").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains('2'), "{msg}");
+        assert!(msg.contains("dup"), "{msg}");
+    }
+
+    #[test]
     fn archived_flag_on_a_candidate_does_not_block_an_exact_active_match() {
-        // find_by_name itself does no archived filtering — that already
-        // happened server-side in what GET /v1/projects returned. Passing a
-        // list that (hypothetically) contained an archived entry alongside an
-        // active one with a different name must still resolve the active one
-        // cleanly.
         let projects = vec![project("kept-active", 1, false), project("gone", 2, true)];
         let found = find_by_name(projects, "kept-active").unwrap();
         assert!(!found.archived);
@@ -286,10 +398,23 @@ mod tests {
     }
 
     #[test]
-    fn render_archive_says_it_leaves_the_default_listing() {
+    fn render_archive_names_the_restore_verb() {
+        // The round trip only reads as real if the success message itself
+        // names the way back, not just the guide/README.
         let out = render_archive(&project("old", 1, true), OutputMode::Human);
         assert!(out.contains("old"), "{out}");
         assert!(out.contains("hydrate projects"), "{out}");
+        assert!(out.contains("hydrate project restore old"), "{out}");
+    }
+
+    #[test]
+    fn render_restore_says_it_returns_to_the_default_listing() {
+        let out = render_restore(&project("old", 1, false), OutputMode::Human);
+        assert!(out.contains("old"), "{out}");
+        assert!(out.contains("hydrate projects"), "{out}");
+        let json = render_restore(&project("old", 1, false), OutputMode::Json);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["restored"]["name"], "old");
     }
 
     #[test]
@@ -318,10 +443,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_403_is_translated_to_a_named_missing_scope_not_a_bare_forbidden() {
-        // The plan calls a bare 403 from `project delete` unacceptable UX.
-        // This 403->MissingScope mapping is only safe because THIS route has
-        // exactly one extra scope gate; see `translate_delete_error`'s doc.
+    fn delete_403_with_no_structured_code_is_translated_to_missing_scope() {
+        // The scope gate's body is the bare `{"detail": "forbidden"}` string,
+        // which carries no `code` — parse_detail's kind extraction comes back
+        // empty and falls back to "service_error". That specific shape is
+        // what this translation exists to catch.
         let translated = translate_delete_error(CliError::Service {
             status: 403,
             kind: "service_error".to_string(),
@@ -334,11 +460,38 @@ mod tests {
     }
 
     #[test]
+    fn delete_403_with_a_structured_code_passes_through_unchanged() {
+        // The per-key project-allowlist gate (Layer 3, `project_gates.py`)
+        // raises a SEPARATE 403 on this exact route, with a structured body:
+        // `{"code": "project_not_in_key_whitelist", ...}`. A key can hold
+        // project:delete and still hit this one for an unrelated reason, so
+        // reinterpreting it as MissingScope would be a wrong diagnosis that
+        // sends the caller to mint an unnecessarily broader key. It must
+        // reach the user as itself.
+        let translated = translate_delete_error(CliError::Service {
+            status: 403,
+            kind: "project_not_in_key_whitelist".to_string(),
+            reason: Some(
+                "This API key's project whitelist does not include the requested project."
+                    .to_string(),
+            ),
+        });
+        assert!(
+            matches!(
+                &translated,
+                CliError::Service { status: 403, kind, .. } if kind == "project_not_in_key_whitelist"
+            ),
+            "got {translated:?}"
+        );
+        assert!(translated.to_string().contains("whitelist"));
+    }
+
+    #[test]
     fn non_403_errors_pass_through_the_delete_translation_unchanged() {
-        // Only the 403 shape gets reinterpreted; a 404 (no such project — a
-        // race with something else deleting it first) or a network failure
-        // must reach the user as themselves, not get relabeled as a scope
-        // problem they don't have.
+        // Only a 403 with no structured code gets reinterpreted; a 404 (no
+        // such project — a race with something else deleting it first) or a
+        // network failure must reach the user as themselves, not get
+        // relabeled as a scope problem they don't have.
         let not_found = translate_delete_error(CliError::Service {
             status: 404,
             kind: "not_found".to_string(),

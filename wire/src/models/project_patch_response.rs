@@ -11,6 +11,7 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
+/// ProjectPatchResponse : Rename/archive returns the project alone.  No ``main_branch``, unlike create: the branch is not affected by either edit, and echoing it would imply otherwise.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectPatchResponse {
     #[serde(rename = "project")]
@@ -20,6 +21,7 @@ pub struct ProjectPatchResponse {
 }
 
 impl ProjectPatchResponse {
+    /// Rename/archive returns the project alone.  No ``main_branch``, unlike create: the branch is not affected by either edit, and echoing it would imply otherwise.
     pub fn new(project: models::ProjectOut, version: String) -> ProjectPatchResponse {
         ProjectPatchResponse {
             project: Box::new(project),

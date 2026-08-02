@@ -195,11 +195,24 @@ impl<T> From<WireError<T>> for CliError {
 ///
 /// The service uses two envelope shapes for the machine-readable kind: the
 /// delta/branch routes carry it as `error` (e.g. `version_conflict`), while the
-/// project routes (and the shared not-found envelope) carry it as `code` (e.g.
-/// `name_taken`, `not_found`). Both are checked so neither family of route loses
-/// its kind here; `error` is tried first only because it was there first, not
-/// because one takes precedence over the other in a body that (today) never
-/// carries both.
+/// `{code, message}` shape carries it as `code` (e.g. `name_taken`,
+/// `not_found`). Both are checked so neither family of route loses its kind
+/// here; `error` is tried first only because it was there first, not because
+/// one takes precedence over the other in a body that (today) never carries
+/// both.
+///
+/// The `{code, message}` shape is NOT new — per the vendored spec it already
+/// applied to every `/v1` route's shared not-found envelope (branches, graph,
+/// node, subtree, the projects listing), not just the project-lifecycle
+/// routes this fix was written for. Before this, every one of those 404s
+/// resolved `kind` to the generic `"service_error"` fallback; after it, they
+/// report their real `code` (e.g. `"not_found"`) in `--json` output. That is a
+/// behavior change to the stable, documented `error.kind` contract on routes
+/// this otherwise unrelated to project lifecycle — every internal caller was
+/// traced and none matches on `kind` for a 404 (`cmd::walk`'s remap keys on
+/// `status` alone; see its own test pinning that), but an external `--json`
+/// consumer that switched on `error.kind == "service_error"` for one of those
+/// routes would see a different string starting here.
 fn parse_detail(body: &str) -> (Option<String>, Option<String>, Option<i64>) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
         return (None, None, None);

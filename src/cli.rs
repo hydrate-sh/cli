@@ -144,10 +144,15 @@ pub enum ProjectAction {
     Create(ProjectCreateArgs),
 
     /// Archive a project: it stops appearing in `hydrate projects`, but stays
-    /// addressable by name for `project rename` / `project archive` again to
-    /// reverse it (a fresh listing that includes it is not part of this verb
-    /// set — see the command's own help for the current limitation).
+    /// addressable by name (including by `project restore`) for every verb in
+    /// this group — archiving does not reserve or hide the name from anything
+    /// but the default listing.
     Archive(ProjectNameArgs),
+
+    /// Reverse an archive: the project reappears in `hydrate projects`.
+    /// Fails with the server's `name_taken` if an active project has since
+    /// taken this name — rename one of them first.
+    Restore(ProjectNameArgs),
 
     /// Permanently delete a project — its branches, graph, and stored
     /// artifacts go with it. This cannot be undone. Requires an API key minted
@@ -168,16 +173,24 @@ pub struct ProjectCreateArgs {
 #[derive(Debug, Args)]
 pub struct ProjectNameArgs {
     /// Project to act on, addressed by its exact name (no partial match).
+    /// Resolves against both active and archived projects.
     pub name: String,
 }
 
 #[derive(Debug, Args)]
 pub struct ProjectRenameArgs {
-    /// Current project name, exact.
-    pub old_name: String,
+    /// Project to rename, addressed by its exact current name (no partial
+    /// match). Resolves against both active and archived projects.
+    pub name: String,
 
-    /// New project name.
-    pub new_name: String,
+    /// The new name. A flag, not a second positional: `rename <old> <new>`
+    /// would let an agent swap the two and rename in the wrong direction with
+    /// no syntax error to catch it — every other multi-value edit in this CLI
+    /// (e.g. `node set <path> --name <new>`) addresses its target
+    /// positionally and puts the new VALUE behind a named flag for exactly
+    /// this reason.
+    #[arg(long)]
+    pub to: String,
 }
 
 #[derive(Debug, Args)]
@@ -615,13 +628,21 @@ mod tests {
     }
 
     #[test]
-    fn project_archive_and_delete_take_a_single_exact_name() {
+    fn project_archive_restore_and_delete_take_a_single_exact_name() {
         let archive = Cli::parse_from(["hyd", "project", "archive", "old-experiment"]);
         match archive.command {
             Command::Project {
                 action: ProjectAction::Archive(args),
             } => assert_eq!(args.name, "old-experiment"),
             other => panic!("expected Project::Archive, got {other:?}"),
+        }
+
+        let restore = Cli::parse_from(["hyd", "project", "restore", "old-experiment"]);
+        match restore.command {
+            Command::Project {
+                action: ProjectAction::Restore(args),
+            } => assert_eq!(args.name, "old-experiment"),
+            other => panic!("expected Project::Restore, got {other:?}"),
         }
 
         let delete = Cli::parse_from(["hyd", "project", "delete", "probe"]);
@@ -634,17 +655,35 @@ mod tests {
     }
 
     #[test]
-    fn project_rename_takes_old_then_new() {
-        let cli = Cli::parse_from(["hyd", "project", "rename", "old-name", "new-name"]);
-        match cli.command {
-            Command::Project {
-                action: ProjectAction::Rename(args),
-            } => {
-                assert_eq!(args.old_name, "old-name");
-                assert_eq!(args.new_name, "new-name");
+    fn project_rename_addresses_the_target_positionally_and_the_new_name_by_flag() {
+        // Order-independent by construction: `--to` can appear before or after
+        // the positional target, and there is no second bare positional an
+        // agent could transpose into a rename-in-the-wrong-direction with no
+        // syntax error to catch it.
+        let after = Cli::parse_from(["hyd", "project", "rename", "old-name", "--to", "new-name"]);
+        let before = Cli::parse_from(["hyd", "project", "rename", "--to", "new-name", "old-name"]);
+        for cli in [after, before] {
+            match cli.command {
+                Command::Project {
+                    action: ProjectAction::Rename(args),
+                } => {
+                    assert_eq!(args.name, "old-name");
+                    assert_eq!(args.to, "new-name");
+                }
+                other => panic!("expected Project::Rename, got {other:?}"),
             }
-            other => panic!("expected Project::Rename, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn project_rename_rejects_a_second_bare_positional() {
+        // The old grammar (`rename <old> <new>`) accepted this; the new one
+        // must not, or the footgun this change exists to remove is still live.
+        let result = Cli::try_parse_from(["hyd", "project", "rename", "old-name", "new-name"]);
+        assert!(
+            result.is_err(),
+            "a second bare positional must be rejected, not silently treated as --to"
+        );
     }
 
     #[test]

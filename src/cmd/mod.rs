@@ -49,6 +49,7 @@ pub fn dispatch(cli: Cli) -> ExitCode {
         Command::Project { action } => match action {
             ProjectAction::Create(args) => finish(project::create(args, mode), mode),
             ProjectAction::Archive(args) => finish(project::archive(args, mode), mode),
+            ProjectAction::Restore(args) => finish(project::restore(args, mode), mode),
             ProjectAction::Delete(args) => finish(project::delete(args, mode), mode),
             ProjectAction::Rename(args) => finish(project::rename(args, mode), mode),
         },
