@@ -63,14 +63,16 @@ fn ensure_dir(base: &Path) -> Result<PathBuf, CliError> {
     Ok(dir)
 }
 
-/// Write a named file into `base/.hydrate/`, atomically.
+/// Reject anything but a bare file name: no separator, no `..`, not absolute.
 ///
-/// `name` must be a bare file name. A separator or `..` is rejected rather than
-/// joined — `Path::join` silently accepts both, and an absolute path replaces
-/// the base entirely, so the containment this function is supposed to provide
-/// has to be checked rather than assumed. `.hydrate/` holds the binding and the
-/// pulled index, and sits beside whatever else is in the working copy.
-pub fn write_state_file(base: &Path, name: &str, body: &[u8]) -> Result<(), CliError> {
+/// Shared by every `*_state_file` entry point below. `Path::join` silently
+/// accepts a separator, `..`, or an absolute path (the last replacing the base
+/// entirely), so the containment `.hydrate/` is supposed to provide has to be
+/// checked here rather than assumed at each call site — one rule, one place to
+/// keep in sync when it changes, rather than three hand-copied conditions
+/// drifting apart. `verb` names the operation in the error text (`"write"`,
+/// `"read"`, `"remove"`) so each caller keeps its own actionable message.
+fn validate_bare_name(name: &str, verb: &str) -> Result<(), CliError> {
     if name.is_empty()
         || name.contains('/')
         || name.contains('\\')
@@ -78,11 +80,64 @@ pub fn write_state_file(base: &Path, name: &str, body: &[u8]) -> Result<(), CliE
         || Path::new(name).is_absolute()
     {
         return Err(CliError::State(format!(
-            "refusing to write state file {name:?}: not a bare file name"
+            "refusing to {verb} state file {name:?}: not a bare file name"
         )));
     }
+    Ok(())
+}
+
+/// Write a named file into `base/.hydrate/`, atomically.
+///
+/// `name` must be a bare file name — see [`validate_bare_name`]. `.hydrate/`
+/// holds the binding and the pulled index, and sits beside whatever else is in
+/// the working copy.
+pub fn write_state_file(base: &Path, name: &str, body: &[u8]) -> Result<(), CliError> {
+    validate_bare_name(name, "write")?;
     let dir = ensure_dir(base)?;
     atomic_write(&dir.join(name), body)
+}
+
+/// Read a named file out of `base/.hydrate/`.
+///
+/// Mirrors [`write_state_file`]'s containment check — a caller building `name`
+/// from anything less trusted than a compile-time constant must not be able to
+/// read outside `.hydrate/` any more than a write can escape it. `Ok(None)`
+/// means the file does not exist, a normal state every caller here treats as
+/// "nothing recorded" rather than an error.
+pub fn read_state_file(base: &Path, name: &str) -> Result<Option<Vec<u8>>, CliError> {
+    validate_bare_name(name, "read")?;
+    let path = state_dir(base).join(name);
+    match std::fs::read(&path) {
+        Ok(body) => Ok(Some(body)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(CliError::State(format!(
+            "could not read {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// Remove a named file out of `base/.hydrate/`, if present. A missing file is
+/// not an error — the caller is consuming a recovery slot that may already be
+/// empty.
+///
+/// `std::fs::remove_file` follows a symlink and deletes the link *target*
+/// (shared with `atomic_write`'s write path below, which has the same
+/// property). Considered and left as-is: exploiting it requires local write
+/// access to this working copy — planting a symlink named e.g.
+/// `stage.discarded.json` in `.hydrate/` before this runs — which already
+/// means running arbitrary code as this user, outside this CLI's threat model.
+pub fn remove_state_file(base: &Path, name: &str) -> Result<(), CliError> {
+    validate_bare_name(name, "remove")?;
+    let path = state_dir(base).join(name);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(CliError::State(format!(
+            "could not remove {}: {e}",
+            path.display()
+        ))),
+    }
 }
 
 /// Write `body` to `path` atomically: write a sibling temp file, then `rename`
@@ -675,6 +730,56 @@ mod tests {
         // A bare name still works.
         write_state_file(base, "ok.json", b"x").unwrap();
         assert!(base.join(".hydrate/ok.json").exists());
+    }
+
+    #[test]
+    fn read_state_file_is_none_when_absent_and_some_after_a_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        assert_eq!(read_state_file(base, "missing.json").unwrap(), None);
+        write_state_file(base, "present.json", b"hello").unwrap();
+        assert_eq!(
+            read_state_file(base, "present.json").unwrap(),
+            Some(b"hello".to_vec())
+        );
+    }
+
+    #[test]
+    fn read_state_file_refuses_anything_but_a_bare_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        for bad in ["../escaped.json", "a/b.json", "/tmp/abs.json", "..", ""] {
+            let err = read_state_file(base, bad).unwrap_err();
+            assert!(
+                err.to_string().contains("not a bare file name"),
+                "{bad:?} was accepted: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_state_file_deletes_and_is_ok_when_already_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        // Absent: a no-op, not an error.
+        remove_state_file(base, "ghost.json").unwrap();
+        write_state_file(base, "present.json", b"hello").unwrap();
+        assert!(base.join(".hydrate/present.json").exists());
+        remove_state_file(base, "present.json").unwrap();
+        assert!(!base.join(".hydrate/present.json").exists());
+    }
+
+    #[test]
+    fn remove_state_file_refuses_anything_but_a_bare_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        for bad in ["../escaped.json", "a/b.json", "/tmp/abs.json", "..", ""] {
+            let err = remove_state_file(base, bad).unwrap_err();
+            assert!(
+                err.to_string().contains("not a bare file name"),
+                "{bad:?} was accepted: {err}"
+            );
+        }
     }
 
     #[test]

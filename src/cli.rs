@@ -536,6 +536,12 @@ pub enum StageAction {
     /// what it discarded first, and parks a recoverable copy in
     /// `.hydrate/stage.discarded.json`. Purely local: no network call.
     Discard,
+
+    /// Put back the stage `discard` most recently parked. Refuses if the
+    /// current stage is not empty (commit or discard it first) or if the
+    /// recovery slot was parked from a different branch than the one now
+    /// bound. Purely local: no network call. Consumes the recovery file.
+    Restore,
 }
 
 #[derive(Debug, Subcommand)]

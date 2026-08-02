@@ -101,6 +101,9 @@ Editing in place
   hydrate stage discard        throw away everything staged (local; keeps a
                                recoverable copy). NOT the same as `clear`, which
                                stages deletions rather than undoing your edits
+  hydrate stage restore        put back the stage the last discard parked;
+                               refuses over a non-empty stage or onto a
+                               different branch than the one it was parked from
 
 Choosing a project
   Commands resolve the project from --project <name|id>, else the HYD_PROJECT
@@ -185,6 +188,30 @@ mod tests {
         ] {
             assert!(GUIDE.contains(needle), "guide is missing: {needle}");
         }
+    }
+
+    #[test]
+    fn guide_documents_stage_restore_and_its_two_refusals() {
+        // `discard` promised recoverability from `.hydrate/stage.discarded.json`
+        // but nothing read it back — `restore` is what makes that true. Pin
+        // both places the guide claims a mistake is recoverable so the two
+        // verbs cannot drift apart.
+        assert!(
+            GUIDE.contains("hydrate stage restore"),
+            "guide never mentions `stage restore`"
+        );
+        let start = GUIDE
+            .find("hydrate stage restore")
+            .expect("stage restore line");
+        let line = &GUIDE[start..];
+        assert!(
+            line.contains("non-empty stage") || line.contains("refuses"),
+            "guide does not say restore refuses over live work: {line}"
+        );
+        assert!(
+            line.contains("different branch"),
+            "guide does not say restore refuses across branches: {line}"
+        );
     }
 
     #[test]
