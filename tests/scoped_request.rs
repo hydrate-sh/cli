@@ -635,6 +635,12 @@ fn stage_restore_refuses_over_a_non_empty_stage() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("commit or discard"), "{stderr}");
 
+    // `--json` must carry a stable, distinct machine kind: an agent branches
+    // on this, not on substring-matching the human message.
+    let err: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("stderr was not a JSON error envelope: {e}\n{stderr}"));
+    assert_eq!(err["error"]["kind"], "restore_blocked", "{stderr}");
+
     // Nothing was touched: the live stage AND the recovery file both survive.
     let still = std::fs::read_to_string(hydrate.join("stage.json")).unwrap();
     assert!(still.contains("Score it."), "live stage was disturbed");
@@ -686,9 +692,75 @@ fn stage_restore_refuses_across_a_branch_mismatch() {
     assert!(stderr.contains("demo"), "{stderr}");
     assert!(stderr.contains("other"), "{stderr}");
 
+    // `--json` must carry its own kind, distinct from `restore_blocked` and
+    // from the generic `state_error` used for actual file corruption — the
+    // three failures want three different remediations.
+    let err: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("stderr was not a JSON error envelope: {e}\n{stderr}"));
+    assert_eq!(err["error"]["kind"], "branch_mismatch", "{stderr}");
+
     // The mismatched recovery file is left in place, not silently dropped —
     // an operator can still recover it by re-binding back to 'demo'.
     assert!(hydrate.join("stage.discarded.json").exists());
+    let still = std::fs::read_to_string(hydrate.join("stage.json")).unwrap();
+    let still_v: serde_json::Value = serde_json::from_str(&still).unwrap();
+    assert_eq!(still_v["deltas"].as_array().unwrap().len(), 0);
+}
+
+/// A recovery file that names a branch must not be trusted when the workdir
+/// has NO branch bound at all — not just a different one. This is a worse
+/// hazard than a mismatch (there is no branch context whatsoever to validate
+/// the parked ids against), so it gets its own refusal rather than silently
+/// skipping the guard the way `if let (Some, Some)` used to.
+#[test]
+fn stage_restore_refuses_when_unbound_but_the_parked_stage_names_a_branch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+    let hydrate = base.join(".hydrate");
+    std::fs::create_dir_all(&hydrate).unwrap();
+    std::fs::write(hydrate.join("config.toml"), RESTORE_CONFIG).unwrap();
+    std::fs::write(hydrate.join("stage.json"), RESTORE_STAGED).unwrap();
+
+    std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "discard", "--human"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    assert!(
+        hydrate.join("stage.discarded.json").exists(),
+        "sanity: parked"
+    );
+
+    // Simulate the binding vanishing between discard and restore (hand-removed
+    // or corrupted-then-removed `config.toml`) — NOT a re-bind to another
+    // branch, a total loss of branch context.
+    std::fs::remove_file(hydrate.join("config.toml")).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hydrate"))
+        .args(["stage", "restore", "--json"])
+        .current_dir(base)
+        .output()
+        .expect("run hydrate");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "restore with no branch context exited 0"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("demo"), "{stderr}");
+    assert!(stderr.contains("not bound to any branch"), "{stderr}");
+
+    let err: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("stderr was not a JSON error envelope: {e}\n{stderr}"));
+    assert_eq!(err["error"]["kind"], "branch_context_missing", "{stderr}");
+
+    // Nothing was consumed: the parked recovery file survives, and the live
+    // stage (emptied by discard) was never repopulated with ids nothing
+    // present can resolve.
+    assert!(
+        hydrate.join("stage.discarded.json").exists(),
+        "recovery file was consumed despite the refusal"
+    );
     let still = std::fs::read_to_string(hydrate.join("stage.json")).unwrap();
     let still_v: serde_json::Value = serde_json::from_str(&still).unwrap();
     assert_eq!(still_v["deltas"].as_array().unwrap().len(), 0);

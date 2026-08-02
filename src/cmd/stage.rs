@@ -145,15 +145,13 @@ pub fn restore(mode: OutputMode) -> Result<(), CliError> {
     // `discard` the live stage first — both leave their own trail.
     let live = Stage::load(&base)?;
     if !live.deltas.is_empty() {
-        return Err(CliError::Other(format!(
-            "refusing to restore: {} staged operation(s) are already on branch '{}' — \
-             commit or discard them first",
-            live.deltas.len(),
-            binding
+        return Err(CliError::RestoreBlocked {
+            staged: live.deltas.len(),
+            branch: binding
                 .as_ref()
-                .map(|b| b.branch_name.as_str())
-                .unwrap_or("(unbound)")
-        )));
+                .map(|b| b.branch_name.clone())
+                .unwrap_or_else(|| "(unbound)".to_string()),
+        });
     }
 
     let Some(raw) = state::read_state_file(&base, DISCARDED_FILE)? else {
@@ -170,15 +168,37 @@ pub fn restore(mode: OutputMode) -> Result<(), CliError> {
     // branch it was staged on. A workdir CAN be re-bound to a different branch
     // between a discard and a restore (`fork` rewrites `config.toml` in
     // place), so this is a real, not hypothetical, mismatch to catch.
-    if let (Some(parked_id), Some(current)) = (record.branch_id, binding.as_ref()) {
-        if parked_id != current.branch_id {
-            let parked_name = record.branch_name.as_deref().unwrap_or("(unknown)");
-            return Err(CliError::State(format!(
-                "refusing to restore: the parked stage was discarded on branch '{parked_name}', \
-                 but this directory is now bound to '{}' — its staged ids would not resolve there",
-                current.branch_name
-            )));
+    //
+    // The unbound case (`binding` is `None`) is its OWN refusal, not folded
+    // into the mismatch above and not skipped: a parked stage that names a
+    // branch, checked against a workdir with NO branch context at all, is a
+    // worse hazard than a mismatch (a mismatch at least has a real branch to
+    // compare against and reject). `Binding::load` returns `None` whenever
+    // `.hydrate/config.toml` is missing — hand-removed, or corrupted-then-
+    // removed between the discard and this restore — so this is reachable
+    // today; a future `unbind`/`clone` verb that clears the binding must keep
+    // this guard, since it would otherwise open exactly this gap by design.
+    match (record.branch_id, binding.as_ref()) {
+        (Some(_), Some(current)) if record.branch_id != Some(current.branch_id) => {
+            let parked_name = record
+                .branch_name
+                .clone()
+                .unwrap_or_else(|| "(unknown)".to_string());
+            return Err(CliError::BranchMismatch {
+                parked: parked_name,
+                current: current.branch_name.clone(),
+            });
         }
+        (Some(_), None) => {
+            let parked_name = record
+                .branch_name
+                .clone()
+                .unwrap_or_else(|| "(unknown)".to_string());
+            return Err(CliError::BranchContextMissing {
+                parked: parked_name,
+            });
+        }
+        _ => {}
     }
 
     // Nothing is reported as done until it IS done, mirroring `discard`: the
@@ -192,13 +212,39 @@ pub fn restore(mode: OutputMode) -> Result<(), CliError> {
     // a stale duplicate invites a later `restore` attempt to replay the same
     // batch again. A fresh `discard` re-populates the slot, exactly as
     // `discard`'s own report already promises.
-    state::remove_state_file(&base, DISCARDED_FILE)?;
+    //
+    // The save above already succeeded — the restore itself is DONE by this
+    // point. A failure here is a cleanup problem, not a restore problem, and
+    // the error must say both things: the restore already landed, and the
+    // stale recovery file needs manual removal. A bare cleanup error read in
+    // isolation ("could not remove ...: Permission denied") reads as "the
+    // restore failed" and invites a retry that immediately hits the
+    // already-staged refusal above, without ever learning the first attempt
+    // worked.
+    if let Err(e) = state::remove_state_file(&base, DISCARDED_FILE) {
+        return Err(cleanup_failed_after_restore(e));
+    }
 
     println!(
         "{}",
         render_restore_done(&record.stage, &summary, binding.as_ref(), mode)
     );
     Ok(())
+}
+
+/// Wrap a cleanup failure that follows a successful `record.stage.save` into
+/// an error that says BOTH things: the restore already landed (the deltas are
+/// live in `stage.json`), and the now-stale recovery file needs manual
+/// removal, with its path. A bare cleanup error read on its own ("could not
+/// remove ...: Permission denied") reads as "the restore failed" and invites
+/// a retry that immediately hits the already-staged refusal above, without
+/// ever learning the first attempt worked.
+fn cleanup_failed_after_restore(e: CliError) -> CliError {
+    CliError::State(format!(
+        "restored the stage, but could not remove the now-stale recovery file \
+         .hydrate/{DISCARDED_FILE}: {e} — the restore already succeeded (the deltas \
+         are live in .hydrate/stage.json); remove .hydrate/{DISCARDED_FILE} manually"
+    ))
 }
 
 /// The report for a missing recovery file. Not an error: a fresh working copy,
@@ -566,6 +612,23 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_failure_after_a_successful_save_says_the_restore_already_landed() {
+        // A bare cleanup error ("could not remove ...: Permission denied") read
+        // in isolation looks like the restore itself failed, and invites a
+        // retry that immediately hits the already-staged refusal — without the
+        // user ever learning the first attempt actually worked. The wrapped
+        // error must say both things, with the recovery file's path spelled
+        // out so a human (or an agent) knows exactly what to clean up.
+        let inner = CliError::State("could not remove x: Permission denied".to_string());
+        let wrapped = cleanup_failed_after_restore(inner);
+        let msg = wrapped.to_string();
+        assert!(msg.contains("already succeeded"), "{msg}");
+        assert!(msg.contains(DISCARDED_FILE), "{msg}");
+        assert!(msg.contains("stage.json"), "{msg}");
+        assert!(msg.contains("Permission denied"), "{msg}");
+    }
+
+    #[test]
     fn discard_record_rejects_an_unknown_key() {
         // A hand-edited or future-format recovery file with a stray key must
         // fail loud, not silently drop the field — the same discipline `Stage`
@@ -594,5 +657,71 @@ mod tests {
         let parked_under = binding();
         let now_bound = other_binding();
         assert_ne!(parked_under.branch_id, now_bound.branch_id);
+    }
+
+    /// The module doc's whole argument for not reporting success early is that
+    /// a mid-restore failure cannot lose data: the save lands BEFORE the
+    /// recovery file is removed, so a failure removing it leaves BOTH copies
+    /// present (the restored stage AND the stale recovery file) rather than
+    /// neither. That invariant was documented but never pinned by a test —
+    /// this exercises the exact two calls `restore` composes
+    /// (`record.stage.save` then `state::remove_state_file`), with a failure
+    /// forced between them by making `.hydrate/` briefly unwritable, mirroring
+    /// how `tests/scoped_request.rs` already forces `discard`'s park failure.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_cleanup_after_a_successful_save_loses_neither_copy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let hydrate = base.join(".hydrate");
+        binding().save(base).unwrap();
+        let original = staged();
+        park(base, Some(&binding()), &original).unwrap();
+        Stage::empty().save(base).unwrap();
+
+        let raw = state::read_state_file(base, DISCARDED_FILE)
+            .unwrap()
+            .expect("recovery file present");
+        let record: DiscardRecord = serde_json::from_slice(&raw).unwrap();
+
+        // Step 1, exactly as `restore` runs it: the save succeeds.
+        record.stage.save(base).unwrap();
+
+        // Now block the cleanup step only: `.hydrate/` loses write permission
+        // AFTER the save already landed, so `remove_file` cannot unlink the
+        // recovery file.
+        let mut perms = std::fs::metadata(&hydrate).unwrap().permissions();
+        perms.set_mode(0o555); // read + execute, no write
+        std::fs::set_permissions(&hydrate, perms).unwrap();
+
+        let cleanup = state::remove_state_file(base, DISCARDED_FILE);
+
+        // Restore permissions before asserting, so a failure doesn't leave an
+        // undeletable tempdir behind.
+        let mut perms = std::fs::metadata(&hydrate).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&hydrate, perms).unwrap();
+
+        assert!(
+            cleanup.is_err(),
+            "the forced permission failure did not trigger"
+        );
+
+        // BOTH copies survive: the restored stage (step 1 already landed)...
+        let now_staged = Stage::load(base).unwrap();
+        assert_eq!(
+            now_staged.deltas, original.deltas,
+            "the save's own result must not be undone by the later cleanup failure"
+        );
+        // ...AND the recovery file (step 2 never completed).
+        assert!(
+            state::read_state_file(base, DISCARDED_FILE)
+                .unwrap()
+                .is_some(),
+            "the recovery file must still be present when cleanup fails — \
+             losing it here would mean neither copy is safe"
+        );
     }
 }
