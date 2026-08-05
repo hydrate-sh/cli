@@ -12,18 +12,21 @@ use crate::models;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InlineObject9Detail {
-    #[serde(rename = "current_version", default, with = "::serde_with::rust::double_option", skip_serializing_if = "Option::is_none")]
-    pub current_version: Option<Option<i32>>,
-    #[serde(rename = "error", skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+pub struct DecisionResponse {
+    #[serde(rename = "decision")]
+    pub decision: Box<models::DecisionOut>,
+    #[serde(rename = "project_id")]
+    pub project_id: uuid::Uuid,
+    #[serde(rename = "version")]
+    pub version: String,
 }
 
-impl InlineObject9Detail {
-    pub fn new() -> InlineObject9Detail {
-        InlineObject9Detail {
-            current_version: None,
-            error: None,
+impl DecisionResponse {
+    pub fn new(decision: models::DecisionOut, project_id: uuid::Uuid, version: String) -> DecisionResponse {
+        DecisionResponse {
+            decision: Box::new(decision),
+            project_id,
+            version,
         }
     }
 }

@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InlineObject7 {
-    #[serde(rename = "detail")]
-    pub detail: String,
+    #[serde(rename = "detail", skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Box<models::InlineObject7Detail>>,
 }
 
 impl InlineObject7 {
-    pub fn new(detail: String) -> InlineObject7 {
+    pub fn new() -> InlineObject7 {
         InlineObject7 {
-            detail,
+            detail: None,
         }
     }
 }

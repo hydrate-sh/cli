@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum InlineObject8Detail {
+pub enum InlineObject6Detail {
     String(String),
-    InlineObject8DetailOneOf(Box<models::InlineObject8DetailOneOf>),
+    InlineObject6DetailOneOf(Box<models::InlineObject6DetailOneOf>),
 }
 
-impl Default for InlineObject8Detail {
+impl Default for InlineObject6Detail {
     fn default() -> Self {
         Self::String(Default::default())
     }

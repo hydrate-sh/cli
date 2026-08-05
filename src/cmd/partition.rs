@@ -39,12 +39,13 @@ use hydrate_wire::models::{self, ValidateResponse};
 type Key = (String, String);
 
 fn key(f: &models::Finding) -> Key {
-    // The code enum has no Display; its serde spelling is the stable name.
-    let code = serde_json::to_value(f.code)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| format!("{:?}", f.code));
-    (code, f.locator.clone())
+    // `code` is a plain `String` — the server publishes it as an OPEN set, so
+    // there is no enum to spell out. This used to round-trip a generated enum
+    // through serde to recover its wire name; the round-trip is gone with the
+    // enum, and so is the silent failure it papered over (an unrecognized code
+    // could not be represented at all, so the whole response failed to
+    // deserialize before this function ever ran).
+    (f.code.clone(), f.locator.clone())
 }
 
 /// Count each key, rather than collecting a set.
@@ -230,9 +231,9 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn finding(code: models::finding::Code, locator: &str) -> models::Finding {
+    fn finding(code: &str, locator: &str) -> models::Finding {
         models::Finding {
-            code,
+            code: code.to_string(),
             locator: locator.to_string(),
             message: format!("about {locator}"),
             severity: models::finding::Severity::Error,
@@ -252,8 +253,8 @@ mod tests {
         }
     }
 
-    const UNSAT: models::finding::Code = models::finding::Code::UnsatisfiedInput;
-    const MISMATCH: models::finding::Code = models::finding::Code::TypeMismatch;
+    const UNSAT: &str = "unsatisfied_input";
+    const MISMATCH: &str = "type_mismatch";
 
     #[test]
     fn a_finding_in_both_reports_is_inherited() {

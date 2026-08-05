@@ -55,11 +55,11 @@ pub struct FetchSubtreeV1GraphProjectIdSubtreeNodeIdGetParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBoundaryV1GraphProjectIdBoundaryNodeIdGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -67,11 +67,11 @@ pub enum FetchBoundaryV1GraphProjectIdBoundaryNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchGraphV1GraphProjectIdGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -79,11 +79,11 @@ pub enum FetchGraphV1GraphProjectIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchNodeWithNeighborsV1GraphProjectIdNodeNodeIdGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -91,11 +91,11 @@ pub enum FetchNodeWithNeighborsV1GraphProjectIdNodeNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchSubtreeV1GraphProjectIdSubtreeNodeIdGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
