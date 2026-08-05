@@ -11,7 +11,7 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-/// DecisionsListResponse : One page of decisions for one project.  ``has_more`` is explicit rather than inferred from ``len(decisions) == limit``: a page that happens to end exactly on the boundary is indistinguishable from a full one, and a caller that guesses wrong either stops early or pages forever.
+/// DecisionsListResponse : One page of decisions for one project.  ``has_more`` is explicit rather than inferred from ``len(decisions) == limit``: a page that happens to end exactly on the boundary is indistinguishable from a full one, and a caller that guesses wrong either stops early or pages forever.  It is ADVISORY. The count and the page are two statements under read committed, so a decision captured between them can make ``has_more`` a row stale. Page until a page comes back short or empty rather than trusting it as an invariant — and expect the ordering (newest first) to shift a row onto a page you have already read if the ledger is being written while you walk it.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecisionsListResponse {
     #[serde(rename = "decisions")]
@@ -31,7 +31,7 @@ pub struct DecisionsListResponse {
 }
 
 impl DecisionsListResponse {
-    /// One page of decisions for one project.  ``has_more`` is explicit rather than inferred from ``len(decisions) == limit``: a page that happens to end exactly on the boundary is indistinguishable from a full one, and a caller that guesses wrong either stops early or pages forever.
+    /// One page of decisions for one project.  ``has_more`` is explicit rather than inferred from ``len(decisions) == limit``: a page that happens to end exactly on the boundary is indistinguishable from a full one, and a caller that guesses wrong either stops early or pages forever.  It is ADVISORY. The count and the page are two statements under read committed, so a decision captured between them can make ``has_more`` a row stale. Page until a page comes back short or empty rather than trusting it as an invariant — and expect the ordering (newest first) to shift a row onto a page you have already read if the ledger is being written while you walk it.
     pub fn new(decisions: Vec<models::DecisionOut>, filters: models::AppliedDecisionFilters, has_more: bool, limit: i32, offset: i32, project_id: uuid::Uuid, version: String) -> DecisionsListResponse {
         DecisionsListResponse {
             decisions,

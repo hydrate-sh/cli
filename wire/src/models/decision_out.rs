@@ -11,7 +11,7 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-/// DecisionOut : A decision as the /v1 surface serves it.  **Deliberately narrower than the in-app serializer.** The fields it omits are omitted for a reason, and the omission is the mitigation — adding one back is a disclosure decision, not a serializer tweak:    * ``history`` — the append-only audit trail, which names the actor     of every transition. Accountability data for humans in the app,     not context for an agent.   * ``assignee_user_id`` — a user id, same reasoning.   * ``draft_ids`` / ``originating_interview_ref`` — pointers into     interview transcripts, which are the candid text itself.   * ``interview_session`` — the transcript. Never.   * ``snoozed_until`` — in-app queue mechanics with no meaning to an     external caller.
+/// DecisionOut : A decision as the /v1 surface serves it.  **Deliberately narrower than the in-app serializer.** The fields it omits are omitted for a reason, and the omission is the mitigation — adding one back is a disclosure decision, not a serializer tweak:    * ``history`` — the append-only audit trail, which names the actor     of every transition. Accountability data for humans in the app,     not context for an agent.   * ``assignee_user_id`` — a user id, same reasoning.   * ``draft_ids`` / ``originating_interview_ref`` — pointers into     interview transcripts, which are the candid text itself.   * ``interview_session`` — the transcript. Never.   * ``snoozed_until`` — in-app queue mechanics with no meaning to an     external caller.   * ``flag_reason`` — why a human flagged the row for approval. An     in-app queue annotation about the *review*, not about the     decision, and it names no behaviour an agent can act on.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecisionOut {
     #[serde(rename = "anchor_ref")]
@@ -22,6 +22,8 @@ pub struct DecisionOut {
     pub capture_text: String,
     #[serde(rename = "captured_at")]
     pub captured_at: String,
+    #[serde(rename = "check", deserialize_with = "Option::deserialize")]
+    pub check: Option<String>,
     #[serde(rename = "id")]
     pub id: uuid::Uuid,
     #[serde(rename = "owner_layer")]
@@ -39,13 +41,14 @@ pub struct DecisionOut {
 }
 
 impl DecisionOut {
-    /// A decision as the /v1 surface serves it.  **Deliberately narrower than the in-app serializer.** The fields it omits are omitted for a reason, and the omission is the mitigation — adding one back is a disclosure decision, not a serializer tweak:    * ``history`` — the append-only audit trail, which names the actor     of every transition. Accountability data for humans in the app,     not context for an agent.   * ``assignee_user_id`` — a user id, same reasoning.   * ``draft_ids`` / ``originating_interview_ref`` — pointers into     interview transcripts, which are the candid text itself.   * ``interview_session`` — the transcript. Never.   * ``snoozed_until`` — in-app queue mechanics with no meaning to an     external caller.
-    pub fn new(anchor_ref: models::AnchorRef, annotations: Option<String>, capture_text: String, captured_at: String, id: uuid::Uuid, owner_layer: String, parent_decision_id: Option<uuid::Uuid>, project_id: uuid::Uuid, resulting_node_ids: Vec<uuid::Uuid>, source_layer: String, state: String) -> DecisionOut {
+    /// A decision as the /v1 surface serves it.  **Deliberately narrower than the in-app serializer.** The fields it omits are omitted for a reason, and the omission is the mitigation — adding one back is a disclosure decision, not a serializer tweak:    * ``history`` — the append-only audit trail, which names the actor     of every transition. Accountability data for humans in the app,     not context for an agent.   * ``assignee_user_id`` — a user id, same reasoning.   * ``draft_ids`` / ``originating_interview_ref`` — pointers into     interview transcripts, which are the candid text itself.   * ``interview_session`` — the transcript. Never.   * ``snoozed_until`` — in-app queue mechanics with no meaning to an     external caller.   * ``flag_reason`` — why a human flagged the row for approval. An     in-app queue annotation about the *review*, not about the     decision, and it names no behaviour an agent can act on.
+    pub fn new(anchor_ref: models::AnchorRef, annotations: Option<String>, capture_text: String, captured_at: String, check: Option<String>, id: uuid::Uuid, owner_layer: String, parent_decision_id: Option<uuid::Uuid>, project_id: uuid::Uuid, resulting_node_ids: Vec<uuid::Uuid>, source_layer: String, state: String) -> DecisionOut {
         DecisionOut {
             anchor_ref: Box::new(anchor_ref),
             annotations,
             capture_text,
             captured_at,
+            check,
             id,
             owner_layer,
             parent_decision_id,
