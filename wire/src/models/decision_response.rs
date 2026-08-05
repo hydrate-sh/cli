@@ -12,31 +12,24 @@ use crate::models;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ValidateResponse {
-    #[serde(rename = "branch")]
-    pub branch: Box<models::BranchRef>,
-    #[serde(rename = "findings", skip_serializing_if = "Option::is_none")]
-    pub findings: Option<Vec<models::Finding>>,
+pub struct DecisionResponse {
+    #[serde(rename = "decision")]
+    pub decision: Box<models::DecisionOut>,
     #[serde(rename = "project_id")]
     pub project_id: uuid::Uuid,
-    #[serde(rename = "valid")]
-    pub valid: bool,
     #[serde(rename = "version")]
     pub version: String,
 }
 
-impl ValidateResponse {
+impl DecisionResponse {
     pub fn new(
-        branch: models::BranchRef,
+        decision: models::DecisionOut,
         project_id: uuid::Uuid,
-        valid: bool,
         version: String,
-    ) -> ValidateResponse {
-        ValidateResponse {
-            branch: Box::new(branch),
-            findings: None,
+    ) -> DecisionResponse {
+        DecisionResponse {
+            decision: Box::new(decision),
             project_id,
-            valid,
             version,
         }
     }

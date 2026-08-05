@@ -11,32 +11,27 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
+/// BranchPatchResponse : Rename returns the branch alone — the project is not affected.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ValidateResponse {
+pub struct BranchPatchResponse {
     #[serde(rename = "branch")]
-    pub branch: Box<models::BranchRef>,
-    #[serde(rename = "findings", skip_serializing_if = "Option::is_none")]
-    pub findings: Option<Vec<models::Finding>>,
+    pub branch: Box<models::BranchMeta>,
     #[serde(rename = "project_id")]
     pub project_id: uuid::Uuid,
-    #[serde(rename = "valid")]
-    pub valid: bool,
     #[serde(rename = "version")]
     pub version: String,
 }
 
-impl ValidateResponse {
+impl BranchPatchResponse {
+    /// Rename returns the branch alone — the project is not affected.
     pub fn new(
-        branch: models::BranchRef,
+        branch: models::BranchMeta,
         project_id: uuid::Uuid,
-        valid: bool,
         version: String,
-    ) -> ValidateResponse {
-        ValidateResponse {
+    ) -> BranchPatchResponse {
+        BranchPatchResponse {
             branch: Box::new(branch),
-            findings: None,
             project_id,
-            valid,
             version,
         }
     }
