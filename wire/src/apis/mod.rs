@@ -112,6 +112,7 @@ impl From<&str> for ContentType {
 }
 
 pub mod branches_api;
+pub mod decisions_api;
 pub mod graph_api;
 pub mod health_api;
 pub mod projects_api;

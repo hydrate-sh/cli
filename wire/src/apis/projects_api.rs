@@ -49,11 +49,11 @@ pub struct PatchProjectV1ProjectsProjectIdPatchParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CreateProjectV1ProjectsPostError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status409(models::InlineObject2),
     Status422(models::InlineObject3),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -61,11 +61,11 @@ pub enum CreateProjectV1ProjectsPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DeleteProjectV1ProjectsProjectIdDeleteError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -73,10 +73,10 @@ pub enum DeleteProjectV1ProjectsProjectIdDeleteError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ListProjectsV1ProjectsGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -84,12 +84,11 @@ pub enum ListProjectsV1ProjectsGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PatchProjectV1ProjectsProjectIdPatchError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
-    Status409(models::InlineObject4),
-    Status422(models::InlineObject5),
-    Status429(models::InlineObject6),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 

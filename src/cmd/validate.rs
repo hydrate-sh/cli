@@ -222,7 +222,7 @@ fn finding_line(f: &models::Finding, locators: &Locators) -> String {
     format!(
         "  [{}] {}  {}: {}",
         severity_str(f.severity),
-        code_str(f.code),
+        f.code,
         locator,
         locators.rewrite(&f.message),
     )
@@ -239,7 +239,7 @@ fn bucket_json(findings: &[models::Finding], locators: &Locators) -> Vec<serde_j
         .map(|f| {
             let resolved = locators.resolve(&f.locator);
             serde_json::json!({
-                "code": code_str(f.code),
+                "code": f.code,
                 "severity": severity_str(f.severity),
                 "locator": f.locator,
                 "path": resolved.as_ref().map(|r| r.label.clone()),
@@ -264,7 +264,7 @@ fn located_json(response: &ValidateResponse, locators: &Locators) -> Vec<serde_j
             let resolved = locators.resolve(&f.locator);
             serde_json::json!({
                 "finding_index": i,
-                "code": code_str(f.code),
+                "code": f.code,
                 "severity": severity_str(f.severity),
                 "locator": f.locator,
                 "path": resolved.as_ref().map(|r| r.label.clone()),
@@ -464,16 +464,6 @@ fn resolution_notes(
     notes
 }
 
-/// The machine token for a finding's code (its serde wire spelling), so the human
-/// output names the same code the JSON carries.
-fn code_str(code: models::finding::Code) -> &'static str {
-    match code {
-        models::finding::Code::UnsatisfiedInput => "unsatisfied_input",
-        models::finding::Code::DanglingWire => "dangling_wire",
-        models::finding::Code::TypeMismatch => "type_mismatch",
-    }
-}
-
 /// The machine token for a finding's severity.
 fn severity_str(severity: models::finding::Severity) -> &'static str {
     match severity {
@@ -559,7 +549,14 @@ fn plural(n: usize, noun: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hydrate_wire::models::finding::{Code, Severity};
+    use hydrate_wire::models::finding::Severity;
+
+    // The server publishes `code` as an open string, so these are plain
+    // literals rather than generated enum variants. That is the point of
+    // the change: a code this build has never heard of is renderable.
+    const UNSAT: &str = "unsatisfied_input";
+    const DANGLING: &str = "dangling_wire";
+    const MISMATCH: &str = "type_mismatch";
 
     /// A resolver that knows nothing — the pre-existing tests assert the
     /// raw-id rendering, which is exactly what an empty local view produces.
@@ -576,9 +573,9 @@ mod tests {
         }
     }
 
-    fn finding(code: Code, severity: Severity, locator: &str, message: &str) -> models::Finding {
+    fn finding(code: &str, severity: Severity, locator: &str, message: &str) -> models::Finding {
         models::Finding {
-            code,
+            code: code.to_string(),
             severity,
             locator: locator.to_string(),
             message: message.to_string(),
@@ -602,7 +599,7 @@ mod tests {
         let r = response(
             false,
             vec![finding(
-                Code::UnsatisfiedInput,
+                UNSAT,
                 Severity::Error,
                 &port.to_string(),
                 &format!("input port {port} has no incoming edge"),
@@ -627,7 +624,7 @@ mod tests {
         let r = response(
             false,
             vec![finding(
-                Code::UnsatisfiedInput,
+                UNSAT,
                 Severity::Error,
                 &port.to_string(),
                 &raw_message,
@@ -661,7 +658,7 @@ mod tests {
         let r = response(
             false,
             vec![finding(
-                Code::UnsatisfiedInput,
+                UNSAT,
                 Severity::Error,
                 &port.to_string(),
                 "input port has no incoming edge",
@@ -682,7 +679,7 @@ mod tests {
         let r = response(
             false,
             vec![finding(
-                Code::UnsatisfiedInput,
+                UNSAT,
                 Severity::Error,
                 &Uuid::from_u128(80).to_string(),
                 "unfed",
@@ -700,12 +697,7 @@ mod tests {
         let port = Uuid::from_u128(81);
         let r = response(
             false,
-            vec![finding(
-                Code::UnsatisfiedInput,
-                Severity::Error,
-                &port.to_string(),
-                "unfed",
-            )],
+            vec![finding(UNSAT, Severity::Error, &port.to_string(), "unfed")],
         );
         assert!(resolution_notes(&r, &locators_knowing(port, "Api:in:k"), None).is_empty());
     }
@@ -747,7 +739,7 @@ mod tests {
         let r = response(
             false,
             vec![finding(
-                Code::UnsatisfiedInput,
+                UNSAT,
                 Severity::Error,
                 "node-1",
                 "input port 'raw' has no incoming edge",
@@ -766,7 +758,7 @@ mod tests {
         let r = response(
             false,
             vec![finding(
-                Code::TypeMismatch,
+                MISMATCH,
                 Severity::Error,
                 "edge-9",
                 "endpoint types differ: HotDog vs Rating",
@@ -800,12 +792,7 @@ mod tests {
         // only error-severity findings gate the exit code.
         let r = response(
             true,
-            vec![finding(
-                Code::UnsatisfiedInput,
-                Severity::Warning,
-                "node-7",
-                "advisory only",
-            )],
+            vec![finding(UNSAT, Severity::Warning, "node-7", "advisory only")],
         );
         assert_eq!(exit_code(&r), exit::SUCCESS);
         let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
@@ -818,14 +805,9 @@ mod tests {
         let r = response(
             false,
             vec![
+                finding(UNSAT, Severity::Warning, "node-7", "advisory"),
                 finding(
-                    Code::UnsatisfiedInput,
-                    Severity::Warning,
-                    "node-7",
-                    "advisory",
-                ),
-                finding(
-                    Code::DanglingWire,
+                    DANGLING,
                     Severity::Error,
                     "edge-2",
                     "wire to a missing port",
@@ -864,7 +846,7 @@ mod tests {
         let r = response(
             false,
             vec![finding(
-                Code::UnsatisfiedInput,
+                UNSAT,
                 Severity::Error,
                 &port.to_string(),
                 &format!("input port {port} has no incoming edge"),
@@ -938,12 +920,7 @@ mod tests {
         // the local error-severity scan, governs. Exit VALIDATION, read "Invalid".
         let r = response(
             false,
-            vec![finding(
-                Code::UnsatisfiedInput,
-                Severity::Warning,
-                "node-7",
-                "advisory only",
-            )],
+            vec![finding(UNSAT, Severity::Warning, "node-7", "advisory only")],
         );
         assert_eq!(exit_code(&r), exit::VALIDATION);
         let human = render(&r, &binding(), &no_locators(), OutputMode::Human);
@@ -967,10 +944,7 @@ mod tests {
         assert!(disagreement_warning(&r).is_some());
 
         // valid:true but an error-severity finding present → disagreement.
-        let r = response(
-            true,
-            vec![finding(Code::DanglingWire, Severity::Error, "e", "m")],
-        );
+        let r = response(true, vec![finding(DANGLING, Severity::Error, "e", "m")]);
         assert!(disagreement_warning(&r).is_some());
     }
 
@@ -979,10 +953,7 @@ mod tests {
         // valid:true + no error findings → agree.
         assert!(disagreement_warning(&response(true, vec![])).is_none());
         // valid:false + an error finding → agree.
-        let r = response(
-            false,
-            vec![finding(Code::DanglingWire, Severity::Error, "e", "m")],
-        );
+        let r = response(false, vec![finding(DANGLING, Severity::Error, "e", "m")]);
         assert!(disagreement_warning(&r).is_none());
     }
 
@@ -993,12 +964,7 @@ mod tests {
         // disagree with the exit status beside it — on a dirty branch, literally
         // `valid:false` with exit 0.
         let port = Uuid::from_u128(55);
-        let inherited = finding(
-            Code::UnsatisfiedInput,
-            Severity::Error,
-            &port.to_string(),
-            "inherited",
-        );
+        let inherited = finding(UNSAT, Severity::Error, &port.to_string(), "inherited");
         let whole = response(false, vec![inherited.clone()]);
         let p = Partition {
             introduced: vec![],
@@ -1039,14 +1005,9 @@ mod tests {
     #[test]
     fn partitioned_human_report_separates_the_buckets() {
         let port = Uuid::from_u128(56);
-        let mine = finding(
-            Code::UnsatisfiedInput,
-            Severity::Error,
-            &port.to_string(),
-            "mine",
-        );
+        let mine = finding(UNSAT, Severity::Error, &port.to_string(), "mine");
         let theirs = finding(
-            Code::TypeMismatch,
+            MISMATCH,
             Severity::Error,
             &Uuid::from_u128(57).to_string(),
             "theirs",
@@ -1077,7 +1038,7 @@ mod tests {
         let inherited: Vec<models::Finding> = (0..99)
             .map(|i| {
                 finding(
-                    Code::UnsatisfiedInput,
+                    UNSAT,
                     Severity::Error,
                     &Uuid::from_u128(1000 + i).to_string(),
                     "inherited",
@@ -1125,12 +1086,7 @@ mod tests {
         // a non-zero exit and now gets 0. Same command, different answer, so it
         // must leave a runtime trace — a release note is not one.
         let port = Uuid::from_u128(71);
-        let f = finding(
-            Code::UnsatisfiedInput,
-            Severity::Error,
-            &port.to_string(),
-            "inherited",
-        );
+        let f = finding(UNSAT, Severity::Error, &port.to_string(), "inherited");
         let p = Partition {
             introduced: vec![],
             inherited: vec![f.clone()],
@@ -1159,5 +1115,65 @@ mod tests {
         Stage::empty().save(tmp.path()).unwrap();
         let body = prepare(&Stage::load(tmp.path()).unwrap()).unwrap();
         assert!(body.deltas.as_ref().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod open_code_tests {
+    use super::*;
+    use hydrate_wire::models::finding::Severity;
+
+    /// The whole point of the server publishing `code` as an open string.
+    ///
+    /// The generated client used to close it into an enum with three variants
+    /// and no fallback arm, so a validate response containing a code this
+    /// build had never heard of failed to deserialize *entirely* — not the one
+    /// unfamiliar finding, the whole response. Every additive server-side rule
+    /// was therefore a coordinated release, and an installed CLI that was
+    /// merely out of date became one that could not read a validate response
+    /// at all.
+    #[test]
+    fn a_finding_code_this_build_has_never_heard_of_deserializes() {
+        let raw = serde_json::json!({
+            "code": "orphan_node",
+            "severity": "warning",
+            "locator": "a3f",
+            "message": "this node carries no source decision",
+        });
+        let f: models::Finding =
+            serde_json::from_value(raw).expect("an unknown code must not break the response");
+        assert_eq!(f.code, "orphan_node");
+        assert_eq!(f.severity, Severity::Warning);
+    }
+
+    /// …and it must reach the human output verbatim rather than being dropped
+    /// or rendered as a placeholder. A finding the CLI cannot name is still a
+    /// finding the user has to act on.
+    #[test]
+    fn an_unknown_code_is_rendered_verbatim() {
+        let f = models::Finding {
+            code: "orphan_node".to_string(),
+            severity: Severity::Warning,
+            locator: "a3f".to_string(),
+            message: "no source decision".to_string(),
+        };
+        let line = finding_line(&f, &Locators::new(None, &crate::state::Stage::empty()));
+        assert!(line.contains("orphan_node"), "{line}");
+        assert!(line.contains("no source decision"), "{line}");
+    }
+
+    /// `severity` stays CLOSED on purpose — it is a two-valued verdict the CLI
+    /// branches on to pick an exit code, so a third value is a real breaking
+    /// change that deserves a coordinated release rather than a silent
+    /// fall-through to "not an error".
+    #[test]
+    fn severity_stays_closed() {
+        let raw = serde_json::json!({
+            "code": "orphan_node",
+            "severity": "advisory",
+            "locator": "a3f",
+            "message": "m",
+        });
+        assert!(serde_json::from_value::<models::Finding>(raw).is_err());
     }
 }

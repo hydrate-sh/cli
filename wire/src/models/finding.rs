@@ -11,11 +11,12 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
 
-/// Finding : A single coherence finding over the graph that results from a delta batch. All three v1 ``code``s are ``error``-severity; ``severity`` keeps the ``warning`` arm in the contract for future advisory codes. ``locator`` is the node / port / edge id (a string) the finding is about.
+/// Finding : A single coherence finding over the graph that results from a delta batch. ``locator`` is the node / port / edge id (a string) the finding is about.  **``code`` is an OPEN set and is published as a plain string on purpose.** The codes are owned by the server and new ones are added additively as new coherence rules ship. Publishing the set as a closed enum made every generated client close it too — and a generated enum with no fallback arm fails to deserialize the WHOLE response the first time the server sends a code the client has not heard of. That turns every additive rule into a coordinated release, and turns a client that is merely out of date into one that cannot read a validate response at all.  So the contract is: **a consumer must tolerate codes it does not recognize** — render them, do not switch exhaustively on them. The known values are documented in the field description rather than enforced by the schema, because enforcing them here bought documentation at the cost of breaking clients.  ``severity`` stays closed: it is a two-valued verdict a consumer genuinely must branch on, and adding a third value WOULD be a breaking change that deserves a coordinated release.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
+    /// Machine-readable finding code. Known values: `unsatisfied_input` (an input port with no incoming edge), `dangling_wire` (an edge whose endpoint does not exist), `type_mismatch` (a wired pair whose port types disagree). **This set is open and grows additively** — treat an unrecognized code as an opaque string and render it; do not fail on it.
     #[serde(rename = "code")]
-    pub code: Code,
+    pub code: String,
     #[serde(rename = "locator")]
     pub locator: String,
     #[serde(rename = "message")]
@@ -25,30 +26,14 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// A single coherence finding over the graph that results from a delta batch. All three v1 ``code``s are ``error``-severity; ``severity`` keeps the ``warning`` arm in the contract for future advisory codes. ``locator`` is the node / port / edge id (a string) the finding is about.
-    pub fn new(code: Code, locator: String, message: String, severity: Severity) -> Finding {
+    /// A single coherence finding over the graph that results from a delta batch. ``locator`` is the node / port / edge id (a string) the finding is about.  **``code`` is an OPEN set and is published as a plain string on purpose.** The codes are owned by the server and new ones are added additively as new coherence rules ship. Publishing the set as a closed enum made every generated client close it too — and a generated enum with no fallback arm fails to deserialize the WHOLE response the first time the server sends a code the client has not heard of. That turns every additive rule into a coordinated release, and turns a client that is merely out of date into one that cannot read a validate response at all.  So the contract is: **a consumer must tolerate codes it does not recognize** — render them, do not switch exhaustively on them. The known values are documented in the field description rather than enforced by the schema, because enforcing them here bought documentation at the cost of breaking clients.  ``severity`` stays closed: it is a two-valued verdict a consumer genuinely must branch on, and adding a third value WOULD be a breaking change that deserves a coordinated release.
+    pub fn new(code: String, locator: String, message: String, severity: Severity) -> Finding {
         Finding {
             code,
             locator,
             message,
             severity,
         }
-    }
-}
-/// 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-pub enum Code {
-    #[serde(rename = "unsatisfied_input")]
-    UnsatisfiedInput,
-    #[serde(rename = "dangling_wire")]
-    DanglingWire,
-    #[serde(rename = "type_mismatch")]
-    TypeMismatch,
-}
-
-impl Default for Code {
-    fn default() -> Code {
-        Self::UnsatisfiedInput
     }
 }
 /// 

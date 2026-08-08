@@ -30,6 +30,15 @@ pub struct CreateBranchV1ProjectsProjectIdBranchesPostParams {
     pub v1_create_branch_body: models::V1CreateBranchBody
 }
 
+/// struct for passing parameters to the method [`delete_branch_v1_branches_branch_id_delete`]
+#[derive(Clone, Debug)]
+pub struct DeleteBranchV1BranchesBranchIdDeleteParams {
+    /// The branch to delete.
+    pub branch_id: String,
+    /// The branch.version the client believes is current. If it doesn't match the server's view at commit time, the route 409s `version_conflict` with the actual current_version in the detail — mirrors the deltas route's OCC contract so a stale caller can't silently destroy newer content.
+    pub expected_version: u32
+}
+
 /// struct for passing parameters to the method [`fetch_branch_boundary_v1_branches_branch_id_boundary_node_id_get`]
 #[derive(Clone, Debug)]
 pub struct FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetParams {
@@ -73,6 +82,14 @@ pub struct ListBranchesV1ProjectsProjectIdBranchesGetParams {
     pub project_id: String
 }
 
+/// struct for passing parameters to the method [`patch_branch_v1_branches_branch_id_patch`]
+#[derive(Clone, Debug)]
+pub struct PatchBranchV1BranchesBranchIdPatchParams {
+    /// The branch to rename.
+    pub branch_id: String,
+    pub v1_patch_branch_body: models::V1PatchBranchBody
+}
+
 /// struct for passing parameters to the method [`validate_branch_deltas_v1_branches_branch_id_validate_post`]
 #[derive(Clone, Debug)]
 pub struct ValidateBranchDeltasV1BranchesBranchIdValidatePostParams {
@@ -86,12 +103,12 @@ pub struct ValidateBranchDeltasV1BranchesBranchIdValidatePostParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ApplyBranchDeltasV1BranchesBranchIdDeltasPostError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost404Response),
     Status409(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost409Response),
     Status422(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost422Response),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -99,11 +116,23 @@ pub enum ApplyBranchDeltasV1BranchesBranchIdDeltasPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CreateBranchV1ProjectsProjectIdBranchesPostError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`delete_branch_v1_branches_branch_id_delete`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DeleteBranchV1BranchesBranchIdDeleteError {
+    Status401(models::InlineObject5),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -111,11 +140,11 @@ pub enum CreateBranchV1ProjectsProjectIdBranchesPostError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -123,11 +152,11 @@ pub enum FetchBranchBoundaryV1BranchesBranchIdBoundaryNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchGraphV1BranchesBranchIdGraphGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -135,11 +164,11 @@ pub enum FetchBranchGraphV1BranchesBranchIdGraphGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -147,11 +176,11 @@ pub enum FetchBranchNodeV1BranchesBranchIdNodeNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -159,11 +188,23 @@ pub enum FetchBranchSubtreeV1BranchesBranchIdSubtreeNodeIdGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ListBranchesV1ProjectsProjectIdBranchesGetError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::InlineObject1),
     Status422(models::HttpValidationError),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
+    UnknownValue(serde_json::Value),
+}
+
+/// struct for typed errors of method [`patch_branch_v1_branches_branch_id_patch`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PatchBranchV1BranchesBranchIdPatchError {
+    Status401(models::InlineObject5),
+    Status403(models::InlineObject),
+    Status404(models::InlineObject1),
+    Status422(models::HttpValidationError),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -171,11 +212,11 @@ pub enum ListBranchesV1ProjectsProjectIdBranchesGetError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ValidateBranchDeltasV1BranchesBranchIdValidatePostError {
-    Status401(models::InlineObject7),
+    Status401(models::InlineObject5),
     Status403(models::InlineObject),
     Status404(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost404Response),
     Status422(models::ApplyBranchDeltasV1BranchesBranchIdDeltasPost422Response),
-    Status429(models::InlineObject6),
+    Status429(models::InlineObject4),
     UnknownValue(serde_json::Value),
 }
 
@@ -254,6 +295,34 @@ pub async fn create_branch_v1_projects_project_id_branches_post(configuration: &
     } else {
         let content = resp.text().await?;
         let entity: Option<CreateBranchV1ProjectsProjectIdBranchesPostError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
+/// Discard a working branch you own. Its structural content (nodes, ports, edges) is removed and the branch drops out of `GET /v1/projects/{project_id}/branches`.  The branch row and its `structural_changes` audit trail are kept for provenance — this is the same `discard` the legacy session router has always done, not a hard row delete. Re-deleting an already-discarded (or already-merged) branch is refused with `409 branch_not_active` rather than silently reporting success again.  Requires `expected_version` — the branch `version` you last read, same optimistic-concurrency contract as `POST .../deltas`. If the branch moved underneath you (someone else pushed a delta) the request 409s `version_conflict` with the actual `current_version` rather than silently destroying content newer than what you saw.  Requires `graph:write` — deliberately NOT a scope of its own, unlike `project:delete`. See the reasoning comment above this route for the full tradeoff (reversibility, per-call cost, and listing visibility all differ from delta-erasure, but branches stay cheap/low-priority enough that a dedicated scope is deferred, not ruled out).  The protected `main` branch cannot be deleted: it returns `409 main_not_writable`, the same refusal a structural write to main gets.  Only the branch's owner may delete it. A caller who can see the branch but does not own it — or cannot see it at all — gets the same `404`, so the response never reveals whether a branch exists.
+pub async fn delete_branch_v1_branches_branch_id_delete(configuration: &configuration::Configuration, params: DeleteBranchV1BranchesBranchIdDeleteParams) -> Result<(), Error<DeleteBranchV1BranchesBranchIdDeleteError>> {
+
+    let uri_str = format!("{}/v1/branches/{branch_id}", configuration.base_path, branch_id=crate::apis::urlencode(params.branch_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::DELETE, &uri_str);
+
+    req_builder = req_builder.query(&[("expected_version", &params.expected_version.to_string())]);
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+
+    if !status.is_client_error() && !status.is_server_error() {
+        Ok(())
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<DeleteBranchV1BranchesBranchIdDeleteError> = serde_json::from_str(&content).ok();
         Err(Error::ResponseError(ResponseContent { status, content, entity }))
     }
 }
@@ -447,6 +516,45 @@ pub async fn list_branches_v1_projects_project_id_branches_get(configuration: &c
     } else {
         let content = resp.text().await?;
         let entity: Option<ListBranchesV1ProjectsProjectIdBranchesGetError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
+
+/// Rename a working branch you own. There is no separate archive state for a branch (that shape is `DELETE`, which is already recoverable by id via the audit trail if needed) — this route is rename-only.  Requires `graph:write`, same as the delta-apply route: a rename round-trips (nothing is destroyed), so it carries no scope of its own.  The protected `main` branch cannot be renamed: `409 main_not_writable`. A branch that exists but is no longer `active` (already discarded or merged) cannot be renamed either: `409 branch_not_active`.  Only the branch's owner may rename it; a caller who can see the branch but does not own it gets the same `404` a non-existent branch gets.
+pub async fn patch_branch_v1_branches_branch_id_patch(configuration: &configuration::Configuration, params: PatchBranchV1BranchesBranchIdPatchParams) -> Result<models::BranchPatchResponse, Error<PatchBranchV1BranchesBranchIdPatchError>> {
+
+    let uri_str = format!("{}/v1/branches/{branch_id}", configuration.base_path, branch_id=crate::apis::urlencode(params.branch_id));
+    let mut req_builder = configuration.client.request(reqwest::Method::PATCH, &uri_str);
+
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(ref token) = configuration.bearer_access_token {
+        req_builder = req_builder.bearer_auth(token.to_owned());
+    };
+    req_builder = req_builder.json(&params.v1_patch_branch_body);
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let content_type = super::ContentType::from(content_type);
+
+    if !status.is_client_error() && !status.is_server_error() {
+        let content = resp.text().await?;
+        match content_type {
+            ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::BranchPatchResponse`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::BranchPatchResponse`")))),
+        }
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<PatchBranchV1BranchesBranchIdPatchError> = serde_json::from_str(&content).ok();
         Err(Error::ResponseError(ResponseContent { status, content, entity }))
     }
 }

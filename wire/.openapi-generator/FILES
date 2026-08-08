@@ -1,6 +1,7 @@
 Cargo.toml
 src/apis/branches_api.rs
 src/apis/configuration.rs
+src/apis/decisions_api.rs
 src/apis/graph_api.rs
 src/apis/health_api.rs
 src/apis/mod.rs
@@ -8,6 +9,8 @@ src/apis/projects_api.rs
 src/lib.rs
 src/models/add_edge_delta.rs
 src/models/add_node_delta.rs
+src/models/anchor_ref.rs
+src/models/applied_decision_filters.rs
 src/models/apply_branch_deltas_v1_branches__branch_id__deltas_post_404_response.rs
 src/models/apply_branch_deltas_v1_branches__branch_id__deltas_post_404_response_detail.rs
 src/models/apply_branch_deltas_v1_branches__branch_id__deltas_post_404_response_detail_one_of.rs
@@ -20,7 +23,11 @@ src/models/branch_create_response.rs
 src/models/branch_list_response.rs
 src/models/branch_meta.rs
 src/models/branch_not_active_body.rs
+src/models/branch_patch_response.rs
 src/models/branch_ref.rs
+src/models/decision_out.rs
+src/models/decision_response.rs
+src/models/decisions_list_response.rs
 src/models/delete_edge_delta.rs
 src/models/delete_node_delta.rs
 src/models/delta_apply_response.rs
@@ -39,16 +46,12 @@ src/models/inline_object_2_detail.rs
 src/models/inline_object_3.rs
 src/models/inline_object_3_detail.rs
 src/models/inline_object_4.rs
-src/models/inline_object_4_detail.rs
 src/models/inline_object_5.rs
-src/models/inline_object_5_detail.rs
 src/models/inline_object_6.rs
+src/models/inline_object_6_detail.rs
+src/models/inline_object_6_detail_one_of.rs
 src/models/inline_object_7.rs
-src/models/inline_object_8.rs
-src/models/inline_object_8_detail.rs
-src/models/inline_object_8_detail_one_of.rs
-src/models/inline_object_9.rs
-src/models/inline_object_9_detail.rs
+src/models/inline_object_7_detail.rs
 src/models/inline_object_detail.rs
 src/models/main_branch_ref.rs
 src/models/mod.rs
@@ -71,6 +74,7 @@ src/models/v1_create_project_body.rs
 src/models/v1_deltas_body.rs
 src/models/v1_deltas_body_deltas_inner.rs
 src/models/v1_node_position.rs
+src/models/v1_patch_branch_body.rs
 src/models/v1_patch_project_body.rs
 src/models/v1_validate_body.rs
 src/models/validate_response.rs
